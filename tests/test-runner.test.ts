@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ResolvedShopifyE2EConfig } from "../src/config.js";
-import { buildTestCommand } from "../src/test-runner.js";
+import { buildTestCommand, runTestCommand } from "../src/test-runner.js";
 
 const baseConfig: ResolvedShopifyE2EConfig = {
 	authStatePath: "/tmp/auth.json",
@@ -49,5 +49,20 @@ describe("buildTestCommand", () => {
 		expect(command.forcedWorkers).toBe(false);
 		expect(command.shell).toBe(true);
 		expect(command.warnings[0]).toContain("cannot enforce");
+	});
+
+	it("returns the spawned test command exit code", async () => {
+		const code = await runTestCommand({
+			...baseConfig,
+			testCommand: {
+				args: ["-e", "process.exit(7)"],
+				command: process.execPath,
+				mode: "custom",
+				shell: false,
+			},
+			testFiles: [],
+		});
+
+		expect(code).toBe(7);
 	});
 });
