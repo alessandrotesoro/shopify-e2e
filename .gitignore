@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.shopify-e2e/
+.playwright-auth/
+.playwright-chrome/
+playwright-report/
+test-results/
+.env
+*.log

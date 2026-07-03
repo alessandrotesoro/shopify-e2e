@@ -1,0 +1,21 @@
+import {
+	missingLiveShopifyPrerequisites,
+	resolveShopifyE2EConfig,
+} from "../config.js";
+import { prepareShopifySession } from "../shopify-session.js";
+
+export default async function globalSetup(_config: unknown): Promise<void> {
+	const config = await resolveShopifyE2EConfig();
+
+	if (!config.live) {
+		return;
+	}
+
+	if (missingLiveShopifyPrerequisites(config).length > 0) {
+		return;
+	}
+
+	await prepareShopifySession(config, {
+		log: (message) => process.stdout.write(`${message}\n`),
+	});
+}
