@@ -80,6 +80,7 @@ const config: ResolvedShopifyE2EConfig = {
 
 describe("commands", () => {
 	beforeEach(() => {
+		vi.resetAllMocks();
 		mocks.resolveShopifyE2EConfig.mockResolvedValue(config);
 		mocks.prepareShopifySession.mockResolvedValue({
 			authStatePath: config.authStatePath,
@@ -105,13 +106,6 @@ describe("commands", () => {
 	});
 
 	afterEach(() => {
-		mocks.authStateExists.mockReset();
-		mocks.ensureChrome.mockReset();
-		mocks.prepareShopifySession.mockReset();
-		mocks.resolveShopifyE2EConfig.mockReset();
-		mocks.restoreAuthState.mockReset();
-		mocks.runTestCommand.mockReset();
-		mocks.saveAuthState.mockReset();
 		process.exitCode = undefined;
 	});
 

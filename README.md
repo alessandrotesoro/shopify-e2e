@@ -75,11 +75,14 @@ Test helpers:
 
 ```ts
 import {
+	buildCartPermalinkUrl,
 	createLiveShopifyPage,
+	ensureStorefrontUnlocked,
 	gotoLiveShopifyPage,
 	openLiveShopifyPage,
+	resolveStorefrontVariantId,
 	slowFill,
 } from "shopify-e2e";
 ```
 
-The helpers attach to one existing Chrome CDP context and reuse one page. They do not create checkouts, resolve products, configure webhooks, or assert app-specific UI.
+The helpers attach to one existing Chrome CDP context and reuse one page. Storefront helpers can unlock a password-protected storefront, resolve a variant from a product handle, and build Shopify cart permalinks. Product IDs, checkout assertions, webhook setup, and app-specific UI expectations stay in the app repository.

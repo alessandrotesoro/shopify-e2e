@@ -11,5 +11,8 @@ describe("public API", () => {
 		expect(api.resolveShopifyE2EConfig).toBeTypeOf("function");
 		expect(api.missingLiveShopifyPrerequisites).toBeTypeOf("function");
 		expect(api.slowFill).toBeTypeOf("function");
+		expect(api.ensureStorefrontUnlocked).toBeTypeOf("function");
+		expect(api.resolveStorefrontVariantId).toBeTypeOf("function");
+		expect(api.buildCartPermalinkUrl).toBeTypeOf("function");
 	});
 });

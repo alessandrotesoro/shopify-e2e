@@ -41,6 +41,29 @@ describe("resolveShopifyE2EConfig", () => {
 		expect(config.testFiles).toEqual(["config-tests"]);
 	});
 
+	it("auto-discovers default config files under cwd", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-config-discovery-"));
+		const configPath = join(cwd, "shopify-e2e.config.json");
+
+		await writeFile(
+			configPath,
+			JSON.stringify({
+				appUrl: "https://discovered.example",
+				cdpPort: 9336,
+				shopDomain: "discovered.myshopify.com",
+				testFiles: ["discovered-tests"],
+			}),
+		);
+
+		const config = await resolveShopifyE2EConfig({ cwd }, {});
+
+		expect(config.configPath).toBe(configPath);
+		expect(config.shopDomain).toBe("discovered.myshopify.com");
+		expect(config.appUrl).toBe("https://discovered.example");
+		expect(config.cdpUrl).toBe("http://127.0.0.1:9336");
+		expect(config.testFiles).toEqual(["discovered-tests"]);
+	});
+
 	it("loads env files without overriding shell env", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-env-"));
 		const envFile = join(cwd, ".env");

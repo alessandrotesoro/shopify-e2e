@@ -1,6 +1,6 @@
 import type { Browser, BrowserContext, Page } from "playwright-core";
 
-import { ensureChrome, fetchWithTimeout, type FetchLike } from "./browser.js";
+import { delay, ensureChrome, fetchWithTimeout, type FetchLike } from "./browser.js";
 import { connectToChrome, restoreAuthState, saveAuthState } from "./auth-state.js";
 import {
 	missingLiveShopifyPrerequisites,
@@ -12,7 +12,6 @@ import {
 	isShopifyAdminUrl,
 	isShopifyLoginUrl,
 } from "./urls.js";
-import { delay } from "./browser.js";
 
 export type ShopifySessionState =
 	| "chrome-unreachable"
@@ -74,11 +73,10 @@ export async function prepareShopifySession(
 
 	await page.goto(adminUrl, { timeout: 45_000, waitUntil: "domcontentloaded" });
 	const loggedIn = await waitForLoggedInShopifyAdmin(page, config, options);
-	let authStateSaved = false;
+	const authStateSaved = loggedIn && options.saveAuthState !== false;
 
-	if (loggedIn && options.saveAuthState !== false) {
+	if (authStateSaved) {
 		await saveAuthState(config, context);
-		authStateSaved = true;
 	}
 
 	return {

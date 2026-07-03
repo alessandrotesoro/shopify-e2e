@@ -45,13 +45,13 @@ const config: ResolvedShopifyE2EConfig = {
 };
 
 function loginRedirectPage(): Page {
+	const adminUrl = "https://admin.shopify.com/store/example";
+	const loginUrl = "https://accounts.shopify.com/login";
 	let currentUrl = "about:blank";
 
 	return {
 		goto: vi.fn(async (url: string) => {
-			currentUrl = url.includes("admin.shopify.com")
-				? "https://accounts.shopify.com/login"
-				: url;
+			currentUrl = url === adminUrl ? loginUrl : url;
 			return null;
 		}),
 		isClosed: vi.fn(() => false),
@@ -95,6 +95,7 @@ describe("prepareShopifySession", () => {
 			authStateSaved: false,
 			page,
 		});
+		expect(page.url()).toBe("https://accounts.shopify.com/login");
 		expect(mocks.saveAuthState).not.toHaveBeenCalled();
 	});
 });

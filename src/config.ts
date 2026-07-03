@@ -72,8 +72,11 @@ export async function resolveShopifyE2EConfig(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<ResolvedShopifyE2EConfig> {
 	const cwd = options.cwd ?? process.cwd();
-	const fileConfig = await loadConfigFile(options.configPath, cwd);
 	const optionConfigPath = cleanString(options.configPath);
+	const configPath = optionConfigPath
+		? resolvePath(cwd, optionConfigPath)
+		: await findConfigFile(cwd);
+	const fileConfig = await loadConfigFile(configPath);
 	const envFile = cleanString(
 		options.envFile ?? env.SHOPIFY_E2E_ENV_FILE ?? fileConfig.envFile,
 	);
@@ -97,16 +100,14 @@ export async function resolveShopifyE2EConfig(
 			cleanString(merged.authStatePath) ??
 				".shopify-e2e/auth/shopify-storage-state.json",
 		),
-		cdpPort: cdpPort ?? defaultCdpPort,
+		cdpPort,
 		cdpUrl,
 		chromeExecutablePath: cleanString(merged.chromeExecutablePath),
 		chromeProfilePath: resolvePath(
 			cwd,
 			cleanString(merged.chromeProfilePath) ?? ".shopify-e2e/chrome-profile",
 		),
-		configPath: optionConfigPath
-			? resolvePath(cwd, optionConfigPath)
-			: await findConfigFile(cwd),
+		configPath,
 		cwd,
 		envFile: envFile ? resolvePath(cwd, envFile) : undefined,
 		live: Boolean(merged.live),
@@ -181,22 +182,16 @@ export function parseEnvFile(path: string): NodeJS.ProcessEnv {
 
 async function loadConfigFile(
 	configPath: string | undefined,
-	cwd: string,
 ): Promise<ShopifyE2EConfig> {
-	const cleanedConfigPath = cleanString(configPath);
-	const found = cleanedConfigPath
-		? resolvePath(cwd, cleanedConfigPath)
-		: await findConfigFile(cwd);
-
-	if (!found) {
+	if (!configPath) {
 		return {};
 	}
 
-	if (found.endsWith(".json")) {
-		return JSON.parse(await readFile(found, "utf8")) as ShopifyE2EConfig;
+	if (configPath.endsWith(".json")) {
+		return JSON.parse(await readFile(configPath, "utf8")) as ShopifyE2EConfig;
 	}
 
-	const imported = (await import(`${pathToFileURL(found).toString()}?t=${Date.now()}`)) as {
+	const imported = (await import(`${pathToFileURL(configPath).toString()}?t=${Date.now()}`)) as {
 		default?: ShopifyE2EConfig;
 		config?: ShopifyE2EConfig;
 	};

@@ -31,8 +31,26 @@ export {
 } from "./playwright/live-shopify-page.js";
 export { default as globalSetup } from "./playwright/global-setup.js";
 export {
+	clickFirstVisibleButton,
+	fillFirstVisible,
+	firstUsableLocator,
+	isUsable,
+	selectFirstVisible,
 	slowClick,
 	slowFill,
 	slowSelect,
+	type FirstVisibleOptions,
 	type SlowInputOptions,
 } from "./playwright/inputs.js";
+export {
+	buildCartPermalinkUrl,
+	ensureStorefrontUnlocked,
+	gotoCartPermalink,
+	isStorefrontPasswordPage,
+	readStorefrontProductJson,
+	resolveStorefrontVariantId,
+	type ShopifyCheckoutBuyer,
+	type StorefrontConfig,
+	type StorefrontProductInput,
+	type StorefrontProductJson,
+} from "./playwright/storefront.js";
