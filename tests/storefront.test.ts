@@ -30,10 +30,17 @@ describe("storefront helpers", () => {
 
 		expect(url.origin).toBe("https://example.myshopify.com");
 		expect(url.pathname).toBe("/cart/12345:1");
-		expect(url.searchParams.get("checkout[email]")).toBe("buyer@example.com");
-		expect(url.searchParams.get("checkout[shipping_address][province]")).toBe(
-			"NY",
-		);
+		expect(Object.fromEntries(url.searchParams)).toMatchObject({
+			"checkout[email]": "buyer@example.com",
+			"checkout[shipping_address][address1]": "500 7th Avenue",
+			"checkout[shipping_address][city]": "New York",
+			"checkout[shipping_address][country]": "US",
+			"checkout[shipping_address][first_name]": "Ada",
+			"checkout[shipping_address][last_name]": "Lovelace",
+			"checkout[shipping_address][phone]": "5555555555",
+			"checkout[shipping_address][province]": "NY",
+			"checkout[shipping_address][zip]": "10018",
+		});
 	});
 
 	it("returns explicit variant IDs without storefront navigation", async () => {
@@ -73,6 +80,117 @@ describe("storefront helpers", () => {
 		);
 	});
 
+	it("unlocks the storefront only when product JSON is password blocked", async () => {
+		const page = pageDouble({
+			bodyText: JSON.stringify({
+				title: "Digital download",
+				variants: [{ available: true, id: 222 }],
+			}),
+			productPasswordBlocks: 1,
+		});
+
+		await expect(
+			resolveStorefrontVariantId(
+				page as never,
+				{ handle: "digital-download" },
+				config,
+				{ actionDelayMs: 0, inputDelayMs: 0 },
+			),
+		).resolves.toBe("222");
+		expect(page.goto).toHaveBeenNthCalledWith(
+			1,
+			"https://example.myshopify.com/products/digital-download.js",
+			{ waitUntil: "domcontentloaded" },
+		);
+		expect(page.goto).toHaveBeenNthCalledWith(
+			2,
+			"https://example.myshopify.com/products/digital-download.js",
+			{ waitUntil: "domcontentloaded" },
+		);
+		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith("secret", {
+			delay: 0,
+		});
+	});
+
+	it("does not enter the storefront password on off-origin password pages", async () => {
+		const page = pageDouble({
+			currentUrl: "https://evil.example/password",
+			productPasswordBlocks: 1,
+			productPasswordUrl: "https://evil.example/password",
+		});
+
+		await expect(
+			resolveStorefrontVariantId(
+				page as never,
+				{ handle: "digital-download" },
+				config,
+				{ actionDelayMs: 0, inputDelayMs: 0 },
+			),
+		).rejects.toThrow("Refusing to enter the storefront password");
+		expect(page.passwordLocator.pressSequentially).not.toHaveBeenCalled();
+	});
+
+	it("accepts configured custom storefront-domain password pages", async () => {
+		const page = pageDouble({
+			bodyText: JSON.stringify({
+				title: "Digital download",
+				variants: [{ available: true, id: 222 }],
+			}),
+			productPasswordBlocks: 1,
+			productPasswordUrl: "https://store.example.com/password",
+		});
+
+		await expect(
+			resolveStorefrontVariantId(
+				page as never,
+				{ handle: "digital-download" },
+				{
+					...config,
+					storefrontDomain: "store.example.com",
+				},
+				{ actionDelayMs: 0, inputDelayMs: 0 },
+			),
+		).resolves.toBe("222");
+		expect(page.goto).toHaveBeenNthCalledWith(
+			1,
+			"https://store.example.com/products/digital-download.js",
+			{ waitUntil: "domcontentloaded" },
+		);
+		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith("secret", {
+			delay: 0,
+		});
+	});
+
+	it("throws when product JSON is password blocked without a configured password", async () => {
+		const page = pageDouble({ productPasswordBlocks: 1 });
+
+		await expect(
+			resolveStorefrontVariantId(
+				page as never,
+				{ handle: "digital-download" },
+				{ shopDomain: config.shopDomain },
+				{ actionDelayMs: 0, inputDelayMs: 0 },
+			),
+		).rejects.toThrow("Set SHOPIFY_E2E_STOREFRONT_PASSWORD");
+		expect(page.passwordLocator.pressSequentially).not.toHaveBeenCalled();
+	});
+
+	it("throws when product JSON is still password blocked after unlock", async () => {
+		const page = pageDouble({ productPasswordBlocks: 2 });
+
+		await expect(
+			resolveStorefrontVariantId(
+				page as never,
+				{ handle: "digital-download" },
+				config,
+				{ actionDelayMs: 0, inputDelayMs: 0 },
+			),
+		).rejects.toThrow("Check SHOPIFY_E2E_STOREFRONT_PASSWORD");
+		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith("secret", {
+			delay: 0,
+		});
+	});
+
 	it("unlocks password-protected storefronts", async () => {
 		const page = pageDouble({ currentUrl: "https://example.myshopify.com/password" });
 
@@ -104,10 +222,16 @@ describe("storefront helpers", () => {
 });
 
 function pageDouble(
-	options: { bodyText?: string; currentUrl?: string } = {},
+	options: {
+		bodyText?: string;
+		currentUrl?: string;
+		productPasswordBlocks?: number;
+		productPasswordUrl?: string;
+	} = {},
 ) {
 	const state = {
 		currentUrl: options.currentUrl ?? "about:blank",
+		productPasswordBlocks: options.productPasswordBlocks ?? 0,
 	};
 	const bodyLocator = {
 		innerText: vi.fn(async () => options.bodyText ?? "{}"),
@@ -127,6 +251,15 @@ function pageDouble(
 			first: () => submitButton,
 		})),
 		goto: vi.fn(async (url: string) => {
+			if (state.productPasswordBlocks > 0 && url.includes("/products/")) {
+				state.productPasswordBlocks -= 1;
+				state.currentUrl =
+					options.productPasswordUrl ??
+					"https://example.myshopify.com/password";
+
+				return;
+			}
+
 			state.currentUrl = url;
 		}),
 		keyboard: {
@@ -144,7 +277,6 @@ function pageDouble(
 function locatorDouble() {
 	return {
 		click: vi.fn(async () => undefined),
-		count: vi.fn(async () => 1),
 		fill: vi.fn(async () => undefined),
 		focus: vi.fn(async () => undefined),
 		inputValue: vi.fn(async () => ""),

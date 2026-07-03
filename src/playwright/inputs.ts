@@ -144,9 +144,9 @@ export async function firstUsableLocator(
 }
 
 export async function isUsable(locator: Locator): Promise<boolean> {
-	return (
-		(await locator.count()) > 0 &&
-		(await locator.isVisible().catch(() => false)) &&
-		(await locator.isEnabled().catch(() => true))
-	);
+	if (!(await locator.isVisible().catch(() => false))) {
+		return false;
+	}
+
+	return locator.isEnabled().catch(() => true);
 }

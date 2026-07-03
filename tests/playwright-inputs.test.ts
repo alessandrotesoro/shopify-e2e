@@ -46,7 +46,7 @@ describe("slow input helpers", () => {
 	});
 
 	it("fills the first usable selector", async () => {
-		const hidden = locatorDouble({ count: 1, visible: false });
+		const hidden = locatorDouble({ visible: false });
 		const visible = locatorDouble({ value: "old" });
 		const page = {
 			frames: vi.fn(() => []),
@@ -65,7 +65,7 @@ describe("slow input helpers", () => {
 	});
 
 	it("clicks the first usable named button", async () => {
-		const missing = locatorDouble({ count: 0 });
+		const missing = locatorDouble({ visible: false });
 		const visible = locatorDouble();
 		const page = {
 			getByRole: vi.fn((_role: string, options: { name: RegExp }) => ({
@@ -84,11 +84,10 @@ describe("slow input helpers", () => {
 });
 
 function locatorDouble(
-	options: { count?: number; value?: string; visible?: boolean } = {},
+	options: { value?: string; visible?: boolean } = {},
 ) {
 	return {
 		click: vi.fn(async () => undefined),
-		count: vi.fn(async () => options.count ?? 1),
 		fill: vi.fn(async () => undefined),
 		focus: vi.fn(async () => undefined),
 		inputValue: vi.fn(async () => options.value ?? ""),

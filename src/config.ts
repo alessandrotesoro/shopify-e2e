@@ -24,6 +24,7 @@ export interface ShopifyE2EConfig {
 	envFile?: string;
 	live?: boolean;
 	shopDomain?: string;
+	storefrontDomain?: string;
 	storefrontPassword?: string;
 	testCommand?: TestCommandInput;
 	testFiles?: string[];
@@ -53,6 +54,7 @@ export interface ResolvedShopifyE2EConfig {
 	envFile?: string;
 	live: boolean;
 	shopDomain?: string;
+	storefrontDomain?: string;
 	storefrontPassword?: string;
 	testCommand: ResolvedTestCommand;
 	testFiles: string[];
@@ -112,6 +114,7 @@ export async function resolveShopifyE2EConfig(
 		envFile: envFile ? resolvePath(cwd, envFile) : undefined,
 		live: Boolean(merged.live),
 		shopDomain: cleanString(merged.shopDomain),
+		storefrontDomain: cleanString(merged.storefrontDomain),
 		storefrontPassword: cleanString(merged.storefrontPassword),
 		testCommand: normalizeTestCommand(merged.testCommand),
 		testFiles: normalizeStringArray(merged.testFiles),
@@ -236,6 +239,7 @@ function configFromEnv(env: NodeJS.ProcessEnv): ShopifyE2EConfig {
 		envFile: cleanString(env.SHOPIFY_E2E_ENV_FILE),
 		live: parseBoolean(env.SHOPIFY_E2E_LIVE),
 		shopDomain: cleanString(env.SHOPIFY_E2E_SHOP_DOMAIN),
+		storefrontDomain: cleanString(env.SHOPIFY_E2E_STOREFRONT_DOMAIN),
 		storefrontPassword: cleanString(env.SHOPIFY_E2E_STOREFRONT_PASSWORD),
 		testCommand: cleanString(env.SHOPIFY_E2E_TEST_COMMAND),
 		testFiles: splitList(env.SHOPIFY_E2E_TEST_FILES),

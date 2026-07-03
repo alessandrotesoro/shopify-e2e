@@ -32,10 +32,12 @@ describe("resolveShopifyE2EConfig", () => {
 			},
 			{
 				SHOPIFY_E2E_APP_URL: "https://env.example",
+				SHOPIFY_E2E_STOREFRONT_DOMAIN: "store.example.com",
 			},
 		);
 
 		expect(config.shopDomain).toBe("flag-shop.myshopify.com");
+		expect(config.storefrontDomain).toBe("store.example.com");
 		expect(config.appUrl).toBe("https://env.example");
 		expect(config.cdpUrl).toBe("http://127.0.0.1:9333");
 		expect(config.testFiles).toEqual(["config-tests"]);

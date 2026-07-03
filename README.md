@@ -19,6 +19,7 @@ export default {
 	cdpPort: 9222,
 	chromeProfilePath: ".shopify-e2e/chrome-profile",
 	authStatePath: ".shopify-e2e/auth/shopify-storage-state.json",
+	storefrontDomain: "www.example-store.com", // optional custom storefront domain
 	testFiles: ["e2e"],
 };
 ```
@@ -32,6 +33,7 @@ SHOPIFY_E2E_CDP_URL=http://127.0.0.1:9222
 SHOPIFY_E2E_CHROME_PATH=/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome
 SHOPIFY_E2E_CHROME_PROFILE_PATH=.shopify-e2e/chrome-profile
 SHOPIFY_E2E_AUTH_STATE_PATH=.shopify-e2e/auth/shopify-storage-state.json
+SHOPIFY_E2E_STOREFRONT_DOMAIN=www.example-store.com
 SHOPIFY_E2E_STOREFRONT_PASSWORD=
 ```
 

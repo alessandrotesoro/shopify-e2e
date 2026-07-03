@@ -36,8 +36,20 @@ export interface ShopifyCheckoutBuyer {
 
 export type StorefrontConfig = Pick<
 	ResolvedShopifyE2EConfig,
-	"shopDomain" | "storefrontPassword"
+	"shopDomain" | "storefrontDomain" | "storefrontPassword"
 >;
+
+const checkoutBuyerParams: Array<[keyof ShopifyCheckoutBuyer, string]> = [
+	["email", "checkout[email]"],
+	["firstName", "checkout[shipping_address][first_name]"],
+	["lastName", "checkout[shipping_address][last_name]"],
+	["address1", "checkout[shipping_address][address1]"],
+	["city", "checkout[shipping_address][city]"],
+	["provinceCode", "checkout[shipping_address][province]"],
+	["countryCode", "checkout[shipping_address][country]"],
+	["postalCode", "checkout[shipping_address][zip]"],
+	["phone", "checkout[shipping_address][phone]"],
+];
 
 export async function ensureStorefrontUnlocked(
 	page: Page,
@@ -54,24 +66,7 @@ export async function ensureStorefrontUnlocked(
 		return false;
 	}
 
-	const filled = await fillFirstVisible(
-		page,
-		passwordSelectors(),
-		config.storefrontPassword,
-		options,
-	);
-
-	if (!filled) {
-		throw new Error("Storefront password page is visible, but no password field was found.");
-	}
-
-	const clicked = await clickFirstVisibleButton(page, [/enter/i, /submit/i], options);
-
-	if (!clicked) {
-		await page.keyboard.press("Enter").catch(() => undefined);
-	}
-
-	await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+	await unlockCurrentStorefrontPasswordPage(page, config, options);
 
 	return true;
 }
@@ -90,15 +85,24 @@ export async function resolveStorefrontVariantId(
 		throw new Error("Provide a Shopify product handle or variant ID.");
 	}
 
-	await ensureStorefrontUnlocked(page, config, options);
-
 	const productUrl = storefrontUrlFor(config, `/products/${product.handle}.js`);
 	await gotoLiveShopifyPage(page, productUrl);
 
 	if (isStorefrontPasswordPage(page.url())) {
-		throw new Error(
-			`Storefront password page blocked ${productUrl}. Set SHOPIFY_E2E_STOREFRONT_PASSWORD in your test environment.`,
-		);
+		if (!config.storefrontPassword) {
+			throw new Error(
+				`Storefront password page blocked ${productUrl}. Set SHOPIFY_E2E_STOREFRONT_PASSWORD in your test environment.`,
+			);
+		}
+
+		await unlockCurrentStorefrontPasswordPage(page, config, options);
+		await gotoLiveShopifyPage(page, productUrl);
+
+		if (isStorefrontPasswordPage(page.url())) {
+			throw new Error(
+				`Storefront password page blocked ${productUrl}. Check SHOPIFY_E2E_STOREFRONT_PASSWORD in your test environment.`,
+			);
+		}
 	}
 
 	const productJson = await readStorefrontProductJson(page, product.handle);
@@ -136,39 +140,9 @@ export function buildCartPermalinkUrl(
 ): string {
 	const url = new URL(storefrontUrlFor(config, `/cart/${variantId}:1`));
 
-	setCheckoutParam(url, "checkout[email]", buyer.email);
-	setCheckoutParam(
-		url,
-		"checkout[shipping_address][first_name]",
-		buyer.firstName,
-	);
-	setCheckoutParam(
-		url,
-		"checkout[shipping_address][last_name]",
-		buyer.lastName,
-	);
-	setCheckoutParam(
-		url,
-		"checkout[shipping_address][address1]",
-		buyer.address1,
-	);
-	setCheckoutParam(url, "checkout[shipping_address][city]", buyer.city);
-	setCheckoutParam(
-		url,
-		"checkout[shipping_address][province]",
-		buyer.provinceCode,
-	);
-	setCheckoutParam(
-		url,
-		"checkout[shipping_address][country]",
-		buyer.countryCode,
-	);
-	setCheckoutParam(
-		url,
-		"checkout[shipping_address][zip]",
-		buyer.postalCode,
-	);
-	setCheckoutParam(url, "checkout[shipping_address][phone]", buyer.phone);
+	for (const [field, param] of checkoutBuyerParams) {
+		setCheckoutParam(url, param, buyer[field]);
+	}
 
 	return url.toString();
 }
@@ -191,11 +165,86 @@ export function isStorefrontPasswordPage(value: string): boolean {
 }
 
 function storefrontUrlFor(config: StorefrontConfig, path: string): string {
-	if (!config.shopDomain) {
-		throw new Error("Missing SHOPIFY_E2E_SHOP_DOMAIN.");
+	const domain = storefrontDomain(config);
+
+	if (!domain) {
+		throw new Error(
+			"Missing SHOPIFY_E2E_SHOP_DOMAIN or SHOPIFY_E2E_STOREFRONT_DOMAIN.",
+		);
 	}
 
-	return storefrontUrl(config.shopDomain, path);
+	return storefrontUrl(domain, path);
+}
+
+async function unlockCurrentStorefrontPasswordPage(
+	page: Page,
+	config: StorefrontConfig,
+	options: SlowInputOptions,
+): Promise<void> {
+	const currentUrl = page.url();
+
+	if (!isExpectedStorefrontPasswordPage(currentUrl, config)) {
+		throw new Error(
+			`Refusing to enter the storefront password on unexpected URL: ${currentUrl}`,
+		);
+	}
+
+	if (!config.storefrontPassword) {
+		throw new Error(
+			"Storefront password page is visible. Set SHOPIFY_E2E_STOREFRONT_PASSWORD in your test environment.",
+		);
+	}
+
+	const filled = await fillFirstVisible(
+		page,
+		passwordSelectors(),
+		config.storefrontPassword,
+		options,
+	);
+
+	if (!filled) {
+		throw new Error("Storefront password page is visible, but no password field was found.");
+	}
+
+	const clicked = await clickFirstVisibleButton(page, [/enter/i, /submit/i], options);
+
+	if (!clicked) {
+		await page.keyboard.press("Enter").catch(() => undefined);
+	}
+
+	await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+}
+
+function isExpectedStorefrontPasswordPage(
+	value: string,
+	config: StorefrontConfig,
+): boolean {
+	const expectedHost = storefrontDomain(config)?.toLowerCase();
+
+	if (!expectedHost) {
+		return false;
+	}
+
+	try {
+		const url = new URL(value);
+
+		return (
+			url.hostname.toLowerCase() === expectedHost &&
+			url.pathname === "/password"
+		);
+	} catch {
+		return false;
+	}
+}
+
+function storefrontDomain(config: StorefrontConfig): string | undefined {
+	return cleanString(config.storefrontDomain ?? config.shopDomain);
+}
+
+function cleanString(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+
+	return trimmed ? trimmed : undefined;
 }
 
 function passwordSelectors(): string[] {

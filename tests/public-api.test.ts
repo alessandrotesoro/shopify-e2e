@@ -14,5 +14,7 @@ describe("public API", () => {
 		expect(api.ensureStorefrontUnlocked).toBeTypeOf("function");
 		expect(api.resolveStorefrontVariantId).toBeTypeOf("function");
 		expect(api.buildCartPermalinkUrl).toBeTypeOf("function");
+		expect(api.firstUsableLocator).toBeTypeOf("function");
+		expect(api.isUsable).toBeTypeOf("function");
 	});
 });
