@@ -51,6 +51,8 @@ shopify-e2e run
 
 `run` performs the same session preparation, saves auth state after login, then runs Playwright with `--workers=1` for the default runner path.
 
+`auth save` attaches to the current CDP Chrome context and writes storage state. `auth restore` skips cleanly when no auth state exists and only starts Chrome when there is state to restore.
+
 Pass Playwright args after the command:
 
 ```sh

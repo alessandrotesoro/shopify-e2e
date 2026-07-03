@@ -6,7 +6,11 @@ import type { ResolvedShopifyE2EConfig } from "../src/config.js";
 const mocks = vi.hoisted(() => ({
 	prepareShopifySession: vi.fn(),
 	resolveShopifyE2EConfig: vi.fn(),
+	ensureChrome: vi.fn(),
+	authStateExists: vi.fn(),
+	restoreAuthState: vi.fn(),
 	runTestCommand: vi.fn(),
+	saveAuthState: vi.fn(),
 }));
 
 vi.mock("../src/config.js", async (importOriginal) => {
@@ -22,6 +26,26 @@ vi.mock("../src/shopify-session.js", () => ({
 	prepareShopifySession: mocks.prepareShopifySession,
 }));
 
+vi.mock("../src/auth-state.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/auth-state.js")>();
+
+	return {
+		...actual,
+		authStateExists: mocks.authStateExists,
+		restoreAuthState: mocks.restoreAuthState,
+		saveAuthState: mocks.saveAuthState,
+	};
+});
+
+vi.mock("../src/browser.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/browser.js")>();
+
+	return {
+		...actual,
+		ensureChrome: mocks.ensureChrome,
+	};
+});
+
 vi.mock("../src/test-runner.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/test-runner.js")>();
 
@@ -33,6 +57,8 @@ vi.mock("../src/test-runner.js", async (importOriginal) => {
 
 const { default: Open } = await import("../src/commands/open.js");
 const { default: Run } = await import("../src/commands/run.js");
+const { default: AuthSave } = await import("../src/commands/auth/save.js");
+const { default: AuthRestore } = await import("../src/commands/auth/restore.js");
 
 const config: ResolvedShopifyE2EConfig = {
 	appUrl: "https://app.test",
@@ -58,18 +84,34 @@ describe("commands", () => {
 		mocks.prepareShopifySession.mockResolvedValue({
 			authStatePath: config.authStatePath,
 			authStateRestored: true,
+			authStateSaved: true,
 			chromeStarted: true,
 			page: {
 				url: () => "https://admin.shopify.com/store/example",
 			} as Page,
 		});
 		mocks.runTestCommand.mockResolvedValue(0);
+		mocks.saveAuthState.mockResolvedValue({ path: config.authStatePath });
+		mocks.authStateExists.mockReturnValue(true);
+		mocks.restoreAuthState.mockResolvedValue({
+			path: config.authStatePath,
+			restored: true,
+		});
+		mocks.ensureChrome.mockResolvedValue({
+			cdpUrl: config.cdpUrl,
+			profilePath: config.chromeProfilePath,
+			started: false,
+		});
 	});
 
 	afterEach(() => {
+		mocks.authStateExists.mockReset();
+		mocks.ensureChrome.mockReset();
 		mocks.prepareShopifySession.mockReset();
 		mocks.resolveShopifyE2EConfig.mockReset();
+		mocks.restoreAuthState.mockReset();
 		mocks.runTestCommand.mockReset();
+		mocks.saveAuthState.mockReset();
 		process.exitCode = undefined;
 	});
 
@@ -124,5 +166,50 @@ describe("commands", () => {
 			"--project=chromium",
 		]);
 		expect(process.exitCode).toBe(7);
+	});
+
+	it("run fails before preparing the session when app URL is missing", async () => {
+		mocks.resolveShopifyE2EConfig.mockResolvedValue({
+			...config,
+			appUrl: undefined,
+		});
+
+		await expect(Run.run(["--shop", "example.myshopify.com"], { root: process.cwd() })).rejects.toThrow(
+			/Missing live Shopify e2e prerequisites: SHOPIFY_E2E_APP_URL/,
+		);
+		expect(mocks.prepareShopifySession).not.toHaveBeenCalled();
+		expect(mocks.runTestCommand).not.toHaveBeenCalled();
+	});
+
+	it("auth save only saves the current CDP context", async () => {
+		await AuthSave.run(["--auth-state", "/tmp/saved-auth.json"], {
+			root: process.cwd(),
+		});
+
+		expect(mocks.saveAuthState).toHaveBeenCalledWith(config);
+		expect(mocks.prepareShopifySession).not.toHaveBeenCalled();
+	});
+
+	it("auth restore skips Chrome startup when no auth state exists", async () => {
+		mocks.authStateExists.mockReturnValue(false);
+
+		await AuthRestore.run(["--shop", "example.myshopify.com"], {
+			root: process.cwd(),
+		});
+
+		expect(mocks.ensureChrome).not.toHaveBeenCalled();
+		expect(mocks.restoreAuthState).not.toHaveBeenCalled();
+	});
+
+	it("auth restore starts Chrome only when an auth state can be restored", async () => {
+		await AuthRestore.run(["--shop", "example.myshopify.com"], {
+			root: process.cwd(),
+		});
+
+		expect(mocks.ensureChrome).toHaveBeenCalledWith(
+			config,
+			"https://admin.shopify.com/store/example",
+		);
+		expect(mocks.restoreAuthState).toHaveBeenCalledWith(config);
 	});
 });

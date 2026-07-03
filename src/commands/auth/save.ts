@@ -1,8 +1,8 @@
 import { Command } from "@oclif/core";
 
+import { saveAuthState } from "../../auth-state.js";
 import { configFlags, configOverridesFromFlags } from "../../command-flags.js";
 import { resolveShopifyE2EConfig } from "../../config.js";
-import { prepareShopifySession } from "../../shopify-session.js";
 
 export default class AuthSave extends Command {
 	static flags = configFlags;
@@ -11,12 +11,8 @@ export default class AuthSave extends Command {
 	async run(): Promise<void> {
 		const { flags } = await this.parse(AuthSave);
 		const config = await resolveShopifyE2EConfig(configOverridesFromFlags(flags));
-		const session = await prepareShopifySession(config, {
-			log: (message) => this.log(message),
-			saveAuthState: true,
-			waitForLogin: true,
-		});
+		const result = await saveAuthState(config);
 
-		this.log(`Saved Shopify auth state to ${session.authStatePath}`);
+		this.log(`Saved Shopify auth state to ${result.path}`);
 	}
 }

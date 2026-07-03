@@ -1,7 +1,10 @@
 import { Command, Flags } from "@oclif/core";
 
 import { configFlags, configOverridesFromFlags } from "../command-flags.js";
-import { resolveShopifyE2EConfig } from "../config.js";
+import {
+	missingLiveShopifyPrerequisites,
+	resolveShopifyE2EConfig,
+} from "../config.js";
 import { prepareShopifySession } from "../shopify-session.js";
 import { runTestCommand } from "../test-runner.js";
 
@@ -32,6 +35,11 @@ export default class Run extends Command {
 			testCommand: typeof flags["test-command"] === "string" ? flags["test-command"] : undefined,
 			testFiles: Array.isArray(flags["test-file"]) ? flags["test-file"] : undefined,
 		});
+		const missing = missingLiveShopifyPrerequisites(config);
+
+		if (missing.length > 0) {
+			this.error(`Missing live Shopify e2e prerequisites: ${missing.join(", ")}`);
+		}
 
 		await prepareShopifySession(config, {
 			log: (message) => this.log(message),

@@ -82,9 +82,13 @@ export async function resolveShopifyE2EConfig(
 		: env;
 	const envConfig = configFromEnv(mergedEnv);
 	const merged = mergeConfig(defaultConfig(cwd), fileConfig, envConfig, options);
-	const cdpPort = cleanString(String(merged.cdpPort ?? defaultCdpPort));
-	const cdpUrl =
-		cleanString(merged.cdpUrl) ?? `http://127.0.0.1:${cdpPort ?? defaultCdpPort}`;
+	const configuredCdpUrl = cleanString(merged.cdpUrl);
+	const configuredCdpPort = cleanString(
+		merged.cdpPort === undefined ? undefined : String(merged.cdpPort),
+	);
+	const cdpPort =
+		configuredCdpPort ?? cdpPortFromUrl(configuredCdpUrl) ?? defaultCdpPort;
+	const cdpUrl = configuredCdpUrl ?? `http://127.0.0.1:${cdpPort}`;
 
 	return {
 		appUrl: cleanString(merged.appUrl),
@@ -215,7 +219,6 @@ async function findConfigFile(cwd: string): Promise<string | undefined> {
 function defaultConfig(cwd: string): ShopifyE2EConfig {
 	return {
 		authStatePath: resolve(cwd, ".shopify-e2e/auth/shopify-storage-state.json"),
-		cdpPort: defaultCdpPort,
 		chromeProfilePath: resolve(cwd, ".shopify-e2e/chrome-profile"),
 		live: false,
 		testCommand: {
@@ -371,6 +374,20 @@ function splitList(value: string | undefined): string[] | undefined {
 		.split(",")
 		.map((entry) => entry.trim())
 		.filter(Boolean);
+}
+
+function cdpPortFromUrl(value: string | undefined): string | undefined {
+	if (!value) {
+		return undefined;
+	}
+
+	try {
+		const url = new URL(value);
+
+		return cleanString(url.port);
+	} catch {
+		return undefined;
+	}
 }
 
 function resolvePath(cwd: string, path: string): string {

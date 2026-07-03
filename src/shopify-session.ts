@@ -42,6 +42,7 @@ export interface LiveShopifyPage {
 export interface PreparedShopifySession extends LiveShopifyPage {
 	authStatePath: string;
 	authStateRestored: boolean;
+	authStateSaved: boolean;
 	browser: Browser;
 	chromeStarted: boolean;
 }
@@ -72,15 +73,18 @@ export async function prepareShopifySession(
 	const restore = await restoreAuthState(config, context, page);
 
 	await page.goto(adminUrl, { timeout: 45_000, waitUntil: "domcontentloaded" });
-	await waitForLoggedInShopifyAdmin(page, config, options);
+	const loggedIn = await waitForLoggedInShopifyAdmin(page, config, options);
+	let authStateSaved = false;
 
-	if (options.saveAuthState !== false) {
+	if (loggedIn && options.saveAuthState !== false) {
 		await saveAuthState(config, context);
+		authStateSaved = true;
 	}
 
 	return {
 		authStatePath: config.authStatePath,
 		authStateRestored: restore.restored,
+		authStateSaved,
 		browser,
 		chromeStarted: chrome.started,
 		close: async () => undefined,
@@ -251,7 +255,7 @@ async function waitForLoggedInShopifyAdmin(
 	page: Page,
 	config: ResolvedShopifyE2EConfig,
 	options: PrepareShopifySessionOptions,
-): Promise<void> {
+): Promise<boolean> {
 	const waitForLogin = options.waitForLogin ?? true;
 	const timeoutMs = options.timeoutMs;
 	const deadline = timeoutMs ? Date.now() + timeoutMs : undefined;
@@ -265,13 +269,11 @@ async function waitForLoggedInShopifyAdmin(
 			isShopifyAdminUrl(url, config.shopDomain) &&
 			!isShopifyLoginUrl(url)
 		) {
-			return;
+			return true;
 		}
 
 		if (!waitForLogin) {
-			throw new Error(
-				`Shopify Admin is not logged in for ${config.shopDomain}. Current page: ${url}`,
-			);
+			return false;
 		}
 
 		if (!process.stdin.isTTY) {

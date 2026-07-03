@@ -65,6 +65,19 @@ describe("resolveShopifyE2EConfig", () => {
 		expect(config.appUrl).toBe("https://shell.example");
 		expect(config.cdpUrl).toBe("http://127.0.0.1:9334");
 	});
+
+	it("derives the CDP port from a configured CDP URL when no port override is set", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-cdp-url-"));
+		const config = await resolveShopifyE2EConfig(
+			{ cwd },
+			{
+				SHOPIFY_E2E_CDP_URL: "http://127.0.0.1:9335",
+			},
+		);
+
+		expect(config.cdpUrl).toBe("http://127.0.0.1:9335");
+		expect(config.cdpPort).toBe("9335");
+	});
 });
 
 describe("parseEnvFile", () => {

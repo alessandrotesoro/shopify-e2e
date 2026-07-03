@@ -17,4 +17,11 @@ describe("package metadata", () => {
 		expect(packageJson.oclif.commands).toBe("./dist/commands");
 		expect(packageJson.oclif.topicSeparator).toBe(" ");
 	});
+
+	it("uses oclif execute in the bin entrypoint so command errors are handled", async () => {
+		const bin = await readFile(resolve("bin/run.js"), "utf8");
+
+		expect(bin).toContain('import { execute } from "@oclif/core"');
+		expect(bin).toContain("await execute({ dir: import.meta.url })");
+	});
 });

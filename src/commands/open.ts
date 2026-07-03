@@ -30,7 +30,11 @@ export default class Open extends Command {
 				: `Chrome CDP is already reachable at ${config.cdpUrl}`,
 		);
 		this.log(`Profile directory: ${config.chromeProfilePath}`);
-		this.log(`Auth state saved to ${session.authStatePath}`);
+		this.log(
+			session.authStateSaved
+				? `Auth state saved to ${session.authStatePath}`
+				: "Auth state was not saved because Shopify Admin was not confirmed logged in.",
+		);
 		this.log(`Current page: ${session.page.url()}`);
 	}
 }

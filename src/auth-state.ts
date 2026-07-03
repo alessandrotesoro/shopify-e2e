@@ -64,12 +64,16 @@ export async function saveAuthState(
 	return { path: config.authStatePath };
 }
 
+export function authStateExists(config: ResolvedShopifyE2EConfig): boolean {
+	return existsSync(config.authStatePath);
+}
+
 export async function restoreAuthState(
 	config: ResolvedShopifyE2EConfig,
 	context?: BrowserContext,
 	page?: Page,
 ): Promise<AuthStateRestoreResult> {
-	if (!existsSync(config.authStatePath)) {
+	if (!authStateExists(config)) {
 		return { path: config.authStatePath, restored: false };
 	}
 

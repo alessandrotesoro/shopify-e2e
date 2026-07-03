@@ -1,6 +1,6 @@
 import { Command } from "@oclif/core";
 
-import { restoreAuthState } from "../../auth-state.js";
+import { authStateExists, restoreAuthState } from "../../auth-state.js";
 import { ensureChrome } from "../../browser.js";
 import { configFlags, configOverridesFromFlags } from "../../command-flags.js";
 import { missingLiveShopifyPrerequisites, resolveShopifyE2EConfig } from "../../config.js";
@@ -19,8 +19,13 @@ export default class AuthRestore extends Command {
 			this.error(`Missing live Shopify e2e prerequisites: ${missing.join(", ")}`);
 		}
 
-		await ensureChrome(config, adminStoreUrl(config.shopDomain as string));
+		if (!authStateExists(config)) {
+			this.log(`No Shopify auth state found at ${config.authStatePath}`);
 
+			return;
+		}
+
+		await ensureChrome(config, adminStoreUrl(config.shopDomain as string));
 		const result = await restoreAuthState(config);
 
 		this.log(
