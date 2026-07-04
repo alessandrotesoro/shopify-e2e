@@ -1,7 +1,7 @@
 import {
 	missingLiveShopifyPrerequisites,
 	resolveShopifyE2EConfig,
-} from "../config.js";
+} from "../shopify-e2e-config.js";
 import { prepareShopifySession } from "../shopify-session.js";
 
 export default async function globalSetup(_config: unknown): Promise<void> {

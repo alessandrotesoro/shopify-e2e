@@ -1,13 +1,13 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import {
 	parseEnvFile,
 	resolveShopifyE2EConfig,
-} from "../src/config.js";
+} from "../src/shopify-e2e-config.js";
 
 describe("resolveShopifyE2EConfig", () => {
 	it("resolves flags over env over config over defaults", async () => {
@@ -44,7 +44,9 @@ describe("resolveShopifyE2EConfig", () => {
 	});
 
 	it("auto-discovers default config files under cwd", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-config-discovery-"));
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-config-discovery-"),
+		);
 		const configPath = join(cwd, "shopify-e2e.config.json");
 
 		await writeFile(
@@ -64,6 +66,32 @@ describe("resolveShopifyE2EConfig", () => {
 		expect(config.appUrl).toBe("https://discovered.example");
 		expect(config.cdpUrl).toBe("http://127.0.0.1:9336");
 		expect(config.testFiles).toEqual(["discovered-tests"]);
+	});
+
+	it("validates and coerces documented config file fields", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-config-shape-"));
+		const configPath = join(cwd, "shopify-e2e.config.json");
+
+		await writeFile(
+			configPath,
+			JSON.stringify({
+				appUrl: "https://shape.example",
+				live: "false",
+				shopDomain: "shape.myshopify.com",
+				testCommand: {
+					args: ["playwright", "test"],
+					mode: "custom",
+				},
+			}),
+		);
+
+		const config = await resolveShopifyE2EConfig({ cwd }, {});
+
+		expect(config.live).toBe(false);
+		expect(config.testCommand).toMatchObject({
+			args: ["playwright", "test"],
+			mode: "custom",
+		});
 	});
 
 	it("loads env files without overriding shell env", async () => {
@@ -102,6 +130,41 @@ describe("resolveShopifyE2EConfig", () => {
 
 		expect(config.cdpUrl).toBe("http://127.0.0.1:9335");
 		expect(config.cdpPort).toBe("9335");
+	});
+
+	it("throws config file errors with file context", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-bad-config-"));
+		const configPath = join(cwd, "shopify-e2e.config.json");
+
+		await writeFile(configPath, "{");
+
+		await expect(
+			resolveShopifyE2EConfig({ configPath, cwd }, {}),
+		).rejects.toThrow(
+			`Could not parse Shopify E2E config from ${configPath}.`,
+		);
+	});
+
+	it("throws unsupported config file field errors with file context", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-invalid-config-"),
+		);
+		const configPath = join(cwd, "shopify-e2e.config.json");
+
+		await writeFile(
+			configPath,
+			JSON.stringify({
+				testCommand: {
+					mode: "parallel",
+				},
+			}),
+		);
+
+		await expect(
+			resolveShopifyE2EConfig({ configPath, cwd }, {}),
+		).rejects.toThrow(
+			`Invalid Shopify E2E config at ${configPath}: testCommand.mode expected one of: playwright, custom, shell.`,
+		);
 	});
 });
 

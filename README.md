@@ -114,7 +114,7 @@ Useful flags:
 
 ```sh
 shopify-e2e run --shop example.myshopify.com --app-url https://example-app.ngrok.app
-shopify-e2e open --cdp-port 9333 --profile-path .shopify-e2e/chrome-profile
+shopify-e2e open --cdp-port 9333 --storefront-domain www.example-store.com
 shopify-e2e doctor --config shopify-e2e.config.mjs
 ```
 

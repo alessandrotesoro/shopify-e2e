@@ -68,6 +68,7 @@ const defaultConfigFiles = [
 ] as const;
 
 const defaultCdpPort = "9222";
+const testCommandModes = ["playwright", "custom", "shell"] as const;
 
 export async function resolveShopifyE2EConfig(
 	options: ResolveConfigOptions = {},
@@ -86,7 +87,12 @@ export async function resolveShopifyE2EConfig(
 		? { ...parseEnvFile(resolvePath(cwd, envFile)), ...env }
 		: env;
 	const envConfig = configFromEnv(mergedEnv);
-	const merged = mergeConfig(defaultConfig(cwd), fileConfig, envConfig, options);
+	const merged = mergeConfig(
+		defaultConfig(cwd),
+		fileConfig,
+		envConfig,
+		options,
+	);
 	const configuredCdpUrl = cleanString(merged.cdpUrl);
 	const configuredCdpPort = cleanString(
 		merged.cdpPort === undefined ? undefined : String(merged.cdpPort),
@@ -107,7 +113,8 @@ export async function resolveShopifyE2EConfig(
 		chromeExecutablePath: cleanString(merged.chromeExecutablePath),
 		chromeProfilePath: resolvePath(
 			cwd,
-			cleanString(merged.chromeProfilePath) ?? ".shopify-e2e/chrome-profile",
+			cleanString(merged.chromeProfilePath) ??
+				".shopify-e2e/chrome-profile",
 		),
 		configPath,
 		cwd,
@@ -191,15 +198,35 @@ async function loadConfigFile(
 	}
 
 	if (configPath.endsWith(".json")) {
-		return JSON.parse(await readFile(configPath, "utf8")) as ShopifyE2EConfig;
+		return parseConfigFileInput({
+			configPath,
+			input: parseConfigJson({
+				configPath,
+				contents: await readFile(configPath, "utf8"),
+			}),
+		});
 	}
 
-	const imported = (await import(`${pathToFileURL(configPath).toString()}?t=${Date.now()}`)) as {
-		default?: ShopifyE2EConfig;
-		config?: ShopifyE2EConfig;
-	};
+	try {
+		const imported = (await import(
+			`${pathToFileURL(configPath).toString()}?t=${Date.now()}`
+		)) as {
+			default?: unknown;
+			config?: unknown;
+		};
 
-	return imported.default ?? imported.config ?? {};
+		return parseConfigFileInput({
+			configPath,
+			input: imported.default ?? imported.config ?? {},
+		});
+	} catch (error) {
+		throw new Error(
+			`Could not load Shopify E2E config from ${configPath}.`,
+			{
+				cause: error,
+			},
+		);
+	}
 }
 
 async function findConfigFile(cwd: string): Promise<string | undefined> {
@@ -216,7 +243,10 @@ async function findConfigFile(cwd: string): Promise<string | undefined> {
 
 function defaultConfig(cwd: string): ShopifyE2EConfig {
 	return {
-		authStatePath: resolve(cwd, ".shopify-e2e/auth/shopify-storage-state.json"),
+		authStatePath: resolve(
+			cwd,
+			".shopify-e2e/auth/shopify-storage-state.json",
+		),
 		chromeProfilePath: resolve(cwd, ".shopify-e2e/chrome-profile"),
 		live: false,
 		testCommand: {
@@ -226,6 +256,248 @@ function defaultConfig(cwd: string): ShopifyE2EConfig {
 		},
 		testFiles: [],
 	};
+}
+
+interface ParseConfigJsonArgs {
+	configPath: string;
+	contents: string;
+}
+
+function parseConfigJson({
+	configPath,
+	contents,
+}: ParseConfigJsonArgs): unknown {
+	try {
+		return JSON.parse(contents) as unknown;
+	} catch (error) {
+		throw new Error(
+			`Could not parse Shopify E2E config from ${configPath}.`,
+			{
+				cause: error,
+			},
+		);
+	}
+}
+
+interface ParseConfigFileInputArgs {
+	configPath: string;
+	input: unknown;
+}
+
+function parseConfigFileInput({
+	configPath,
+	input,
+}: ParseConfigFileInputArgs): ShopifyE2EConfig {
+	if (input === null || input === undefined) {
+		return {};
+	}
+
+	if (!isRecord(input)) {
+		throw invalidConfigField(configPath, "root", "expected an object");
+	}
+
+	return {
+		appUrl: optionalStringField(input, "appUrl", configPath),
+		authStatePath: optionalStringField(input, "authStatePath", configPath),
+		cdpPort: optionalStringOrNumberField(input, "cdpPort", configPath),
+		cdpUrl: optionalStringField(input, "cdpUrl", configPath),
+		chromeExecutablePath: optionalStringField(
+			input,
+			"chromeExecutablePath",
+			configPath,
+		),
+		chromeProfilePath: optionalStringField(
+			input,
+			"chromeProfilePath",
+			configPath,
+		),
+		envFile: optionalStringField(input, "envFile", configPath),
+		live: optionalBooleanField(input, "live", configPath),
+		shopDomain: optionalStringField(input, "shopDomain", configPath),
+		storefrontDomain: optionalStringField(
+			input,
+			"storefrontDomain",
+			configPath,
+		),
+		storefrontPassword: optionalStringField(
+			input,
+			"storefrontPassword",
+			configPath,
+		),
+		testCommand: optionalTestCommandField(input, "testCommand", configPath),
+		testFiles: optionalStringArrayField(input, "testFiles", configPath),
+	};
+}
+
+function optionalStringField(
+	config: Record<string, unknown>,
+	field: string,
+	configPath: string,
+): string | undefined {
+	const value = config[field];
+
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+
+	if (typeof value === "string") {
+		return value;
+	}
+
+	throw invalidConfigField(configPath, field, "expected a string");
+}
+
+function optionalStringOrNumberField(
+	config: Record<string, unknown>,
+	field: string,
+	configPath: string,
+): string | number | undefined {
+	const value = config[field];
+
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+
+	if (typeof value === "string" || typeof value === "number") {
+		return value;
+	}
+
+	throw invalidConfigField(configPath, field, "expected a string or number");
+}
+
+function optionalBooleanField(
+	config: Record<string, unknown>,
+	field: string,
+	configPath: string,
+): boolean | undefined {
+	const value = config[field];
+
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+
+	if (typeof value === "boolean") {
+		return value;
+	}
+
+	if (typeof value === "string") {
+		return parseConfigBoolean(value, configPath, field);
+	}
+
+	throw invalidConfigField(configPath, field, "expected a boolean");
+}
+
+function parseConfigBoolean(
+	value: string,
+	configPath: string,
+	field: string,
+): boolean {
+	const cleaned = cleanString(value)?.toLowerCase();
+
+	if (!cleaned) {
+		throw invalidConfigField(configPath, field, "expected a boolean");
+	}
+
+	if (["1", "true", "yes", "on"].includes(cleaned)) {
+		return true;
+	}
+
+	if (["0", "false", "no", "off"].includes(cleaned)) {
+		return false;
+	}
+
+	throw invalidConfigField(configPath, field, "expected a boolean");
+}
+
+function optionalStringArrayField(
+	config: Record<string, unknown>,
+	field: string,
+	configPath: string,
+): string[] | undefined {
+	const value = config[field];
+
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+
+	if (
+		Array.isArray(value) &&
+		value.every((entry) => typeof entry === "string")
+	) {
+		return value;
+	}
+
+	throw invalidConfigField(configPath, field, "expected an array of strings");
+}
+
+function optionalTestCommandField(
+	config: Record<string, unknown>,
+	field: string,
+	configPath: string,
+): TestCommandInput | undefined {
+	const value = config[field];
+
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+
+	if (typeof value === "string") {
+		return value;
+	}
+
+	if (!isRecord(value)) {
+		throw invalidConfigField(
+			configPath,
+			field,
+			"expected a string or object",
+		);
+	}
+
+	return {
+		args: optionalStringArrayField(value, "args", configPath),
+		command: optionalStringField(value, "command", configPath),
+		mode: optionalTestCommandModeField(value, "mode", configPath),
+		shell: optionalBooleanField(value, "shell", configPath),
+	};
+}
+
+function optionalTestCommandModeField(
+	config: Record<string, unknown>,
+	field: keyof TestCommandObject,
+	configPath: string,
+): TestCommandMode | undefined {
+	const value = config[field];
+
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+
+	if (
+		typeof value === "string" &&
+		testCommandModes.includes(value as TestCommandMode)
+	) {
+		return value as TestCommandMode;
+	}
+
+	throw invalidConfigField(
+		configPath,
+		`testCommand.${field}`,
+		`expected one of: ${testCommandModes.join(", ")}`,
+	);
+}
+
+function invalidConfigField(
+	configPath: string,
+	field: string | number | symbol,
+	reason: string,
+): Error {
+	return new Error(
+		`Invalid Shopify E2E config at ${configPath}: ${String(field)} ${reason}.`,
+	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
 }
 
 function configFromEnv(env: NodeJS.ProcessEnv): ShopifyE2EConfig {
@@ -246,7 +518,9 @@ function configFromEnv(env: NodeJS.ProcessEnv): ShopifyE2EConfig {
 	};
 }
 
-function mergeConfig(...configs: Array<ShopifyE2EConfig | undefined>): ShopifyE2EConfig {
+function mergeConfig(
+	...configs: Array<ShopifyE2EConfig | undefined>
+): ShopifyE2EConfig {
 	const merged: ShopifyE2EConfig = {};
 
 	for (const config of configs) {
@@ -268,7 +542,9 @@ function mergeConfig(...configs: Array<ShopifyE2EConfig | undefined>): ShopifyE2
 	return merged;
 }
 
-function normalizeTestCommand(input: TestCommandInput | undefined): ResolvedTestCommand {
+function normalizeTestCommand(
+	input: TestCommandInput | undefined,
+): ResolvedTestCommand {
 	if (typeof input === "string") {
 		return {
 			args: [],
@@ -281,7 +557,8 @@ function normalizeTestCommand(input: TestCommandInput | undefined): ResolvedTest
 	return {
 		args: normalizeStringArray(input?.args),
 		command:
-			cleanString(input?.command) ?? (process.platform === "win32" ? "npx.cmd" : "npx"),
+			cleanString(input?.command) ??
+			(process.platform === "win32" ? "npx.cmd" : "npx"),
 		mode: input?.mode ?? "playwright",
 		shell: input?.shell ?? input?.mode === "shell",
 	};

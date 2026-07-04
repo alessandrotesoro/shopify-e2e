@@ -1,11 +1,19 @@
 import type { Browser, BrowserContext, Page } from "playwright-core";
-
-import { delay, ensureChrome, fetchWithTimeout, type FetchLike } from "./browser.js";
-import { connectToChrome, restoreAuthState, saveAuthState } from "./auth-state.js";
+import {
+	connectToChrome,
+	restoreAuthState,
+	saveAuthState,
+} from "./auth-state.js";
+import {
+	delay,
+	ensureChrome,
+	type FetchLike,
+	fetchWithTimeout,
+} from "./browser.js";
 import {
 	missingLiveShopifyPrerequisites,
 	type ResolvedShopifyE2EConfig,
-} from "./config.js";
+} from "./shopify-e2e-config.js";
 import {
 	adminStoreUrl,
 	devtoolsListUrl,
@@ -55,6 +63,8 @@ export interface PrepareShopifySessionOptions {
 	waitForLogin?: boolean;
 }
 
+type RunnableShopifyConfig = ResolvedShopifyE2EConfig & { shopDomain: string };
+
 let sharedBrowser: Browser | null = null;
 let sharedContext: BrowserContext | null = null;
 let sharedPage: Page | null = null;
@@ -65,13 +75,18 @@ export async function prepareShopifySession(
 ): Promise<PreparedShopifySession> {
 	assertRunnableConfig(config);
 
-	const adminUrl = adminStoreUrl(config.shopDomain as string);
-	const chrome = await ensureChrome(config, adminUrl, { fetch: options.fetch });
+	const adminUrl = adminStoreUrl(config.shopDomain);
+	const chrome = await ensureChrome(config, adminUrl, {
+		fetch: options.fetch,
+	});
 	const { browser, context } = await liveShopifyBrowser(config);
 	const page = await reusableLiveShopifyPage(context, config);
 	const restore = await restoreAuthState(config, context, page);
 
-	await page.goto(adminUrl, { timeout: 45_000, waitUntil: "domcontentloaded" });
+	await page.goto(adminUrl, {
+		timeout: 45_000,
+		waitUntil: "domcontentloaded",
+	});
 	const loggedIn = await waitForLoggedInShopifyAdmin(page, config, options);
 	const authStateSaved = loggedIn && options.saveAuthState !== false;
 
@@ -124,7 +139,10 @@ export async function openLiveShopifyPage(
 	return session;
 }
 
-export async function gotoLiveShopifyPage(page: Page, url: string): Promise<void> {
+export async function gotoLiveShopifyPage(
+	page: Page,
+	url: string,
+): Promise<void> {
 	await page.goto(url, { waitUntil: "domcontentloaded" });
 }
 
@@ -140,11 +158,16 @@ export async function inspectShopifySession(
 		};
 	}
 
+	const { shopDomain } = config;
+
 	try {
-		const response = await fetchWithTimeout(devtoolsListUrl(config.cdpUrl), {
-			fetch: options.fetch,
-			timeoutMs: 2_500,
-		});
+		const response = await fetchWithTimeout(
+			devtoolsListUrl(config.cdpUrl),
+			{
+				fetch: options.fetch,
+				timeoutMs: 2_500,
+			},
+		);
 
 		if (!response.ok) {
 			return {
@@ -154,11 +177,9 @@ export async function inspectShopifySession(
 			};
 		}
 
-		const targets = (await response.json()) as DevtoolsTarget[];
-		const pageUrls = targets
-			.filter((target) => target.type === "page")
-			.map((target) => target.url)
-			.filter((url): url is string => Boolean(url));
+		const pageUrls = pageUrlsFromTargets(
+			(await response.json()) as DevtoolsTarget[],
+		);
 
 		if (pageUrls.length === 0) {
 			return {
@@ -168,19 +189,13 @@ export async function inspectShopifySession(
 			};
 		}
 
-		if (
-			pageUrls.some(
-				(url) =>
-					isShopifyAdminUrl(url, config.shopDomain as string) &&
-					!isShopifyLoginUrl(url),
-			)
-		) {
+		if (pageUrls.some((url) => isReadyAdminUrl(url, shopDomain))) {
 			return { pageUrls, state: "ready" };
 		}
 
 		return {
 			pageUrls,
-			reason: `Chrome is open, but no tab is logged into Shopify Admin for ${config.shopDomain}.`,
+			reason: `Chrome is open, but no tab is logged into Shopify Admin for ${shopDomain}.`,
 			state: "login-required",
 		};
 	} catch (error) {
@@ -221,7 +236,9 @@ async function reusableLiveShopifyPage(
 	const page =
 		sharedPage && !sharedPage.isClosed()
 			? sharedPage
-			: (findShopifyAdminPage(pages, config) ?? pages[0] ?? (await context.newPage()));
+			: (findShopifyAdminPage(pages, config) ??
+				pages[0] ??
+				(await context.newPage()));
 
 	sharedPage = page;
 
@@ -238,15 +255,13 @@ function findShopifyAdminPage(
 	pages: Page[],
 	config: ResolvedShopifyE2EConfig,
 ): Page | undefined {
-	if (!config.shopDomain) {
+	const { shopDomain } = config;
+
+	if (!shopDomain) {
 		return undefined;
 	}
 
-	return pages.find(
-		(page) =>
-			isShopifyAdminUrl(page.url(), config.shopDomain as string) &&
-			!isShopifyLoginUrl(page.url()),
-	);
+	return pages.find((page) => isReadyAdminUrl(page.url(), shopDomain));
 }
 
 async function waitForLoggedInShopifyAdmin(
@@ -262,11 +277,7 @@ async function waitForLoggedInShopifyAdmin(
 	for (;;) {
 		const url = page.url();
 
-		if (
-			config.shopDomain &&
-			isShopifyAdminUrl(url, config.shopDomain) &&
-			!isShopifyLoginUrl(url)
-		) {
+		if (config.shopDomain && isReadyAdminUrl(url, config.shopDomain)) {
 			return true;
 		}
 
@@ -293,8 +304,23 @@ async function waitForLoggedInShopifyAdmin(
 	}
 }
 
-function assertRunnableConfig(config: ResolvedShopifyE2EConfig): void {
-	const missing = missingLiveShopifyPrerequisites(config, { requireAppUrl: false });
+function pageUrlsFromTargets(targets: DevtoolsTarget[]): string[] {
+	return targets
+		.filter((target) => target.type === "page")
+		.map((target) => target.url)
+		.filter((url): url is string => Boolean(url));
+}
+
+function isReadyAdminUrl(url: string, shopDomain: string): boolean {
+	return isShopifyAdminUrl(url, shopDomain) && !isShopifyLoginUrl(url);
+}
+
+function assertRunnableConfig(
+	config: ResolvedShopifyE2EConfig,
+): asserts config is RunnableShopifyConfig {
+	const missing = missingLiveShopifyPrerequisites(config, {
+		requireAppUrl: false,
+	});
 
 	if (missing.length > 0) {
 		throw new Error(
@@ -303,7 +329,10 @@ function assertRunnableConfig(config: ResolvedShopifyE2EConfig): void {
 	}
 }
 
-function loginPrompt(config: ResolvedShopifyE2EConfig, currentUrl: string): string {
+function loginPrompt(
+	config: ResolvedShopifyE2EConfig,
+	currentUrl: string,
+): string {
 	const adminUrl = config.shopDomain
 		? adminStoreUrl(config.shopDomain)
 		: "the configured Shopify Admin URL";

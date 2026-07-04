@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-import type { ResolvedShopifyE2EConfig } from "./config.js";
+import type { ResolvedShopifyE2EConfig } from "./shopify-e2e-config.js";
 
 export interface BuiltTestCommand {
 	args: string[];
@@ -41,7 +41,12 @@ export function buildTestCommand(
 	}
 
 	return {
-		args: [...base.args, ...config.testFiles, ...passThroughArgs, ...workerArgs],
+		args: [
+			...base.args,
+			...config.testFiles,
+			...passThroughArgs,
+			...workerArgs,
+		],
 		command: base.command,
 		forcedWorkers,
 		shell: base.shell,
@@ -76,7 +81,11 @@ export async function runTestCommand(
 				return;
 			}
 
-			reject(new Error(`Test command exited from signal ${signal ?? "unknown"}.`));
+			reject(
+				new Error(
+					`Test command exited from signal ${signal ?? "unknown"}.`,
+				),
+			);
 		});
 	});
 }

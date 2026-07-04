@@ -6,7 +6,7 @@ import type { BrowserContext, Page } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
 
 import { restoreAuthState, saveAuthState } from "../src/auth-state.js";
-import type { ResolvedShopifyE2EConfig } from "../src/config.js";
+import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 
 function configFor(authStatePath: string): ResolvedShopifyE2EConfig {
 	return {
@@ -113,14 +113,50 @@ describe("auth state", () => {
 		const authStatePath = join(dir, "nested", "state.json");
 		const context = {
 			storageState: vi.fn(async ({ path }: { path: string }) => {
-				await writeFile(path, JSON.stringify({ cookies: [], origins: [] }), "utf8");
+				await writeFile(
+					path,
+					JSON.stringify({ cookies: [], origins: [] }),
+					"utf8",
+				);
 			}),
 		} as unknown as BrowserContext;
 
-		await expect(saveAuthState(configFor(authStatePath), context)).resolves.toEqual({
+		await expect(
+			saveAuthState(configFor(authStatePath), context),
+		).resolves.toEqual({
 			path: authStatePath,
 		});
-		await expect(readFile(authStatePath, "utf8")).resolves.toContain("cookies");
-		expect(context.storageState).toHaveBeenCalledWith({ path: authStatePath });
+		await expect(readFile(authStatePath, "utf8")).resolves.toContain(
+			"cookies",
+		);
+		expect(context.storageState).toHaveBeenCalledWith({
+			path: authStatePath,
+		});
+	});
+
+	it("rejects malformed auth-state JSON with file context", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "shopify-e2e-auth-"));
+		const authStatePath = join(dir, "state.json");
+		const context = {
+			addCookies: vi.fn(),
+		} as unknown as BrowserContext;
+
+		await writeFile(
+			authStatePath,
+			JSON.stringify({
+				origins: [
+					{
+						localStorage: [{ name: "shopify.example", value: 1 }],
+						origin: "https://example.myshopify.com",
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		await expect(
+			restoreAuthState(configFor(authStatePath), context, fakePage()),
+		).rejects.toThrow(`Invalid auth state at ${authStatePath}: origins`);
+		expect(context.addCookies).not.toHaveBeenCalled();
 	});
 });

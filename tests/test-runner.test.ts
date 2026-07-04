@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ResolvedShopifyE2EConfig } from "../src/config.js";
+import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 import { buildTestCommand, runTestCommand } from "../src/test-runner.js";
 
 const baseConfig: ResolvedShopifyE2EConfig = {

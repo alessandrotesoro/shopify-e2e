@@ -4,9 +4,9 @@ import { findChromeExecutable, isCdpReachable } from "./browser.js";
 import {
 	missingLiveShopifyPrerequisites,
 	type ResolvedShopifyE2EConfig,
-} from "./config.js";
-import { buildTestCommand } from "./test-runner.js";
+} from "./shopify-e2e-config.js";
 import { inspectShopifySession } from "./shopify-session.js";
+import { buildTestCommand } from "./test-runner.js";
 
 export type DoctorStatus = "fail" | "pass" | "warn";
 
@@ -24,6 +24,7 @@ export async function runDoctor(
 	const chromePath = findChromeExecutable(config);
 	const cdpReachable = await isCdpReachable(config.cdpUrl);
 	const command = buildTestCommand(config);
+	const authStateExists = existsSync(config.authStatePath);
 
 	checks.push({
 		message:
@@ -51,11 +52,11 @@ export async function runDoctor(
 	});
 
 	checks.push({
-		message: existsSync(config.authStatePath)
+		message: authStateExists
 			? `Auth state exists at ${config.authStatePath}.`
 			: `No auth state found at ${config.authStatePath}.`,
 		name: "auth-state",
-		status: existsSync(config.authStatePath) ? "pass" : "warn",
+		status: authStateExists ? "pass" : "warn",
 	});
 
 	checks.push({

@@ -2,17 +2,16 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 import {
-	chromium,
 	type Browser,
 	type BrowserContext,
+	chromium,
 	type Page,
 } from "playwright-core";
-
+import { waitForCdp } from "./browser.js";
 import {
 	ensureParentDirectory,
 	type ResolvedShopifyE2EConfig,
-} from "./config.js";
-import { waitForCdp } from "./browser.js";
+} from "./shopify-e2e-config.js";
 import { adminStoreUrl } from "./urls.js";
 
 export interface ConnectedChrome {
@@ -26,11 +25,18 @@ export interface AuthStateRestoreResult {
 }
 
 interface StorageStateFile {
-	cookies?: unknown[];
-	origins?: Array<{
-		localStorage?: Array<{ name: string; value: string }>;
-		origin?: string;
-	}>;
+	cookies?: Parameters<BrowserContext["addCookies"]>[0];
+	origins?: StorageStateOrigin[];
+}
+
+interface StorageStateOrigin {
+	localStorage?: StorageStateLocalStorageEntry[];
+	origin?: string;
+}
+
+interface StorageStateLocalStorageEntry {
+	name: string;
+	value: string;
 }
 
 export async function connectToChrome(
@@ -78,12 +84,13 @@ export async function restoreAuthState(
 	}
 
 	const targetContext = context ?? (await connectToChrome(config)).context;
-	const state = JSON.parse(
-		await readFile(config.authStatePath, "utf8"),
-	) as StorageStateFile;
+	const state = parseStorageStateFile({
+		contents: await readFile(config.authStatePath, "utf8"),
+		path: config.authStatePath,
+	});
 
 	if (Array.isArray(state.cookies) && state.cookies.length > 0) {
-		await targetContext.addCookies(state.cookies as Parameters<BrowserContext["addCookies"]>[0]);
+		await targetContext.addCookies(state.cookies);
 	}
 
 	const targetPage = page ?? (await firstOpenPage(targetContext));
@@ -100,8 +107,113 @@ export async function restoreAuthState(
 	return { path: config.authStatePath, restored: true };
 }
 
+interface ParseStorageStateFileArgs {
+	contents: string;
+	path: string;
+}
+
+function parseStorageStateFile({
+	contents,
+	path,
+}: ParseStorageStateFileArgs): StorageStateFile {
+	try {
+		const parsed = JSON.parse(contents) as unknown;
+
+		return validateStorageStateFile({ path, value: parsed });
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.message.startsWith("Invalid auth state")
+		) {
+			throw error;
+		}
+
+		throw new Error(
+			`Invalid auth state at ${path}: could not parse JSON.`,
+			{
+				cause: error,
+			},
+		);
+	}
+}
+
+interface ValidateStorageStateFileArgs {
+	path: string;
+	value: unknown;
+}
+
+function validateStorageStateFile({
+	path,
+	value,
+}: ValidateStorageStateFileArgs): StorageStateFile {
+	if (!isRecord(value)) {
+		throw new Error(`Invalid auth state at ${path}: expected an object.`);
+	}
+
+	const { cookies, origins } = value;
+
+	if (cookies !== undefined && !isCookieArray(cookies)) {
+		throw new Error(
+			`Invalid auth state at ${path}: cookies must be an array of cookie objects.`,
+		);
+	}
+
+	if (origins !== undefined && !isStorageStateOriginArray(origins)) {
+		throw new Error(
+			`Invalid auth state at ${path}: origins must include origin strings and localStorage name/value pairs.`,
+		);
+	}
+
+	return {
+		cookies,
+		origins,
+	};
+}
+
+function isCookieArray(
+	value: unknown,
+): value is Parameters<BrowserContext["addCookies"]>[0] {
+	return Array.isArray(value) && value.every((cookie) => isRecord(cookie));
+}
+
+function isStorageStateOriginArray(
+	value: unknown,
+): value is StorageStateOrigin[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(origin) =>
+				isRecord(origin) &&
+				(origin.origin === undefined ||
+					typeof origin.origin === "string") &&
+				(origin.localStorage === undefined ||
+					isLocalStorageEntryArray(origin.localStorage)),
+		)
+	);
+}
+
+function isLocalStorageEntryArray(
+	value: unknown,
+): value is StorageStateLocalStorageEntry[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				isRecord(entry) &&
+				typeof entry.name === "string" &&
+				typeof entry.value === "string",
+		)
+	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
 export async function firstOpenPage(context: BrowserContext): Promise<Page> {
-	return context.pages().find((page) => !page.isClosed()) ?? context.newPage();
+	return (
+		context.pages().find((page) => !page.isClosed()) ?? context.newPage()
+	);
 }
 
 async function restoreLocalStorage(
@@ -118,7 +230,10 @@ async function restoreLocalStorage(
 		}
 
 		await page
-			.goto(origin.origin, { timeout: 15_000, waitUntil: "domcontentloaded" })
+			.goto(origin.origin, {
+				timeout: 15_000,
+				waitUntil: "domcontentloaded",
+			})
 			.catch(() => undefined);
 
 		if (!page.url().startsWith(origin.origin)) {

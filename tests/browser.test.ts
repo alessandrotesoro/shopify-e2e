@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isCdpReachable, type FetchLike } from "../src/browser.js";
+import { type FetchLike, isCdpReachable } from "../src/browser.js";
 
 describe("isCdpReachable", () => {
 	it("returns true when devtools version responds ok", async () => {

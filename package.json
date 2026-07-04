@@ -1,61 +1,64 @@
 {
-  "name": "shopify-e2e",
-  "version": "0.1.0",
-  "description": "Reusable Shopify live E2E helper CLI and Playwright utilities.",
-  "type": "module",
-  "license": "MIT",
-  "bin": {
-    "shopify-e2e": "./bin/run.js"
-  },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./package.json": "./package.json"
-  },
-  "files": [
-    "bin",
-    "dist",
-    "examples",
-    "README.md"
-  ],
-  "oclif": {
-    "bin": "shopify-e2e",
-    "commands": "./dist/commands",
-    "topicSeparator": " ",
-    "topics": {
-      "auth": {
-        "description": "Manage saved Shopify auth state."
-      }
-    }
-  },
-  "scripts": {
-    "build": "tsc",
-    "clean": "rm -rf dist",
-    "prepack": "npm run clean && npm run build",
-    "test": "vitest run",
-    "typecheck": "tsc --project tsconfig.test.json --noEmit"
-  },
-  "dependencies": {
-    "@oclif/core": "4.11.11",
-    "playwright-core": "^1.61.1"
-  },
-  "peerDependencies": {
-    "@playwright/test": ">=1.61.1"
-  },
-  "peerDependenciesMeta": {
-    "@playwright/test": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.61.1",
-    "@types/node": "^24.10.2",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
-  },
-  "engines": {
-    "node": ">=20.0.0"
-  }
+	"name": "shopify-e2e",
+	"version": "0.1.0",
+	"description": "Reusable Shopify live E2E helper CLI and Playwright package.",
+	"type": "module",
+	"license": "MIT",
+	"bin": {
+		"shopify-e2e": "./bin/run.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"bin",
+		"dist",
+		"examples",
+		"README.md"
+	],
+	"oclif": {
+		"bin": "shopify-e2e",
+		"commands": "./dist/commands",
+		"topicSeparator": " ",
+		"topics": {
+			"auth": {
+				"description": "Manage saved Shopify auth state."
+			}
+		}
+	},
+	"scripts": {
+		"build": "tsc",
+		"clean": "rm -rf dist",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"prepack": "npm run clean && npm run build",
+		"test": "vitest run",
+		"typecheck": "tsc --project tsconfig.test.json --noEmit"
+	},
+	"dependencies": {
+		"@oclif/core": "4.11.11",
+		"playwright-core": "^1.61.1"
+	},
+	"peerDependencies": {
+		"@playwright/test": ">=1.61.1"
+	},
+	"peerDependenciesMeta": {
+		"@playwright/test": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.2",
+		"@playwright/test": "^1.61.1",
+		"@types/node": "^24.10.2",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.15"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	}
 }

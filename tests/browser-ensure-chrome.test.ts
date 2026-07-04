@@ -1,7 +1,9 @@
+import { EventEmitter } from "node:events";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FetchLike } from "../src/browser.js";
-import type { ResolvedShopifyE2EConfig } from "../src/config.js";
+import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 
 const mocks = vi.hoisted(() => ({
 	existsSync: vi.fn(),
@@ -20,6 +22,10 @@ vi.mock("node:fs", () => ({
 }));
 
 const { ensureChrome } = await import("../src/browser.js");
+
+interface ChildProcessDouble extends EventEmitter {
+	unref: ReturnType<typeof vi.fn>;
+}
 
 const config: ResolvedShopifyE2EConfig = {
 	appUrl: "https://app.test",
@@ -47,7 +53,7 @@ describe("ensureChrome", () => {
 		mocks.spawn.mockReset();
 		mocks.unref.mockReset();
 		mocks.existsSync.mockReturnValue(true);
-		mocks.spawn.mockReturnValue({ unref: mocks.unref });
+		mocks.spawn.mockReturnValue(childProcessDouble());
 	});
 
 	it("reuses an existing CDP endpoint without spawning Chrome", async () => {
@@ -112,4 +118,39 @@ describe("ensureChrome", () => {
 		);
 		expect(mocks.unref).toHaveBeenCalled();
 	});
+
+	it("reports Chrome spawn errors with the executable path", async () => {
+		const child = childProcessDouble();
+		const fetchImpl: FetchLike = vi.fn(async () => ({
+			json: async () => ({}),
+			ok: false,
+			status: 503,
+		}));
+
+		mocks.spawn.mockImplementation(() => {
+			setTimeout(() => {
+				child.emit("error", new Error("EACCES"));
+			}, 0);
+
+			return child;
+		});
+
+		await expect(
+			ensureChrome(config, "https://admin.shopify.com/store/example", {
+				fetch: fetchImpl,
+				timeoutMs: 100,
+			}),
+		).rejects.toThrow(
+			"Could not start Chrome at /Applications/Test Chrome: EACCES",
+		);
+		expect(mocks.unref).toHaveBeenCalled();
+	});
 });
+
+function childProcessDouble(): ChildProcessDouble {
+	const child = new EventEmitter() as ChildProcessDouble;
+
+	child.unref = mocks.unref;
+
+	return child;
+}

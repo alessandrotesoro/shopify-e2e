@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 
-import type { ResolvedShopifyE2EConfig } from "./config.js";
+import type { ResolvedShopifyE2EConfig } from "./shopify-e2e-config.js";
 import { devtoolsVersionUrl } from "./urls.js";
 
 export interface EnsureChromeResult {
@@ -64,8 +64,11 @@ export async function ensureChrome(
 
 	child.unref();
 
-	await waitForCdp(config.cdpUrl, {
+	await waitForChromeLaunch({
+		cdpUrl: config.cdpUrl,
+		child,
 		fetch: fetchImpl,
+		chromePath,
 		timeoutMs: options.timeoutMs ?? 10_000,
 	});
 
@@ -79,7 +82,11 @@ export async function ensureChrome(
 
 export async function waitForCdp(
 	cdpUrl: string,
-	options: { fetch?: FetchLike; intervalMs?: number; timeoutMs?: number } = {},
+	options: {
+		fetch?: FetchLike;
+		intervalMs?: number;
+		timeoutMs?: number;
+	} = {},
 ): Promise<void> {
 	const timeoutMs = options.timeoutMs ?? 10_000;
 	const intervalMs = options.intervalMs ?? 250;
@@ -94,6 +101,70 @@ export async function waitForCdp(
 	}
 
 	throw new Error(`Chrome CDP was not reachable at ${cdpUrl}.`);
+}
+
+interface WaitForChromeLaunchArgs {
+	cdpUrl: string;
+	child: ChildProcess;
+	chromePath: string;
+	fetch: FetchLike;
+	timeoutMs: number;
+}
+
+async function waitForChromeLaunch({
+	cdpUrl,
+	child,
+	chromePath,
+	fetch,
+	timeoutMs,
+}: WaitForChromeLaunchArgs): Promise<void> {
+	let cleanup = () => undefined;
+	const launchFailure = new Promise<Error>((resolve) => {
+		const onError = (error: Error) => {
+			resolve(
+				new Error(
+					`Could not start Chrome at ${chromePath}: ${error.message}`,
+					{
+						cause: error,
+					},
+				),
+			);
+		};
+		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+			const reason =
+				typeof code === "number"
+					? `exit code ${code}`
+					: `signal ${signal ?? "unknown"}`;
+
+			resolve(
+				new Error(
+					`Chrome at ${chromePath} exited before CDP became reachable (${reason}).`,
+				),
+			);
+		};
+
+		child.once("error", onError);
+		child.once("exit", onExit);
+		cleanup = () => {
+			child.off("error", onError);
+			child.off("exit", onExit);
+		};
+	});
+
+	let result: Error | undefined;
+
+	try {
+		result = await Promise.race([
+			waitForCdp(cdpUrl, { fetch, timeoutMs }).then(() => undefined),
+			launchFailure,
+		]);
+	} finally {
+		cleanup();
+	}
+
+	if (result instanceof Error) {
+		throw result;
+	}
 }
 
 export async function isCdpReachable(
@@ -117,10 +188,15 @@ export async function fetchWithTimeout(
 	options: { fetch?: FetchLike; timeoutMs?: number } = {},
 ): Promise<FetchLikeResponse> {
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 2_500);
+	const timeout = setTimeout(
+		() => controller.abort(),
+		options.timeoutMs ?? 2_500,
+	);
 
 	try {
-		return await (options.fetch ?? fetch)(url, { signal: controller.signal });
+		return await (options.fetch ?? fetch)(url, {
+			signal: controller.signal,
+		});
 	} finally {
 		clearTimeout(timeout);
 	}
@@ -144,19 +220,33 @@ export function chromeCandidates(
 		"/usr/bin/google-chrome-stable",
 		"/usr/bin/chromium",
 		"/usr/bin/chromium-browser",
-		windowsChromePath("PROGRAMFILES", "Google/Chrome/Application/chrome.exe"),
-		windowsChromePath("PROGRAMFILES(X86)", "Google/Chrome/Application/chrome.exe"),
-		windowsChromePath("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
+		windowsChromePath(
+			"PROGRAMFILES",
+			"Google/Chrome/Application/chrome.exe",
+		),
+		windowsChromePath(
+			"PROGRAMFILES(X86)",
+			"Google/Chrome/Application/chrome.exe",
+		),
+		windowsChromePath(
+			"LOCALAPPDATA",
+			"Google/Chrome/Application/chrome.exe",
+		),
 	].filter((candidate): candidate is string => Boolean(candidate));
 
 	return [...new Set(candidates)];
 }
 
 export function delay(milliseconds: number): Promise<void> {
-	return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+	return new Promise((resolveDelay) =>
+		setTimeout(resolveDelay, milliseconds),
+	);
 }
 
-function windowsChromePath(envName: string, suffix: string): string | undefined {
+function windowsChromePath(
+	envName: string,
+	suffix: string,
+): string | undefined {
 	const base = process.env[envName];
 
 	return base ? `${base}/${suffix}` : undefined;

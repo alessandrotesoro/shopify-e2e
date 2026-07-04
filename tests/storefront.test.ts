@@ -47,10 +47,15 @@ describe("storefront helpers", () => {
 		const page = pageDouble();
 
 		await expect(
-			resolveStorefrontVariantId(page as never, { variantId: 9988 }, config, {
-				actionDelayMs: 0,
-				inputDelayMs: 0,
-			}),
+			resolveStorefrontVariantId(
+				page as never,
+				{ variantId: 9988 },
+				config,
+				{
+					actionDelayMs: 0,
+					inputDelayMs: 0,
+				},
+			),
 		).resolves.toBe("9988");
 		expect(page.goto).not.toHaveBeenCalled();
 	});
@@ -77,6 +82,26 @@ describe("storefront helpers", () => {
 		expect(page.goto).toHaveBeenCalledWith(
 			"https://example.myshopify.com/products/digital-download.js",
 			{ waitUntil: "domcontentloaded" },
+		);
+	});
+
+	it("throws with product context when product JSON has the wrong shape", async () => {
+		const page = pageDouble({
+			bodyText: JSON.stringify({
+				title: "Digital download",
+				variants: { id: 222 },
+			}),
+		});
+
+		await expect(
+			resolveStorefrontVariantId(
+				page as never,
+				{ handle: "digital-download" },
+				{ shopDomain: config.shopDomain },
+				{ actionDelayMs: 0, inputDelayMs: 0 },
+			),
+		).rejects.toThrow(
+			"Could not read Shopify product JSON for digital-download",
 		);
 	});
 
@@ -107,9 +132,12 @@ describe("storefront helpers", () => {
 			"https://example.myshopify.com/products/digital-download.js",
 			{ waitUntil: "domcontentloaded" },
 		);
-		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith("secret", {
-			delay: 0,
-		});
+		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith(
+			"secret",
+			{
+				delay: 0,
+			},
+		);
 	});
 
 	it("does not enter the storefront password on off-origin password pages", async () => {
@@ -156,9 +184,12 @@ describe("storefront helpers", () => {
 			"https://store.example.com/products/digital-download.js",
 			{ waitUntil: "domcontentloaded" },
 		);
-		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith("secret", {
-			delay: 0,
-		});
+		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith(
+			"secret",
+			{
+				delay: 0,
+			},
+		);
 	});
 
 	it("throws when product JSON is password blocked without a configured password", async () => {
@@ -186,13 +217,18 @@ describe("storefront helpers", () => {
 				{ actionDelayMs: 0, inputDelayMs: 0 },
 			),
 		).rejects.toThrow("Check SHOPIFY_E2E_STOREFRONT_PASSWORD");
-		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith("secret", {
-			delay: 0,
-		});
+		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith(
+			"secret",
+			{
+				delay: 0,
+			},
+		);
 	});
 
 	it("unlocks password-protected storefronts", async () => {
-		const page = pageDouble({ currentUrl: "https://example.myshopify.com/password" });
+		const page = pageDouble({
+			currentUrl: "https://example.myshopify.com/password",
+		});
 
 		await expect(
 			ensureStorefrontUnlocked(page as never, config, {
@@ -204,19 +240,24 @@ describe("storefront helpers", () => {
 			"https://example.myshopify.com/password",
 			{ waitUntil: "domcontentloaded" },
 		);
-		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith("secret", {
-			delay: 0,
-		});
+		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith(
+			"secret",
+			{
+				delay: 0,
+			},
+		);
 		expect(page.submitButton.click).toHaveBeenCalledWith({ delay: 0 });
 	});
 
 	it("detects storefront password pages", () => {
-		expect(isStorefrontPasswordPage("https://example.myshopify.com/password")).toBe(
-			true,
-		);
-		expect(isStorefrontPasswordPage("https://example.myshopify.com/products/a")).toBe(
-			false,
-		);
+		expect(
+			isStorefrontPasswordPage("https://example.myshopify.com/password"),
+		).toBe(true);
+		expect(
+			isStorefrontPasswordPage(
+				"https://example.myshopify.com/products/a",
+			),
+		).toBe(false);
 		expect(isStorefrontPasswordPage("not a url")).toBe(false);
 	});
 });

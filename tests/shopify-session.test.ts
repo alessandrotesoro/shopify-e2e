@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-
-import type { ResolvedShopifyE2EConfig } from "../src/config.js";
-import { inspectShopifySession } from "../src/shopify-session.js";
 import type { FetchLike } from "../src/browser.js";
+import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
+import { inspectShopifySession } from "../src/shopify-session.js";
 
 const config: ResolvedShopifyE2EConfig = {
 	authStatePath: "/tmp/auth.json",
@@ -34,7 +33,9 @@ describe("inspectShopifySession", () => {
 			status: 200,
 		});
 
-		await expect(inspectShopifySession(config, { fetch: fetchImpl })).resolves.toMatchObject({
+		await expect(
+			inspectShopifySession(config, { fetch: fetchImpl }),
+		).resolves.toMatchObject({
 			state: "ready",
 		});
 	});
@@ -51,7 +52,9 @@ describe("inspectShopifySession", () => {
 			status: 200,
 		});
 
-		await expect(inspectShopifySession(config, { fetch: fetchImpl })).resolves.toMatchObject({
+		await expect(
+			inspectShopifySession(config, { fetch: fetchImpl }),
+		).resolves.toMatchObject({
 			state: "login-required",
 		});
 	});

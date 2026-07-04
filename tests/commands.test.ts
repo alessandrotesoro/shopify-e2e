@@ -1,7 +1,7 @@
 import type { Page } from "playwright-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ResolvedShopifyE2EConfig } from "../src/config.js";
+import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 
 const mocks = vi.hoisted(() => ({
 	prepareShopifySession: vi.fn(),
@@ -13,8 +13,9 @@ const mocks = vi.hoisted(() => ({
 	saveAuthState: vi.fn(),
 }));
 
-vi.mock("../src/config.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/config.js")>();
+vi.mock("../src/shopify-e2e-config.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../src/shopify-e2e-config.js")>();
 
 	return {
 		...actual,
@@ -27,7 +28,8 @@ vi.mock("../src/shopify-session.js", () => ({
 }));
 
 vi.mock("../src/auth-state.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/auth-state.js")>();
+	const actual =
+		await importOriginal<typeof import("../src/auth-state.js")>();
 
 	return {
 		...actual,
@@ -47,7 +49,8 @@ vi.mock("../src/browser.js", async (importOriginal) => {
 });
 
 vi.mock("../src/test-runner.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/test-runner.js")>();
+	const actual =
+		await importOriginal<typeof import("../src/test-runner.js")>();
 
 	return {
 		...actual,
@@ -58,7 +61,9 @@ vi.mock("../src/test-runner.js", async (importOriginal) => {
 const { default: Open } = await import("../src/commands/open.js");
 const { default: Run } = await import("../src/commands/run.js");
 const { default: AuthSave } = await import("../src/commands/auth/save.js");
-const { default: AuthRestore } = await import("../src/commands/auth/restore.js");
+const { default: AuthRestore } = await import(
+	"../src/commands/auth/restore.js"
+);
 
 const config: ResolvedShopifyE2EConfig = {
 	appUrl: "https://app.test",
@@ -111,7 +116,15 @@ describe("commands", () => {
 
 	it("open parses config flags and prepares the Shopify session", async () => {
 		await Open.run(
-			["--shop", "example.myshopify.com", "--cdp-port", "9333", "--no-wait"],
+			[
+				"--shop",
+				"example.myshopify.com",
+				"--storefront-domain",
+				"store.example.com",
+				"--cdp-port",
+				"9333",
+				"--no-wait",
+			],
 			{ root: process.cwd() },
 		);
 
@@ -119,6 +132,7 @@ describe("commands", () => {
 			expect.objectContaining({
 				cdpPort: 9333,
 				shopDomain: "example.myshopify.com",
+				storefrontDomain: "store.example.com",
 			}),
 		);
 		expect(mocks.prepareShopifySession).toHaveBeenCalledWith(
@@ -168,7 +182,11 @@ describe("commands", () => {
 			appUrl: undefined,
 		});
 
-		await expect(Run.run(["--shop", "example.myshopify.com"], { root: process.cwd() })).rejects.toThrow(
+		await expect(
+			Run.run(["--shop", "example.myshopify.com"], {
+				root: process.cwd(),
+			}),
+		).rejects.toThrow(
 			/Missing live Shopify e2e prerequisites: SHOPIFY_E2E_APP_URL/,
 		);
 		expect(mocks.prepareShopifySession).not.toHaveBeenCalled();

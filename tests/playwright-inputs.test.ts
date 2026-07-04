@@ -61,7 +61,9 @@ describe("slow input helpers", () => {
 				inputDelayMs: 0,
 			}),
 		).resolves.toBe(true);
-		expect(visible.pressSequentially).toHaveBeenCalledWith("new", { delay: 0 });
+		expect(visible.pressSequentially).toHaveBeenCalledWith("new", {
+			delay: 0,
+		});
 	});
 
 	it("clicks the first usable named button", async () => {
@@ -83,9 +85,7 @@ describe("slow input helpers", () => {
 	});
 });
 
-function locatorDouble(
-	options: { value?: string; visible?: boolean } = {},
-) {
+function locatorDouble(options: { value?: string; visible?: boolean } = {}) {
 	return {
 		click: vi.fn(async () => undefined),
 		fill: vi.fn(async () => undefined),

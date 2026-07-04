@@ -45,19 +45,23 @@ describe("Shopify URL helpers", () => {
 	});
 
 	it("detects login and challenge URLs", () => {
-		expect(isShopifyLoginUrl("https://accounts.shopify.com/login")).toBe(true);
-		expect(
-			isShopifyLoginUrl("https://admin.shopify.com/store/example/challenge"),
-		).toBe(true);
-		expect(isShopifyLoginUrl("https://admin.shopify.com/store/example")).toBe(
-			false,
+		expect(isShopifyLoginUrl("https://accounts.shopify.com/login")).toBe(
+			true,
 		);
+		expect(
+			isShopifyLoginUrl(
+				"https://admin.shopify.com/store/example/challenge",
+			),
+		).toBe(true);
+		expect(
+			isShopifyLoginUrl("https://admin.shopify.com/store/example"),
+		).toBe(false);
 	});
 
 	it("normalizes websocket CDP URLs to HTTP devtools endpoints", () => {
-		expect(devtoolsVersionUrl("ws://127.0.0.1:9222/devtools/browser/id")).toBe(
-			"http://127.0.0.1:9222/json/version",
-		);
+		expect(
+			devtoolsVersionUrl("ws://127.0.0.1:9222/devtools/browser/id"),
+		).toBe("http://127.0.0.1:9222/json/version");
 		expect(devtoolsListUrl("http://127.0.0.1:9222")).toBe(
 			"http://127.0.0.1:9222/json/list",
 		);

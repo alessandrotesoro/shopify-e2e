@@ -1,6 +1,6 @@
 import type { Page } from "playwright-core";
 
-import type { ResolvedShopifyE2EConfig } from "../config.js";
+import type { ResolvedShopifyE2EConfig } from "../shopify-e2e-config.js";
 import { storefrontUrl } from "../urls.js";
 import {
 	clickFirstVisibleButton,
@@ -51,6 +51,12 @@ const checkoutBuyerParams: Array<[keyof ShopifyCheckoutBuyer, string]> = [
 	["phone", "checkout[shipping_address][phone]"],
 ];
 
+const storefrontPasswordSelectors = [
+	'input[name="password"]',
+	'input[type="password"]',
+	'input[name="customer[password]"]',
+];
+
 export async function ensureStorefrontUnlocked(
 	page: Page,
 	config: StorefrontConfig,
@@ -85,7 +91,10 @@ export async function resolveStorefrontVariantId(
 		throw new Error("Provide a Shopify product handle or variant ID.");
 	}
 
-	const productUrl = storefrontUrlFor(config, `/products/${product.handle}.js`);
+	const productUrl = storefrontUrlFor(
+		config,
+		`/products/${product.handle}.js`,
+	);
 	await gotoLiveShopifyPage(page, productUrl);
 
 	if (isStorefrontPasswordPage(page.url())) {
@@ -111,7 +120,9 @@ export async function resolveStorefrontVariantId(
 		productJson.variants?.[0];
 
 	if (!variant?.id) {
-		throw new Error(`No available variants were found for ${productJson.title}.`);
+		throw new Error(
+			`No available variants were found for ${productJson.title}.`,
+		);
 	}
 
 	return String(variant.id);
@@ -124,7 +135,13 @@ export async function readStorefrontProductJson(
 	const text = (await page.locator("body").innerText()).trim();
 
 	try {
-		return JSON.parse(text) as StorefrontProductJson;
+		const parsed = JSON.parse(text) as unknown;
+
+		if (isStorefrontProductJson(parsed)) {
+			return parsed;
+		}
+
+		throw new Error("response did not match Shopify product JSON shape");
 	} catch (error) {
 		throw new Error(
 			`Could not read Shopify product JSON for ${handle}. Make sure the handle exists and the storefront is unlocked.`,
@@ -153,7 +170,10 @@ export async function gotoCartPermalink(
 	config: StorefrontConfig,
 	buyer: ShopifyCheckoutBuyer = {},
 ): Promise<void> {
-	await gotoLiveShopifyPage(page, buildCartPermalinkUrl(variantId, config, buyer));
+	await gotoLiveShopifyPage(
+		page,
+		buildCartPermalinkUrl(variantId, config, buyer),
+	);
 }
 
 export function isStorefrontPasswordPage(value: string): boolean {
@@ -197,16 +217,22 @@ async function unlockCurrentStorefrontPasswordPage(
 
 	const filled = await fillFirstVisible(
 		page,
-		passwordSelectors(),
+		storefrontPasswordSelectors,
 		config.storefrontPassword,
 		options,
 	);
 
 	if (!filled) {
-		throw new Error("Storefront password page is visible, but no password field was found.");
+		throw new Error(
+			"Storefront password page is visible, but no password field was found.",
+		);
 	}
 
-	const clicked = await clickFirstVisibleButton(page, [/enter/i, /submit/i], options);
+	const clicked = await clickFirstVisibleButton(
+		page,
+		[/enter/i, /submit/i],
+		options,
+	);
 
 	if (!clicked) {
 		await page.keyboard.press("Enter").catch(() => undefined);
@@ -238,21 +264,9 @@ function isExpectedStorefrontPasswordPage(
 }
 
 function storefrontDomain(config: StorefrontConfig): string | undefined {
-	return cleanString(config.storefrontDomain ?? config.shopDomain);
-}
-
-function cleanString(value: string | undefined): string | undefined {
-	const trimmed = value?.trim();
+	const trimmed = (config.storefrontDomain ?? config.shopDomain)?.trim();
 
 	return trimmed ? trimmed : undefined;
-}
-
-function passwordSelectors(): string[] {
-	return [
-		'input[name="password"]',
-		'input[type="password"]',
-		'input[name="customer[password]"]',
-	];
 }
 
 function setCheckoutParam(
@@ -263,4 +277,32 @@ function setCheckoutParam(
 	if (value) {
 		url.searchParams.set(key, value);
 	}
+}
+
+function isStorefrontProductJson(
+	value: unknown,
+): value is StorefrontProductJson {
+	if (!isRecord(value) || typeof value.title !== "string") {
+		return false;
+	}
+
+	return (
+		value.variants === undefined ||
+		(Array.isArray(value.variants) &&
+			value.variants.every(isStorefrontVariant))
+	);
+}
+
+function isStorefrontVariant(
+	value: unknown,
+): value is NonNullable<StorefrontProductJson["variants"]>[number] {
+	return (
+		isRecord(value) &&
+		(typeof value.id === "number" || typeof value.id === "string") &&
+		(value.available === undefined || typeof value.available === "boolean")
+	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
 }

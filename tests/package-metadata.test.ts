@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readdir, readFile } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -24,4 +24,35 @@ describe("package metadata", () => {
 		expect(bin).toContain('import { execute } from "@oclif/core"');
 		expect(bin).toContain("await execute({ dir: import.meta.url })");
 	});
+
+	it("keeps only command modules in the oclif command discovery tree", async () => {
+		await expect(commandFiles(resolve("src/commands"))).resolves.toEqual([
+			"auth/restore.ts",
+			"auth/save.ts",
+			"doctor.ts",
+			"open.ts",
+			"run.ts",
+		]);
+	});
 });
+
+async function commandFiles(root: string): Promise<string[]> {
+	const files = await nestedFiles(root);
+
+	return files
+		.map((file) => relative(root, file).split(sep).join("/"))
+		.sort();
+}
+
+async function nestedFiles(dir: string): Promise<string[]> {
+	const entries = await readdir(dir, { withFileTypes: true });
+	const files = await Promise.all(
+		entries.map((entry) => {
+			const path = join(dir, entry.name);
+
+			return entry.isDirectory() ? nestedFiles(path) : [path];
+		}),
+	);
+
+	return files.flat();
+}

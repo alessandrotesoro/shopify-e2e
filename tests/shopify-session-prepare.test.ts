@@ -1,7 +1,7 @@
 import type { Browser, BrowserContext, Page } from "playwright-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ResolvedShopifyE2EConfig } from "../src/config.js";
+import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 
 const mocks = vi.hoisted(() => ({
 	connectToChrome: vi.fn(),

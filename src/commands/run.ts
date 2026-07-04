@@ -1,10 +1,9 @@
 import { Command, Flags } from "@oclif/core";
-
-import { configFlags, configOverridesFromFlags } from "../command-flags.js";
+import { configFlags, configOverridesFromFlags } from "../cli-config-flags.js";
 import {
 	missingLiveShopifyPrerequisites,
 	resolveShopifyE2EConfig,
-} from "../config.js";
+} from "../shopify-e2e-config.js";
 import { prepareShopifySession } from "../shopify-session.js";
 import { runTestCommand } from "../test-runner.js";
 
@@ -12,7 +11,8 @@ export default class Run extends Command {
 	static flags = {
 		...configFlags,
 		"test-command": Flags.string({
-			description: "Custom shell test command. Prefer config object mode for worker enforcement.",
+			description:
+				"Custom shell test command. Prefer config object mode for worker enforcement.",
 		}),
 		"test-file": Flags.string({
 			description: "Playwright test file or directory to run.",
@@ -21,7 +21,8 @@ export default class Run extends Command {
 		wait: Flags.boolean({
 			allowNo: true,
 			default: true,
-			description: "Wait and poll until Shopify Admin login is ready before tests run.",
+			description:
+				"Wait and poll until Shopify Admin login is ready before tests run.",
 		}),
 	};
 
@@ -32,13 +33,20 @@ export default class Run extends Command {
 		const { argv, flags } = await this.parse(Run);
 		const config = await resolveShopifyE2EConfig({
 			...configOverridesFromFlags(flags),
-			testCommand: typeof flags["test-command"] === "string" ? flags["test-command"] : undefined,
-			testFiles: Array.isArray(flags["test-file"]) ? flags["test-file"] : undefined,
+			testCommand:
+				typeof flags["test-command"] === "string"
+					? flags["test-command"]
+					: undefined,
+			testFiles: Array.isArray(flags["test-file"])
+				? flags["test-file"]
+				: undefined,
 		});
 		const missing = missingLiveShopifyPrerequisites(config);
 
 		if (missing.length > 0) {
-			this.error(`Missing live Shopify e2e prerequisites: ${missing.join(", ")}`);
+			this.error(
+				`Missing live Shopify e2e prerequisites: ${missing.join(", ")}`,
+			);
 		}
 
 		await prepareShopifySession(config, {

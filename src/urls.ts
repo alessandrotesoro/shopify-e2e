@@ -51,10 +51,8 @@ export function isShopifyLoginUrl(value: string): boolean {
 		}
 
 		if (host === "admin.shopify.com") {
-			return (
-				path.includes("/login") ||
-				path.includes("/challenge") ||
-				path.includes("/auth")
+			return ["/login", "/challenge", "/auth"].some((adminLoginPath) =>
+				path.includes(adminLoginPath),
 			);
 		}
 

@@ -1,7 +1,6 @@
 import { Command, Flags } from "@oclif/core";
-
-import { configFlags, configOverridesFromFlags } from "../command-flags.js";
-import { resolveShopifyE2EConfig } from "../config.js";
+import { configFlags, configOverridesFromFlags } from "../cli-config-flags.js";
+import { resolveShopifyE2EConfig } from "../shopify-e2e-config.js";
 import { prepareShopifySession } from "../shopify-session.js";
 
 export default class Open extends Command {
@@ -18,7 +17,9 @@ export default class Open extends Command {
 
 	async run(): Promise<void> {
 		const { flags } = await this.parse(Open);
-		const config = await resolveShopifyE2EConfig(configOverridesFromFlags(flags));
+		const config = await resolveShopifyE2EConfig(
+			configOverridesFromFlags(flags),
+		);
 		const session = await prepareShopifySession(config, {
 			log: (message) => this.log(message),
 			waitForLogin: flags.wait,
