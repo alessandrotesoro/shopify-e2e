@@ -1,34 +1,33 @@
 # shopify-e2e
 
-Reusable Shopify live E2E helper CLI and Playwright package.
+Reusable CLI and Playwright helpers for running live end-to-end tests against a
+Shopify store.
 
-This is the shared version of the Shopify test setup that started in Filebean. It handles the fussy part of live Shopify tests: Chrome CDP startup, a persistent Admin session, auth-state restore/save, one-tab Playwright access, and manual login prompts.
+`shopify-e2e` manages the shared browser and Shopify Admin session work that
+otherwise ends up copied into every project: Chrome CDP startup, persistent
+Chrome profiles, auth-state restore/save, manual login polling, one shared page,
+and a serialized Playwright test runner.
 
-App repositories still own the app-specific work: products, checkout assertions, webhook setup, seed data, and UI expectations.
+Product fixtures, checkout assertions, webhook setup, and application-specific
+test logic belong in the consuming project.
 
-Last reviewed: 2026-07-04
+## Requirements
 
-## when to use it
-
-Use this package when an app repo needs Playwright tests against a real Shopify shop. It is not meant for unit tests, fake checkout flows, or product-specific test data.
-
-You need:
-
-- Node 20 or newer
+- Node.js 20 or newer
 - Google Chrome
-- Playwright in the consuming app
-- a development or test Shopify shop
-- an app URL that Shopify can reach, usually an HTTPS tunnel
+- Playwright in the consuming project
+- A development or test Shopify store
+- A reachable application URL, usually an HTTPS tunnel during local development
 
-## install
+## Installation
 
-For a consuming app, install the published package and Playwright:
+Install the package in the project that owns the tests:
 
 ```sh
 npm install --save-dev shopify-e2e @playwright/test
 ```
 
-For local package development from this checkout:
+For local package development:
 
 ```sh
 npm install
@@ -36,15 +35,15 @@ npm run build
 npm link
 ```
 
-Then, in the app repo:
+Then link the package from the consuming project:
 
 ```sh
 npm link shopify-e2e
 ```
 
-## configure an app repo
+## Configuration
 
-Create `shopify-e2e.config.mjs` in the app repo:
+Create `shopify-e2e.config.mjs` in the consuming project:
 
 ```js
 import { defineShopifyE2EConfig } from "shopify-e2e";
@@ -55,7 +54,6 @@ export default defineShopifyE2EConfig({
 	cdpPort: 9222,
 	chromeProfilePath: ".shopify-e2e/chrome-profile",
 	authStatePath: ".shopify-e2e/auth/shopify-storage-state.json",
-	storefrontDomain: "www.example-store.com",
 	storefrontPassword: process.env.SHOPIFY_E2E_STOREFRONT_PASSWORD,
 	testFiles: ["e2e"],
 	testCommand: {
@@ -66,63 +64,52 @@ export default defineShopifyE2EConfig({
 });
 ```
 
-Shell values override the config file. A local env file also works through `SHOPIFY_E2E_ENV_FILE` or `--env-file`.
+Environment variables override config-file values. Use `SHOPIFY_E2E_ENV_FILE`
+or `--env-file` when values should be loaded from a local env file.
 
-| variable | purpose |
+| Config key | Environment variable |
 | --- | --- |
-| `SHOPIFY_E2E_SHOP_DOMAIN` | Shopify Admin shop, for example `example.myshopify.com` |
-| `SHOPIFY_E2E_APP_URL` | app URL used by the app under test |
-| `SHOPIFY_E2E_CDP_URL` | Chrome DevTools URL, for example `http://127.0.0.1:9222` |
-| `SHOPIFY_E2E_CDP_PORT` | CDP port when no full URL is set |
-| `SHOPIFY_E2E_CHROME_PATH` | Chrome executable path |
-| `SHOPIFY_E2E_CHROME_PROFILE_PATH` | persistent Chrome profile directory |
-| `SHOPIFY_E2E_AUTH_STATE_PATH` | Playwright storage-state file |
-| `SHOPIFY_E2E_STOREFRONT_DOMAIN` | storefront host when it differs from the Admin shop domain |
-| `SHOPIFY_E2E_STOREFRONT_PASSWORD` | password for a locked storefront |
-| `SHOPIFY_E2E_TEST_FILES` | comma-separated test files or directories |
-| `SHOPIFY_E2E_TEST_COMMAND` | custom shell command for the test runner |
+| `shopDomain` | `SHOPIFY_E2E_SHOP_DOMAIN` |
+| `appUrl` | `SHOPIFY_E2E_APP_URL` |
+| `cdpUrl` | `SHOPIFY_E2E_CDP_URL` |
+| `cdpPort` | `SHOPIFY_E2E_CDP_PORT` |
+| `chromeExecutablePath` | `SHOPIFY_E2E_CHROME_PATH` |
+| `chromeProfilePath` | `SHOPIFY_E2E_CHROME_PROFILE_PATH` |
+| `authStatePath` | `SHOPIFY_E2E_AUTH_STATE_PATH` |
+| `storefrontDomain` | `SHOPIFY_E2E_STOREFRONT_DOMAIN` |
+| `storefrontPassword` | `SHOPIFY_E2E_STOREFRONT_PASSWORD` |
+| `testFiles` | `SHOPIFY_E2E_TEST_FILES` |
+| `testCommand` | `SHOPIFY_E2E_TEST_COMMAND` |
 
-Keep Chrome profiles, auth state, and env files out of source control. Auth state contains Shopify cookies.
+Do not commit Chrome profiles, auth-state files, storefront passwords, or local
+env files. Auth state contains Shopify cookies.
 
-## CLI
+## CLI Commands
 
-Run commands from the app repo:
+Run commands from the project that contains the tests.
 
-```sh
-shopify-e2e doctor
-shopify-e2e open
-shopify-e2e auth save
-shopify-e2e auth restore
-shopify-e2e run
-```
+| Command | Purpose |
+| --- | --- |
+| `shopify-e2e doctor` | Check config, Chrome, CDP, auth state, runner setup, and the current Admin session. |
+| `shopify-e2e open` | Start Chrome if needed, restore auth state, open Shopify Admin, and wait for login. |
+| `shopify-e2e auth save` | Save storage state from the current CDP Chrome context. |
+| `shopify-e2e auth restore` | Restore saved auth state into Chrome when a state file exists. |
+| `shopify-e2e run` | Prepare the Admin session and run the configured test command. |
 
-`shopify-e2e doctor` checks config, Chrome, CDP, auth state, the test runner, and the current Shopify Admin session.
-
-`shopify-e2e open` starts Chrome when CDP is not reachable, restores saved auth state when it can, opens Shopify Admin, and waits for a logged-in session. If login is needed, finish it in Chrome. The CLI keeps polling and continues after the Admin session is ready.
-
-`shopify-e2e auth save` writes storage state from the current CDP Chrome context.
-
-`shopify-e2e auth restore` starts Chrome only when saved auth state exists, then restores it into the CDP context.
-
-`shopify-e2e run` prepares the Admin session, saves auth state after login, and runs the configured test command. The default Playwright mode appends `--workers=1`.
-
-Pass Playwright args after `--`:
+Pass Playwright arguments after `--`:
 
 ```sh
-shopify-e2e run -- --project=chromium --grep @live
+shopify-e2e run -- --project=chromium
 ```
 
-Useful flags:
+In the default Playwright mode, `shopify-e2e run` adds `--workers=1`. Custom
+shell commands are allowed, but the package cannot inspect them or enforce worker
+count inside them.
 
-```sh
-shopify-e2e run --shop example.myshopify.com --app-url https://example-app.ngrok.app
-shopify-e2e open --cdp-port 9333 --storefront-domain www.example-store.com
-shopify-e2e doctor --config shopify-e2e.config.mjs
-```
+## Playwright Setup
 
-## Playwright setup
-
-Use the package global setup when tests may be run directly with Playwright:
+Use the package global setup when live tests may also be run directly through
+Playwright:
 
 ```ts
 import { defineConfig } from "@playwright/test";
@@ -137,19 +124,25 @@ export default defineConfig({
 });
 ```
 
-The global setup only prepares Shopify when live mode is enabled. Set `SHOPIFY_E2E_LIVE=1` or `live: true` in config. The CLI sets `SHOPIFY_E2E_LIVE=1` for `shopify-e2e run`.
+`globalSetup` prepares Shopify only when live mode is enabled. Set
+`SHOPIFY_E2E_LIVE=1` or `live: true` in config. The CLI sets
+`SHOPIFY_E2E_LIVE=1` for `shopify-e2e run`.
 
-## Playwright API
+## Test API
 
-Use the context API in app tests. It resolves config once, reuses the shared Chrome page, and groups helpers by Shopify domain:
+Use `createShopifyE2E` from live tests. It resolves configuration once and
+returns a small context object for Admin, storefront, checkout, and input
+helpers.
 
 ```ts
+import { test } from "@playwright/test";
 import { createShopifyE2E } from "shopify-e2e";
 
 test("opens checkout", async () => {
 	const shopify = await createShopifyE2E();
 
 	await shopify.admin.prepare();
+
 	const variantId = await shopify.storefront.variantId({
 		handle: "test-product",
 	});
@@ -165,42 +158,49 @@ test("opens checkout", async () => {
 });
 ```
 
-`shopify.admin.prepare` starts Chrome when needed, restores auth state, opens Shopify Admin, waits for login when required, and saves auth state after a successful login.
+The context exposes:
 
-`shopify.admin.page` returns the shared live Shopify page.
+- `shopify.admin.prepare()` to start Chrome, restore auth state, open Shopify
+  Admin, wait for login, and save auth state after login.
+- `shopify.admin.page()` to return the shared live Shopify page.
+- `shopify.admin.goto(pathOrUrl)` to navigate the shared Admin page.
+- `shopify.storefront.variantId(product)` to use an explicit variant ID or
+  resolve a product handle through Shopify product JSON.
+- `shopify.storefront.unlock()` to enter the storefront password on the
+  configured storefront host.
+- `shopify.checkout.cartUrl(options)` to build a Shopify cart permalink.
+- `shopify.checkout.openCart(options)` to open a cart permalink on the shared
+  page.
+- `shopify.inputs` for slower input helpers when Shopify pages reject instant
+  typing.
 
-`shopify.admin.goto` navigates the shared Admin page to an Admin path or full URL. `shopify.admin.open` is the same operation with a friendlier name for setup scripts.
+## Advanced Imports
 
-`shopify.storefront.unlock` opens `/password` on the configured storefront and enters the storefront password only when the page is on the expected host.
-
-`shopify.storefront.variantId` accepts either a variant ID or a product handle. With a handle, it reads Shopify's product JSON and returns the first available variant.
-
-`shopify.checkout.cartUrl` and `shopify.checkout.openCart` create Shopify cart permalink flows. They can prefill buyer fields that Shopify accepts in checkout query parameters.
-
-`shopify.inputs` exposes slower input helpers for live Shopify pages where instant typing is brittle.
-
-Advanced helpers remain available through explicit subpath imports:
+The root package export is intentionally small. Lower-level helpers are available
+through explicit subpaths:
 
 ```ts
 import { resolveShopifyE2EConfig } from "shopify-e2e/config";
-import { createLiveShopifyPage } from "shopify-e2e/playwright";
 import { slowFill } from "shopify-e2e/inputs";
+import { createLiveShopifyPage } from "shopify-e2e/playwright";
 import { buildCartPermalinkUrl } from "shopify-e2e/storefront";
 ```
 
-## live-test rules
+Prefer `createShopifyE2E` in tests unless a lower-level helper is genuinely
+needed.
 
-Live Shopify tests must be boring and serialized:
+## Live Test Constraints
 
-- run one worker
-- use one shared Chrome tab/page
-- avoid parallel checkout tabs
-- keep product setup and checkout assertions in the app repo
-- do not commit auth state, Chrome profiles, storefront passwords, or `.env` files
+Live Shopify tests should stay serialized:
 
-The default CLI runner enforces one worker for Playwright mode. If you use a custom shell command, `shopify-e2e` prints a warning because it cannot inspect the command.
+- Use one Playwright worker.
+- Use the shared Chrome tab/page.
+- Do not run parallel checkout tabs.
+- Keep product data, checkout assertions, and webhook setup in the consuming
+  project.
+- Keep session files and secrets out of git.
 
-## troubleshooting
+## Troubleshooting
 
 Start with:
 
@@ -208,35 +208,30 @@ Start with:
 shopify-e2e doctor
 ```
 
-If Chrome is not found, set `SHOPIFY_E2E_CHROME_PATH` or pass `--chrome-path`.
+Common issues:
 
-If CDP is not reachable, the CLI will try to start Chrome with the configured profile and port. Check that another Chrome process is not already using the same profile.
+- Chrome is not found: set `SHOPIFY_E2E_CHROME_PATH` or pass `--chrome-path`.
+- CDP is not reachable: check the configured port and Chrome profile path.
+- The CLI is waiting at login: complete Shopify Admin login in the Chrome
+  window.
+- Storefront unlock fails: set `SHOPIFY_E2E_STOREFRONT_PASSWORD`. If the store
+  redirects to another host, set `SHOPIFY_E2E_STOREFRONT_DOMAIN`.
 
-If the CLI waits at login, complete Shopify Admin login in the Chrome window it opened. Once the URL is a non-login Admin page for the configured shop, the CLI continues.
-
-If a password-protected storefront fails, check `SHOPIFY_E2E_STOREFRONT_PASSWORD`. If the storefront redirects to a custom domain, set `SHOPIFY_E2E_STOREFRONT_DOMAIN`.
-
-## develop this package
+## Development
 
 ```sh
 npm install
+npm run lint
 npm run typecheck
 npm test
 npm run build
 ```
 
-The command layout follows oclif file discovery:
+The CLI uses oclif file discovery:
 
-- `src/commands/open.ts` becomes `shopify-e2e open`
-- `src/commands/auth/save.ts` becomes `shopify-e2e auth save`
-- `src/commands/auth/restore.ts` becomes `shopify-e2e auth restore`
+- `src/commands/open.ts` maps to `shopify-e2e open`
+- `src/commands/auth/save.ts` maps to `shopify-e2e auth save`
+- `src/commands/auth/restore.ts` maps to `shopify-e2e auth restore`
 
-Keep reusable Shopify session behavior in this package. Keep app data, product IDs, checkout assertions, and webhook wiring in the app repositories.
-
-## repository
-
-Private source repository: `git@github.com:alessandrotesoro/shopify-e2e.git`
-
-## license
-
-MIT
+Reusable Shopify session behavior belongs in this package. Application-specific
+checkout logic belongs in the project that owns the tests.
