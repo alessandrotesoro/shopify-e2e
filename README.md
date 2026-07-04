@@ -235,3 +235,7 @@ The CLI uses oclif file discovery:
 
 Reusable Shopify session behavior belongs in this package. Application-specific
 checkout logic belongs in the project that owns the tests.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
