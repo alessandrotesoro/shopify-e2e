@@ -13,10 +13,11 @@ describe("README", () => {
 			"shopify-e2e auth restore",
 			"shopify-e2e run",
 			"globalSetup",
-			"createLiveShopifyPage",
-			"openLiveShopifyPage",
-			"gotoLiveShopifyPage",
-			"slowFill",
+			"createShopifyE2E",
+			"defineShopifyE2EConfig",
+			"shopify.admin.prepare",
+			"shopify.storefront.variantId",
+			"shopify.checkout.openCart",
 		]) {
 			expect(readme).toContain(expected);
 		}

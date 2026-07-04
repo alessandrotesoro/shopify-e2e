@@ -1,8 +1,10 @@
+import type { Page } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
 
 import {
 	buildCartPermalinkUrl,
 	ensureStorefrontUnlocked,
+	gotoCartPermalink,
 	isStorefrontPasswordPage,
 	resolveStorefrontVariantId,
 } from "../src/playwright/storefront.js";
@@ -15,16 +17,20 @@ const config = {
 describe("storefront helpers", () => {
 	it("builds Shopify cart permalinks with optional checkout buyer fields", () => {
 		const url = new URL(
-			buildCartPermalinkUrl("12345", config, {
-				address1: "500 7th Avenue",
-				city: "New York",
-				countryCode: "US",
-				email: "buyer@example.com",
-				firstName: "Ada",
-				lastName: "Lovelace",
-				phone: "5555555555",
-				postalCode: "10018",
-				provinceCode: "NY",
+			buildCartPermalinkUrl({
+				buyer: {
+					address1: "500 7th Avenue",
+					city: "New York",
+					countryCode: "US",
+					email: "buyer@example.com",
+					firstName: "Ada",
+					lastName: "Lovelace",
+					phone: "5555555555",
+					postalCode: "10018",
+					provinceCode: "NY",
+				},
+				config,
+				variantId: "12345",
 			}),
 		);
 
@@ -43,19 +49,48 @@ describe("storefront helpers", () => {
 		});
 	});
 
+	it("navigates Shopify cart permalinks with object options", async () => {
+		const page = pageDouble();
+
+		await gotoCartPermalink({
+			buyer: {
+				email: "buyer@example.com",
+			},
+			config,
+			page,
+			quantity: 2,
+			variantId: "12345",
+		});
+
+		expect(page.goto).toHaveBeenCalledTimes(1);
+		const call = page.goto.mock.calls[0];
+
+		if (!call) {
+			throw new Error("Expected cart permalink navigation.");
+		}
+
+		const [url, options] = call;
+		const parsed = new URL(url);
+
+		expect(parsed.origin).toBe("https://example.myshopify.com");
+		expect(parsed.pathname).toBe("/cart/12345:2");
+		expect(parsed.searchParams.get("checkout[email]")).toBe(
+			"buyer@example.com",
+		);
+		expect(options).toEqual({ waitUntil: "domcontentloaded" });
+	});
+
 	it("returns explicit variant IDs without storefront navigation", async () => {
 		const page = pageDouble();
 
 		await expect(
-			resolveStorefrontVariantId(
-				page as never,
-				{ variantId: 9988 },
+			resolveStorefrontVariantId({
+				page,
+				product: { variantId: 9988 },
 				config,
-				{
-					actionDelayMs: 0,
-					inputDelayMs: 0,
-				},
-			),
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
 		).resolves.toBe("9988");
 		expect(page.goto).not.toHaveBeenCalled();
 	});
@@ -72,12 +107,13 @@ describe("storefront helpers", () => {
 		});
 
 		await expect(
-			resolveStorefrontVariantId(
-				page as never,
-				{ handle: "digital-download" },
-				{ shopDomain: config.shopDomain },
-				{ actionDelayMs: 0, inputDelayMs: 0 },
-			),
+			resolveStorefrontVariantId({
+				page,
+				product: { handle: "digital-download" },
+				config: { shopDomain: config.shopDomain },
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
 		).resolves.toBe("222");
 		expect(page.goto).toHaveBeenCalledWith(
 			"https://example.myshopify.com/products/digital-download.js",
@@ -94,12 +130,13 @@ describe("storefront helpers", () => {
 		});
 
 		await expect(
-			resolveStorefrontVariantId(
-				page as never,
-				{ handle: "digital-download" },
-				{ shopDomain: config.shopDomain },
-				{ actionDelayMs: 0, inputDelayMs: 0 },
-			),
+			resolveStorefrontVariantId({
+				page,
+				product: { handle: "digital-download" },
+				config: { shopDomain: config.shopDomain },
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
 		).rejects.toThrow(
 			"Could not read Shopify product JSON for digital-download",
 		);
@@ -115,12 +152,13 @@ describe("storefront helpers", () => {
 		});
 
 		await expect(
-			resolveStorefrontVariantId(
-				page as never,
-				{ handle: "digital-download" },
+			resolveStorefrontVariantId({
+				page,
+				product: { handle: "digital-download" },
 				config,
-				{ actionDelayMs: 0, inputDelayMs: 0 },
-			),
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
 		).resolves.toBe("222");
 		expect(page.goto).toHaveBeenNthCalledWith(
 			1,
@@ -148,12 +186,13 @@ describe("storefront helpers", () => {
 		});
 
 		await expect(
-			resolveStorefrontVariantId(
-				page as never,
-				{ handle: "digital-download" },
+			resolveStorefrontVariantId({
+				page,
+				product: { handle: "digital-download" },
 				config,
-				{ actionDelayMs: 0, inputDelayMs: 0 },
-			),
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
 		).rejects.toThrow("Refusing to enter the storefront password");
 		expect(page.passwordLocator.pressSequentially).not.toHaveBeenCalled();
 	});
@@ -169,15 +208,16 @@ describe("storefront helpers", () => {
 		});
 
 		await expect(
-			resolveStorefrontVariantId(
-				page as never,
-				{ handle: "digital-download" },
-				{
+			resolveStorefrontVariantId({
+				page,
+				product: { handle: "digital-download" },
+				config: {
 					...config,
 					storefrontDomain: "store.example.com",
 				},
-				{ actionDelayMs: 0, inputDelayMs: 0 },
-			),
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
 		).resolves.toBe("222");
 		expect(page.goto).toHaveBeenNthCalledWith(
 			1,
@@ -196,12 +236,13 @@ describe("storefront helpers", () => {
 		const page = pageDouble({ productPasswordBlocks: 1 });
 
 		await expect(
-			resolveStorefrontVariantId(
-				page as never,
-				{ handle: "digital-download" },
-				{ shopDomain: config.shopDomain },
-				{ actionDelayMs: 0, inputDelayMs: 0 },
-			),
+			resolveStorefrontVariantId({
+				page,
+				product: { handle: "digital-download" },
+				config: { shopDomain: config.shopDomain },
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
 		).rejects.toThrow("Set SHOPIFY_E2E_STOREFRONT_PASSWORD");
 		expect(page.passwordLocator.pressSequentially).not.toHaveBeenCalled();
 	});
@@ -210,12 +251,13 @@ describe("storefront helpers", () => {
 		const page = pageDouble({ productPasswordBlocks: 2 });
 
 		await expect(
-			resolveStorefrontVariantId(
-				page as never,
-				{ handle: "digital-download" },
+			resolveStorefrontVariantId({
+				page,
+				product: { handle: "digital-download" },
 				config,
-				{ actionDelayMs: 0, inputDelayMs: 0 },
-			),
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
 		).rejects.toThrow("Check SHOPIFY_E2E_STOREFRONT_PASSWORD");
 		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith(
 			"secret",
@@ -231,7 +273,9 @@ describe("storefront helpers", () => {
 		});
 
 		await expect(
-			ensureStorefrontUnlocked(page as never, config, {
+			ensureStorefrontUnlocked({
+				page,
+				config,
 				actionDelayMs: 0,
 				inputDelayMs: 0,
 			}),
@@ -262,14 +306,26 @@ describe("storefront helpers", () => {
 	});
 });
 
-function pageDouble(
-	options: {
-		bodyText?: string;
-		currentUrl?: string;
-		productPasswordBlocks?: number;
-		productPasswordUrl?: string;
-	} = {},
-) {
+interface PageDoubleOptions {
+	bodyText?: string;
+	currentUrl?: string;
+	productPasswordBlocks?: number;
+	productPasswordUrl?: string;
+}
+
+interface PageDoubleState {
+	currentUrl: string;
+	productPasswordBlocks: number;
+}
+
+type StorefrontLocatorDouble = ReturnType<typeof locatorDouble>;
+type StorefrontPageDouble = Page & {
+	goto: ReturnType<typeof createGotoMock>;
+	passwordLocator: StorefrontLocatorDouble;
+	submitButton: StorefrontLocatorDouble;
+};
+
+function pageDouble(options: PageDoubleOptions = {}): StorefrontPageDouble {
 	const state = {
 		currentUrl: options.currentUrl ?? "about:blank",
 		productPasswordBlocks: options.productPasswordBlocks ?? 0,
@@ -280,7 +336,7 @@ function pageDouble(
 	const passwordLocator = locatorDouble();
 	const submitButton = locatorDouble();
 
-	return {
+	const page = {
 		get passwordLocator() {
 			return passwordLocator;
 		},
@@ -291,18 +347,7 @@ function pageDouble(
 		getByRole: vi.fn(() => ({
 			first: () => submitButton,
 		})),
-		goto: vi.fn(async (url: string) => {
-			if (state.productPasswordBlocks > 0 && url.includes("/products/")) {
-				state.productPasswordBlocks -= 1;
-				state.currentUrl =
-					options.productPasswordUrl ??
-					"https://example.myshopify.com/password";
-
-				return;
-			}
-
-			state.currentUrl = url;
-		}),
+		goto: createGotoMock(state, options),
 		keyboard: {
 			press: vi.fn(async () => undefined),
 		},
@@ -313,6 +358,25 @@ function pageDouble(
 		url: vi.fn(() => state.currentUrl),
 		waitForLoadState: vi.fn(async () => undefined),
 	};
+
+	return page as unknown as StorefrontPageDouble;
+}
+
+function createGotoMock(state: PageDoubleState, options: PageDoubleOptions) {
+	return vi.fn(async (url: string, _options?: unknown) => {
+		if (state.productPasswordBlocks > 0 && url.includes("/products/")) {
+			state.productPasswordBlocks -= 1;
+			state.currentUrl =
+				options.productPasswordUrl ??
+				"https://example.myshopify.com/password";
+
+			return null;
+		}
+
+		state.currentUrl = url;
+
+		return null;
+	});
 }
 
 function locatorDouble() {

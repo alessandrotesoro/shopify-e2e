@@ -9,10 +9,20 @@ describe("package metadata", () => {
 			await readFile(resolve("package.json"), "utf8"),
 		) as {
 			bin: Record<string, string>;
+			exports: Record<string, unknown>;
 			oclif: Record<string, unknown>;
 		};
 
 		expect(packageJson.bin["shopify-e2e"]).toBe("./bin/run.js");
+		expect(Object.keys(packageJson.exports).sort()).toEqual([
+			".",
+			"./config",
+			"./inputs",
+			"./package.json",
+			"./playwright",
+			"./storefront",
+			"./urls",
+		]);
 		expect(packageJson.oclif.bin).toBe("shopify-e2e");
 		expect(packageJson.oclif.commands).toBe("./dist/commands");
 		expect(packageJson.oclif.topicSeparator).toBe(" ");

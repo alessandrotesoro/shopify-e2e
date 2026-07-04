@@ -47,7 +47,9 @@ npm link shopify-e2e
 Create `shopify-e2e.config.mjs` in the app repo:
 
 ```js
-export default {
+import { defineShopifyE2EConfig } from "shopify-e2e";
+
+export default defineShopifyE2EConfig({
 	shopDomain: "example.myshopify.com",
 	appUrl: "https://example-app.ngrok.app",
 	cdpPort: 9222,
@@ -61,7 +63,7 @@ export default {
 		args: ["playwright", "test"],
 		mode: "playwright",
 	},
-};
+});
 ```
 
 Shell values override the config file. A local env file also works through `SHOPIFY_E2E_ENV_FILE` or `--env-file`.
@@ -137,39 +139,54 @@ export default defineConfig({
 
 The global setup only prepares Shopify when live mode is enabled. Set `SHOPIFY_E2E_LIVE=1` or `live: true` in config. The CLI sets `SHOPIFY_E2E_LIVE=1` for `shopify-e2e run`.
 
-## Playwright helpers
+## Playwright API
 
-The package exports helpers for app tests:
+Use the context API in app tests. It resolves config once, reuses the shared Chrome page, and groups helpers by Shopify domain:
 
 ```ts
-import {
-	buildCartPermalinkUrl,
-	createLiveShopifyPage,
-	ensureStorefrontUnlocked,
-	gotoCartPermalink,
-	gotoLiveShopifyPage,
-	openLiveShopifyPage,
-	resolveShopifyE2EConfig,
-	resolveStorefrontVariantId,
-	slowClick,
-	slowFill,
-	slowSelect,
-} from "shopify-e2e";
+import { createShopifyE2E } from "shopify-e2e";
+
+test("opens checkout", async () => {
+	const shopify = await createShopifyE2E();
+
+	await shopify.admin.prepare();
+	const variantId = await shopify.storefront.variantId({
+		handle: "test-product",
+	});
+
+	await shopify.checkout.openCart({
+		variantId,
+		buyer: {
+			email: "buyer@example.com",
+			firstName: "Ada",
+			lastName: "Lovelace",
+		},
+	});
+});
 ```
 
-`createLiveShopifyPage` connects to the configured CDP Chrome session and returns the shared page.
+`shopify.admin.prepare` starts Chrome when needed, restores auth state, opens Shopify Admin, waits for login when required, and saves auth state after a successful login.
 
-`openLiveShopifyPage` does the same thing, then navigates to a URL.
+`shopify.admin.page` returns the shared live Shopify page.
 
-`gotoLiveShopifyPage` navigates an existing page with the package's live-session defaults.
+`shopify.admin.goto` navigates the shared Admin page to an Admin path or full URL. `shopify.admin.open` is the same operation with a friendlier name for setup scripts.
 
-`ensureStorefrontUnlocked` opens `/password` on the configured storefront and enters the storefront password only when the page is on the expected host.
+`shopify.storefront.unlock` opens `/password` on the configured storefront and enters the storefront password only when the page is on the expected host.
 
-`resolveStorefrontVariantId` accepts either a variant ID or a product handle. With a handle, it reads Shopify's product JSON and returns the first available variant.
+`shopify.storefront.variantId` accepts either a variant ID or a product handle. With a handle, it reads Shopify's product JSON and returns the first available variant.
 
-`buildCartPermalinkUrl` and `gotoCartPermalink` create Shopify cart permalink flows. They can prefill buyer fields that Shopify accepts in checkout query parameters.
+`shopify.checkout.cartUrl` and `shopify.checkout.openCart` create Shopify cart permalink flows. They can prefill buyer fields that Shopify accepts in checkout query parameters.
 
-The slow input helpers are there for live Shopify pages where instant typing is brittle.
+`shopify.inputs` exposes slower input helpers for live Shopify pages where instant typing is brittle.
+
+Advanced helpers remain available through explicit subpath imports:
+
+```ts
+import { resolveShopifyE2EConfig } from "shopify-e2e/config";
+import { createLiveShopifyPage } from "shopify-e2e/playwright";
+import { slowFill } from "shopify-e2e/inputs";
+import { buildCartPermalinkUrl } from "shopify-e2e/storefront";
+```
 
 ## live-test rules
 

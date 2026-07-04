@@ -12,7 +12,27 @@
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
-		"./package.json": "./package.json"
+		"./config": {
+			"types": "./dist/config-api.d.ts",
+			"import": "./dist/config-api.js"
+		},
+		"./inputs": {
+			"types": "./dist/playwright/inputs.d.ts",
+			"import": "./dist/playwright/inputs.js"
+		},
+		"./package.json": "./package.json",
+		"./playwright": {
+			"types": "./dist/playwright/index.d.ts",
+			"import": "./dist/playwright/index.js"
+		},
+		"./storefront": {
+			"types": "./dist/playwright/storefront.d.ts",
+			"import": "./dist/playwright/storefront.js"
+		},
+		"./urls": {
+			"types": "./dist/urls.d.ts",
+			"import": "./dist/urls.js"
+		}
 	},
 	"files": [
 		"bin",

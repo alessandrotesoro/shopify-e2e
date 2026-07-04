@@ -1,4 +1,6 @@
-export default {
+import { defineShopifyE2EConfig } from "shopify-e2e";
+
+export default defineShopifyE2EConfig({
 	shopDomain: "example.myshopify.com",
 	appUrl: "https://example-app.ngrok.app",
 	cdpPort: 9222,
@@ -11,4 +13,4 @@ export default {
 		args: ["playwright", "test"],
 		mode: "playwright",
 	},
-};
+});

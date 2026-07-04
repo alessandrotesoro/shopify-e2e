@@ -1,0 +1,16 @@
+export {
+	defineShopifyE2EConfig,
+	ensureParentDirectory,
+	hasLiveShopifyPrerequisites,
+	liveShopifySkipReason,
+	missingLiveShopifyPrerequisites,
+	parseEnvFile,
+	type ResolveConfigOptions,
+	type ResolvedShopifyE2EConfig,
+	type ResolvedTestCommand,
+	resolveShopifyE2EConfig,
+	type ShopifyE2EConfig,
+	type TestCommandInput,
+	type TestCommandMode,
+	type TestCommandObject,
+} from "./shopify-e2e-config.js";

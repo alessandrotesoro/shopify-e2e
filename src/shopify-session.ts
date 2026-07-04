@@ -43,7 +43,6 @@ export interface ShopifySessionInspection {
 export interface LiveShopifyPage {
 	context: BrowserContext;
 	page: Page;
-	close(): Promise<void>;
 }
 
 export interface PreparedShopifySession extends LiveShopifyPage {
@@ -100,7 +99,6 @@ export async function prepareShopifySession(
 		authStateSaved,
 		browser,
 		chromeStarted: chrome.started,
-		close: async () => undefined,
 		context,
 		page,
 	};
@@ -117,7 +115,6 @@ export async function createLiveShopifyPage(
 	page.setDefaultNavigationTimeout(45_000);
 
 	return {
-		close: async () => undefined,
 		context,
 		page,
 	};
@@ -132,8 +129,9 @@ export async function openLiveShopifyPage(
 	try {
 		await gotoLiveShopifyPage(session.page, url);
 	} catch (error) {
-		await session.close();
-		throw error;
+		throw new Error(`Could not open live Shopify page at ${url}.`, {
+			cause: error,
+		});
 	}
 
 	return session;

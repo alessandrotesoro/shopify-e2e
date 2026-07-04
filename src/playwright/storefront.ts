@@ -1,5 +1,6 @@
 import type { Page } from "playwright-core";
 
+import { isRecord } from "../guards.js";
 import type { ResolvedShopifyE2EConfig } from "../shopify-e2e-config.js";
 import { storefrontUrl } from "../urls.js";
 import {
@@ -39,6 +40,29 @@ export type StorefrontConfig = Pick<
 	"shopDomain" | "storefrontDomain" | "storefrontPassword"
 >;
 
+export interface StorefrontUnlockOptions extends SlowInputOptions {
+	config: StorefrontConfig;
+	page: Page;
+}
+
+export interface StorefrontVariantIdOptions extends SlowInputOptions {
+	config: StorefrontConfig;
+	page: Page;
+	product: StorefrontProductInput;
+}
+
+export interface CartPermalinkUrlOptions {
+	buyer?: ShopifyCheckoutBuyer;
+	config: StorefrontConfig;
+	quantity?: number;
+	variantId: number | string;
+}
+
+export interface CartPermalinkNavigationOptions
+	extends CartPermalinkUrlOptions {
+	page: Page;
+}
+
 const checkoutBuyerParams: Array<[keyof ShopifyCheckoutBuyer, string]> = [
 	["email", "checkout[email]"],
 	["firstName", "checkout[shipping_address][first_name]"],
@@ -57,11 +81,11 @@ const storefrontPasswordSelectors = [
 	'input[name="customer[password]"]',
 ];
 
-export async function ensureStorefrontUnlocked(
-	page: Page,
-	config: StorefrontConfig,
-	options: SlowInputOptions = {},
-): Promise<boolean> {
+export async function ensureStorefrontUnlocked({
+	config,
+	page,
+	...options
+}: StorefrontUnlockOptions): Promise<boolean> {
 	if (!config.storefrontPassword) {
 		return false;
 	}
@@ -77,12 +101,12 @@ export async function ensureStorefrontUnlocked(
 	return true;
 }
 
-export async function resolveStorefrontVariantId(
-	page: Page,
-	product: StorefrontProductInput,
-	config: StorefrontConfig,
-	options: SlowInputOptions = {},
-): Promise<string> {
+export async function resolveStorefrontVariantId({
+	config,
+	page,
+	product,
+	...options
+}: StorefrontVariantIdOptions): Promise<string> {
 	if (product.variantId) {
 		return String(product.variantId);
 	}
@@ -150,12 +174,15 @@ export async function readStorefrontProductJson(
 	}
 }
 
-export function buildCartPermalinkUrl(
-	variantId: number | string,
-	config: StorefrontConfig,
-	buyer: ShopifyCheckoutBuyer = {},
-): string {
-	const url = new URL(storefrontUrlFor(config, `/cart/${variantId}:1`));
+export function buildCartPermalinkUrl({
+	buyer = {},
+	config,
+	quantity = 1,
+	variantId,
+}: CartPermalinkUrlOptions): string {
+	const url = new URL(
+		storefrontUrlFor(config, `/cart/${variantId}:${quantity}`),
+	);
 
 	for (const [field, param] of checkoutBuyerParams) {
 		setCheckoutParam(url, param, buyer[field]);
@@ -164,16 +191,11 @@ export function buildCartPermalinkUrl(
 	return url.toString();
 }
 
-export async function gotoCartPermalink(
-	page: Page,
-	variantId: number | string,
-	config: StorefrontConfig,
-	buyer: ShopifyCheckoutBuyer = {},
-): Promise<void> {
-	await gotoLiveShopifyPage(
-		page,
-		buildCartPermalinkUrl(variantId, config, buyer),
-	);
+export async function gotoCartPermalink({
+	page,
+	...options
+}: CartPermalinkNavigationOptions): Promise<void> {
+	await gotoLiveShopifyPage(page, buildCartPermalinkUrl(options));
 }
 
 export function isStorefrontPasswordPage(value: string): boolean {
@@ -301,8 +323,4 @@ function isStorefrontVariant(
 		(typeof value.id === "number" || typeof value.id === "string") &&
 		(value.available === undefined || typeof value.available === "boolean")
 	);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
 }

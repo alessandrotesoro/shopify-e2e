@@ -8,6 +8,7 @@ import {
 	type Page,
 } from "playwright-core";
 import { waitForCdp } from "./browser.js";
+import { isRecord } from "./guards.js";
 import {
 	ensureParentDirectory,
 	type ResolvedShopifyE2EConfig,
@@ -204,10 +205,6 @@ function isLocalStorageEntryArray(
 				typeof entry.value === "string",
 		)
 	);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
 }
 
 export async function firstOpenPage(context: BrowserContext): Promise<Page> {
