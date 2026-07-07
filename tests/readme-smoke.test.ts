@@ -13,6 +13,7 @@ describe("README", () => {
 			"shopify-e2e auth restore",
 			"shopify-e2e run",
 			"globalSetup",
+			"globalSetupPath",
 			"createShopifyE2E",
 			"defineShopifyE2EConfig",
 			"shopify.admin.prepare",

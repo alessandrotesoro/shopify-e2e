@@ -63,12 +63,12 @@ export async function saveAuthState(
 	config: ResolvedShopifyE2EConfig,
 	context?: BrowserContext,
 ): Promise<{ path: string }> {
-	const targetContext = context ?? (await connectToChrome(config)).context;
+	return withChromeContext(config, context, async (targetContext) => {
+		await ensureParentDirectory(config.authStatePath);
+		await targetContext.storageState({ path: config.authStatePath });
 
-	await ensureParentDirectory(config.authStatePath);
-	await targetContext.storageState({ path: config.authStatePath });
-
-	return { path: config.authStatePath };
+		return { path: config.authStatePath };
+	});
 }
 
 export function authStateExists(config: ResolvedShopifyE2EConfig): boolean {
@@ -80,32 +80,77 @@ export async function restoreAuthState(
 	context?: BrowserContext,
 	page?: Page,
 ): Promise<AuthStateRestoreResult> {
-	if (!authStateExists(config)) {
+	const contents = await readAuthStateFile(config.authStatePath);
+
+	if (contents === null) {
 		return { path: config.authStatePath, restored: false };
 	}
 
-	const targetContext = context ?? (await connectToChrome(config)).context;
-	const state = parseStorageStateFile({
-		contents: await readFile(config.authStatePath, "utf8"),
-		path: config.authStatePath,
-	});
-
-	if (Array.isArray(state.cookies) && state.cookies.length > 0) {
-		await targetContext.addCookies(state.cookies);
-	}
-
-	const targetPage = page ?? (await firstOpenPage(targetContext));
-
-	await restoreLocalStorage(targetPage, state.origins);
-
-	if (config.shopDomain) {
-		await targetPage.goto(adminStoreUrl(config.shopDomain), {
-			timeout: 45_000,
-			waitUntil: "domcontentloaded",
+	return withChromeContext(config, context, async (targetContext) => {
+		const state = parseStorageStateFile({
+			contents,
+			path: config.authStatePath,
 		});
+
+		if (Array.isArray(state.cookies) && state.cookies.length > 0) {
+			await targetContext.addCookies(state.cookies);
+		}
+
+		const targetPage = page ?? (await firstOpenPage(targetContext));
+
+		await restoreLocalStorage(
+			targetPage,
+			state.origins,
+			config.authStatePath,
+		);
+
+		if (config.shopDomain) {
+			await targetPage.goto(adminStoreUrl(config.shopDomain), {
+				timeout: 45_000,
+				waitUntil: "domcontentloaded",
+			});
+		}
+
+		return { path: config.authStatePath, restored: true };
+	});
+}
+
+async function withChromeContext<T>(
+	config: ResolvedShopifyE2EConfig,
+	context: BrowserContext | undefined,
+	callback: (context: BrowserContext) => Promise<T>,
+): Promise<T> {
+	let connection: ConnectedChrome | null = null;
+	let targetContext = context;
+
+	if (!targetContext) {
+		connection = await connectToChrome(config);
+		targetContext = connection.context;
 	}
 
-	return { path: config.authStatePath, restored: true };
+	try {
+		return await callback(targetContext);
+	} finally {
+		if (connection?.browser.isConnected()) {
+			await connection.browser.close();
+		}
+	}
+}
+
+async function readAuthStateFile(path: string): Promise<string | null> {
+	try {
+		return await readFile(path, "utf8");
+	} catch (error) {
+		if (isNodeError(error) && error.code === "ENOENT") {
+			return null;
+		}
+
+		throw error;
+	}
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
 }
 
 interface ParseStorageStateFileArgs {
@@ -216,6 +261,7 @@ export async function firstOpenPage(context: BrowserContext): Promise<Page> {
 async function restoreLocalStorage(
 	page: Page,
 	origins: StorageStateFile["origins"],
+	path: string,
 ): Promise<void> {
 	if (!Array.isArray(origins)) {
 		return;
@@ -226,23 +272,35 @@ async function restoreLocalStorage(
 			continue;
 		}
 
-		await page
-			.goto(origin.origin, {
+		try {
+			await page.goto(origin.origin, {
 				timeout: 15_000,
 				waitUntil: "domcontentloaded",
-			})
-			.catch(() => undefined);
-
-		if (!page.url().startsWith(origin.origin)) {
-			continue;
+			});
+		} catch (error) {
+			throw new Error(
+				`Could not restore localStorage for ${origin.origin} from auth state at ${path}: navigation failed.`,
+				{ cause: error },
+			);
 		}
 
-		await page
-			.evaluate((entries) => {
+		if (!page.url().startsWith(origin.origin)) {
+			throw new Error(
+				`Could not restore localStorage for ${origin.origin} from auth state at ${path}: browser left the origin.`,
+			);
+		}
+
+		try {
+			await page.evaluate((entries) => {
 				for (const entry of entries) {
 					window.localStorage.setItem(entry.name, entry.value);
 				}
-			}, origin.localStorage)
-			.catch(() => undefined);
+			}, origin.localStorage);
+		} catch (error) {
+			throw new Error(
+				`Could not restore localStorage for ${origin.origin} from auth state at ${path}: write failed.`,
+				{ cause: error },
+			);
+		}
 	}
 }

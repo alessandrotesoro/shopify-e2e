@@ -1,15 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 import type { ShopifyE2EConfig } from "../shopify-e2e-config.js";
 import { cleanString, parseBoolean, splitList } from "./primitives.js";
 
 export function parseEnvFile(path: string): NodeJS.ProcessEnv {
-	if (!existsSync(path)) {
+	const contents = readEnvFile(path);
+
+	if (contents === null) {
 		return {};
 	}
 
 	const entries: NodeJS.ProcessEnv = {};
-	const contents = readFileSync(path, "utf8");
 
 	for (const line of contents.split(/\r?\n/)) {
 		const parsed = parseEnvLine(line);
@@ -20,6 +21,22 @@ export function parseEnvFile(path: string): NodeJS.ProcessEnv {
 	}
 
 	return entries;
+}
+
+function readEnvFile(path: string): string | null {
+	try {
+		return readFileSync(path, "utf8");
+	} catch (error) {
+		if (isNodeError(error) && error.code === "ENOENT") {
+			return null;
+		}
+
+		throw error;
+	}
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv): ShopifyE2EConfig {

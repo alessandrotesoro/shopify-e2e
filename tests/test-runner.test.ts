@@ -65,4 +65,22 @@ describe("buildTestCommand", () => {
 
 		expect(code).toBe(7);
 	});
+
+	it("marks CLI-launched runs so package global setup does not double-prepare Chrome", async () => {
+		const code = await runTestCommand({
+			...baseConfig,
+			testCommand: {
+				args: [
+					"-e",
+					"process.exit(process.env.SHOPIFY_E2E_SKIP_GLOBAL_SETUP === '1' ? 0 : 7)",
+				],
+				command: process.execPath,
+				mode: "custom",
+				shell: false,
+			},
+			testFiles: [],
+		});
+
+		expect(code).toBe(0);
+	});
 });

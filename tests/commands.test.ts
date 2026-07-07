@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 
 const mocks = vi.hoisted(() => ({
+	disconnectLiveShopifySession: vi.fn(),
 	prepareShopifySession: vi.fn(),
 	resolveShopifyE2EConfig: vi.fn(),
 	ensureChrome: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("../src/shopify-e2e-config.js", async (importOriginal) => {
 });
 
 vi.mock("../src/shopify-session.js", () => ({
+	disconnectLiveShopifySession: mocks.disconnectLiveShopifySession,
 	prepareShopifySession: mocks.prepareShopifySession,
 }));
 
@@ -108,6 +110,7 @@ describe("commands", () => {
 			profilePath: config.chromeProfilePath,
 			started: false,
 		});
+		mocks.disconnectLiveShopifySession.mockResolvedValue(undefined);
 	});
 
 	afterEach(() => {
@@ -141,6 +144,7 @@ describe("commands", () => {
 				waitForLogin: false,
 			}),
 		);
+		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
 	});
 
 	it("run forwards pass-through args and propagates the test exit code", async () => {
@@ -174,6 +178,18 @@ describe("commands", () => {
 			"--project=chromium",
 		]);
 		expect(process.exitCode).toBe(7);
+		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
+	});
+
+	it("run disconnects the shared browser when the test command fails", async () => {
+		mocks.runTestCommand.mockRejectedValue(new Error("failed"));
+
+		await expect(
+			Run.run(["--shop", "example.myshopify.com"], {
+				root: process.cwd(),
+			}),
+		).rejects.toThrow("failed");
+		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
 	});
 
 	it("run fails before preparing the session when app URL is missing", async () => {
@@ -191,6 +207,7 @@ describe("commands", () => {
 		);
 		expect(mocks.prepareShopifySession).not.toHaveBeenCalled();
 		expect(mocks.runTestCommand).not.toHaveBeenCalled();
+		expect(mocks.disconnectLiveShopifySession).not.toHaveBeenCalled();
 	});
 
 	it("auth save only saves the current CDP context", async () => {

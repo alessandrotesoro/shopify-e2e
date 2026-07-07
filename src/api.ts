@@ -1,5 +1,11 @@
 import type { Page } from "playwright-core";
-
+import {
+	type CompleteShopifyCheckoutOptions,
+	completeShopifyCheckout,
+	expectShopifyCheckoutComplete,
+	type ShopifyCheckoutCompletion,
+	type ShopifyCheckoutPhaseReporter,
+} from "./playwright/checkout.js";
 import {
 	clickFirstVisibleButton,
 	fillFirstVisible,
@@ -60,6 +66,10 @@ export interface ShopifyE2EStorefront {
 
 export interface ShopifyE2ECheckout {
 	cartUrl(options: ShopifyE2ECartOptions): string;
+	complete(
+		options: ShopifyE2ECompleteCheckoutOptions,
+	): Promise<ShopifyCheckoutCompletion>;
+	expectComplete(page: Page, options?: { timeoutMs?: number }): Promise<void>;
 	openCart(options: ShopifyE2EOpenCartOptions): Promise<Page>;
 }
 
@@ -75,6 +85,12 @@ export interface ShopifyE2ECartOptions {
 
 export interface ShopifyE2EOpenCartOptions extends ShopifyE2ECartOptions {
 	page?: Page;
+	phaseReporter?: ShopifyCheckoutPhaseReporter;
+}
+
+export interface ShopifyE2ECompleteCheckoutOptions
+	extends Omit<CompleteShopifyCheckoutOptions, "page"> {
+	page: Page;
 }
 
 export interface ShopifyE2EInputs {
@@ -117,13 +133,20 @@ export async function createShopifyE2E(
 					config: resolvedConfig,
 					...options,
 				}),
-			openCart: async ({ page, ...options }) => {
+			complete: completeShopifyCheckout,
+			expectComplete: expectShopifyCheckoutComplete,
+			openCart: async ({ page, phaseReporter, ...options }) => {
 				const targetPage = page ?? (await admin.page());
+				const startedAt = performance.now();
 
 				await gotoCartPermalink({
 					config: resolvedConfig,
 					page: targetPage,
 					...options,
+				});
+				phaseReporter?.({
+					durationMs: performance.now() - startedAt,
+					phase: "checkout.entry",
 				});
 
 				return targetPage;

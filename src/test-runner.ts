@@ -68,6 +68,7 @@ export async function runTestCommand(
 		env: {
 			...process.env,
 			SHOPIFY_E2E_LIVE: "1",
+			SHOPIFY_E2E_SKIP_GLOBAL_SETUP: "1",
 		},
 		shell: command.shell,
 		stdio: "inherit",

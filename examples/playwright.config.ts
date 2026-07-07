@@ -1,8 +1,8 @@
 import { defineConfig } from "@playwright/test";
-import { globalSetup } from "shopify-e2e";
+import { globalSetupPath } from "shopify-e2e";
 
 export default defineConfig({
-	globalSetup,
+	globalSetup: globalSetupPath,
 	workers: 1,
 	use: {
 		trace: "retain-on-failure",

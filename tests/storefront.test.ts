@@ -291,6 +291,33 @@ describe("storefront helpers", () => {
 			},
 		);
 		expect(page.submitButton.click).toHaveBeenCalledWith({ delay: 0 });
+		expect(page.openPasswordButton.click).not.toHaveBeenCalled();
+	});
+
+	it("opens Shopify password modal before filling hidden password inputs", async () => {
+		const page = pageDouble({
+			currentUrl: "https://example.myshopify.com/password",
+			passwordFieldVisible: false,
+		});
+
+		await expect(
+			ensureStorefrontUnlocked({
+				page,
+				config,
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+			}),
+		).resolves.toBe(true);
+		expect(page.openPasswordButton.click).toHaveBeenCalledWith({
+			delay: 0,
+		});
+		expect(page.passwordLocator.pressSequentially).toHaveBeenCalledWith(
+			"secret",
+			{
+				delay: 0,
+			},
+		);
+		expect(page.submitButton.click).toHaveBeenCalledWith({ delay: 0 });
 	});
 
 	it("detects storefront password pages", () => {
@@ -309,18 +336,21 @@ describe("storefront helpers", () => {
 interface PageDoubleOptions {
 	bodyText?: string;
 	currentUrl?: string;
+	passwordFieldVisible?: boolean;
 	productPasswordBlocks?: number;
 	productPasswordUrl?: string;
 }
 
 interface PageDoubleState {
 	currentUrl: string;
+	passwordFieldVisible: boolean;
 	productPasswordBlocks: number;
 }
 
 type StorefrontLocatorDouble = ReturnType<typeof locatorDouble>;
 type StorefrontPageDouble = Page & {
 	goto: ReturnType<typeof createGotoMock>;
+	openPasswordButton: StorefrontLocatorDouble;
 	passwordLocator: StorefrontLocatorDouble;
 	submitButton: StorefrontLocatorDouble;
 };
@@ -328,24 +358,41 @@ type StorefrontPageDouble = Page & {
 function pageDouble(options: PageDoubleOptions = {}): StorefrontPageDouble {
 	const state = {
 		currentUrl: options.currentUrl ?? "about:blank",
+		passwordFieldVisible: options.passwordFieldVisible ?? true,
 		productPasswordBlocks: options.productPasswordBlocks ?? 0,
 	};
 	const bodyLocator = {
 		innerText: vi.fn(async () => options.bodyText ?? "{}"),
 	};
-	const passwordLocator = locatorDouble();
-	const submitButton = locatorDouble();
+	const openPasswordButton = locatorDouble({
+		isVisible: () => !state.passwordFieldVisible,
+		onClick: () => {
+			state.passwordFieldVisible = true;
+		},
+	});
+	const passwordLocator = locatorDouble({
+		isVisible: () => state.passwordFieldVisible,
+	});
+	const submitButton = locatorDouble({
+		isVisible: () => state.passwordFieldVisible,
+	});
 
 	const page = {
 		get passwordLocator() {
 			return passwordLocator;
 		},
+		get openPasswordButton() {
+			return openPasswordButton;
+		},
 		get submitButton() {
 			return submitButton;
 		},
 		frames: vi.fn(() => []),
-		getByRole: vi.fn(() => ({
-			first: () => submitButton,
+		getByRole: vi.fn((_role: string, options?: { name?: RegExp }) => ({
+			first: () =>
+				shouldUseOpenPasswordButton(options?.name)
+					? openPasswordButton
+					: submitButton,
 		})),
 		goto: createGotoMock(state, options),
 		keyboard: {
@@ -379,15 +426,34 @@ function createGotoMock(state: PageDoubleState, options: PageDoubleOptions) {
 	});
 }
 
-function locatorDouble() {
+function locatorDouble(
+	options: { isVisible?: () => boolean; onClick?: () => void } = {},
+) {
 	return {
-		click: vi.fn(async () => undefined),
+		click: vi.fn(async () => {
+			options.onClick?.();
+		}),
 		fill: vi.fn(async () => undefined),
 		focus: vi.fn(async () => undefined),
 		inputValue: vi.fn(async () => ""),
 		isEnabled: vi.fn(async () => true),
-		isVisible: vi.fn(async () => true),
+		isVisible: vi.fn(async () => options.isVisible?.() ?? true),
 		pressSequentially: vi.fn(async () => undefined),
 		scrollIntoViewIfNeeded: vi.fn(async () => undefined),
+		waitFor: vi.fn(async () => {
+			if (options.isVisible && !options.isVisible()) {
+				throw new Error("Locator is hidden.");
+			}
+		}),
 	};
+}
+
+function shouldUseOpenPasswordButton(name: RegExp | undefined): boolean {
+	if (!name) {
+		return false;
+	}
+
+	return ["enter using password", "enter with password", "password"].includes(
+		name.source,
+	);
 }

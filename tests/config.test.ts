@@ -186,4 +186,10 @@ describe("parseEnvFile", () => {
 			SHOPIFY_E2E_SHOP_DOMAIN: "quoted.myshopify.com",
 		});
 	});
+
+	it("returns an empty object when the env file is missing", () => {
+		expect(parseEnvFile(join(tmpdir(), "shopify-e2e-missing.env"))).toEqual(
+			{},
+		);
+	});
 });

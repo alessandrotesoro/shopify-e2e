@@ -28,13 +28,28 @@ function configFor(authStatePath: string): ResolvedShopifyE2EConfig {
 	};
 }
 
-function fakePage(): Page {
+function fakePage(
+	options: {
+		evaluateError?: Error;
+		gotoError?: Error;
+		redirectedUrl?: string;
+	} = {},
+): Page {
 	let currentUrl = "about:blank";
 
 	return {
-		evaluate: vi.fn(async () => undefined),
+		evaluate: vi.fn(async () => {
+			if (options.evaluateError) {
+				throw options.evaluateError;
+			}
+		}),
 		goto: vi.fn(async (url: string) => {
-			currentUrl = url;
+			if (options.gotoError) {
+				throw options.gotoError;
+			}
+
+			currentUrl = options.redirectedUrl ?? url;
+
 			return null;
 		}),
 		isClosed: vi.fn(() => false),
@@ -105,6 +120,64 @@ describe("auth state", () => {
 		expect(page.goto).toHaveBeenLastCalledWith(
 			"https://admin.shopify.com/store/example",
 			expect.objectContaining({ waitUntil: "domcontentloaded" }),
+		);
+	});
+
+	it("rejects auth restore when a localStorage origin cannot be reached", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "shopify-e2e-auth-"));
+		const authStatePath = join(dir, "state.json");
+		await writeFile(
+			authStatePath,
+			JSON.stringify({
+				origins: [
+					{
+						localStorage: [
+							{ name: "shopify.example", value: "ready" },
+						],
+						origin: "https://example.myshopify.com",
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		await expect(
+			restoreAuthState(
+				configFor(authStatePath),
+				{ addCookies: vi.fn() } as unknown as BrowserContext,
+				fakePage({ gotoError: new Error("blocked") }),
+			),
+		).rejects.toThrow(
+			`Could not restore localStorage for https://example.myshopify.com from auth state at ${authStatePath}: navigation failed.`,
+		);
+	});
+
+	it("rejects auth restore when localStorage cannot be written", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "shopify-e2e-auth-"));
+		const authStatePath = join(dir, "state.json");
+		await writeFile(
+			authStatePath,
+			JSON.stringify({
+				origins: [
+					{
+						localStorage: [
+							{ name: "shopify.example", value: "ready" },
+						],
+						origin: "https://example.myshopify.com",
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		await expect(
+			restoreAuthState(
+				configFor(authStatePath),
+				{ addCookies: vi.fn() } as unknown as BrowserContext,
+				fakePage({ evaluateError: new Error("denied") }),
+			),
+		).rejects.toThrow(
+			`Could not restore localStorage for https://example.myshopify.com from auth state at ${authStatePath}: write failed.`,
 		);
 	});
 

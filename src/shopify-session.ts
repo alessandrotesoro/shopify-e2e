@@ -205,6 +205,18 @@ export async function inspectShopifySession(
 	}
 }
 
+export async function disconnectLiveShopifySession(): Promise<void> {
+	const browser = sharedBrowser;
+
+	sharedBrowser = null;
+	sharedContext = null;
+	sharedPage = null;
+
+	if (browser?.isConnected()) {
+		await browser.close();
+	}
+}
+
 export function resetLiveShopifySessionForTests(): void {
 	sharedBrowser = null;
 	sharedContext = null;

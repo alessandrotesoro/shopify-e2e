@@ -165,4 +165,21 @@ describe("createShopifyE2E", () => {
 		});
 		expect(mocks.resolveShopifyE2EConfig).not.toHaveBeenCalled();
 	});
+
+	it("reports cart permalink entry timing from openCart", async () => {
+		mocks.resolveShopifyE2EConfig.mockResolvedValue(config);
+		const shopify = await createShopifyE2E(config);
+		const timings: Array<{ durationMs: number; phase: string }> = [];
+
+		await expect(
+			shopify.checkout.openCart({
+				page,
+				phaseReporter: (timing) => timings.push(timing),
+				variantId: 123,
+			}),
+		).resolves.toBe(page);
+		expect(timings.map((timing) => timing.phase)).toEqual([
+			"checkout.entry",
+		]);
+	});
 });

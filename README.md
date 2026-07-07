@@ -8,8 +8,8 @@ otherwise ends up copied into every project: Chrome CDP startup, persistent
 Chrome profiles, auth-state restore/save, manual login polling, one shared page,
 and a serialized Playwright test runner.
 
-Product fixtures, checkout assertions, webhook setup, and application-specific
-test logic belong in the consuming project.
+Product fixtures, checkout-download assertions, webhook setup, and
+application-specific test logic belong in the consuming project.
 
 ## Requirements
 
@@ -113,10 +113,10 @@ Playwright:
 
 ```ts
 import { defineConfig } from "@playwright/test";
-import { globalSetup } from "shopify-e2e";
+import { globalSetupPath } from "shopify-e2e";
 
 export default defineConfig({
-	globalSetup,
+	globalSetup: globalSetupPath,
 	workers: 1,
 	use: {
 		trace: "retain-on-failure",
@@ -124,7 +124,8 @@ export default defineConfig({
 });
 ```
 
-`globalSetup` prepares Shopify only when live mode is enabled. Set
+`globalSetupPath` points Playwright at the package-owned global setup module.
+The setup prepares Shopify only when live mode is enabled. Set
 `SHOPIFY_E2E_LIVE=1` or `live: true` in config. The CLI sets
 `SHOPIFY_E2E_LIVE=1` for `shopify-e2e run`.
 
@@ -155,6 +156,21 @@ test("opens checkout", async () => {
 			lastName: "Lovelace",
 		},
 	});
+
+	await shopify.checkout.complete({
+		page: await shopify.admin.page(),
+		buyer: {
+			email: "buyer@example.com",
+			firstName: "Ada",
+			lastName: "Lovelace",
+		},
+		payment: {
+			cardNumber: "4242424242424242",
+			expiry: "12 / 30",
+			name: "Ada Lovelace",
+			securityCode: "111",
+		},
+	});
 });
 ```
 
@@ -171,6 +187,10 @@ The context exposes:
 - `shopify.checkout.cartUrl(options)` to build a Shopify cart permalink.
 - `shopify.checkout.openCart(options)` to open a cart permalink on the shared
   page.
+- `shopify.checkout.complete(options)` to complete the current Shopify checkout
+  with Playwright locators, package-owned payment iframe handling, and sanitized
+  phase timings.
+- `shopify.checkout.expectComplete(page)` to wait for Shopify's Thank You page.
 - `shopify.inputs` for slower input helpers when Shopify pages reject instant
   typing.
 
@@ -182,7 +202,7 @@ through explicit subpaths:
 ```ts
 import { resolveShopifyE2EConfig } from "shopify-e2e/config";
 import { slowFill } from "shopify-e2e/inputs";
-import { createLiveShopifyPage } from "shopify-e2e/playwright";
+import { completeShopifyCheckout, createLiveShopifyPage } from "shopify-e2e/playwright";
 import { buildCartPermalinkUrl } from "shopify-e2e/storefront";
 ```
 
@@ -196,8 +216,8 @@ Live Shopify tests should stay serialized:
 - Use one Playwright worker.
 - Use the shared Chrome tab/page.
 - Do not run parallel checkout tabs.
-- Keep product data, checkout assertions, and webhook setup in the consuming
-  project.
+- Keep product data, checkout-download assertions, and webhook setup in the
+  consuming project.
 - Keep session files and secrets out of git.
 
 ## Troubleshooting
@@ -233,8 +253,9 @@ The CLI uses oclif file discovery:
 - `src/commands/auth/save.ts` maps to `shopify-e2e auth save`
 - `src/commands/auth/restore.ts` maps to `shopify-e2e auth restore`
 
-Reusable Shopify session behavior belongs in this package. Application-specific
-checkout logic belongs in the project that owns the tests.
+Reusable Shopify session and checkout mechanics belong in this package.
+Application-specific assertions and fixture setup belong in the project that
+owns the tests.
 
 ## License
 

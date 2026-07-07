@@ -1,12 +1,13 @@
-import type { Page } from "playwright-core";
+import type { Locator, Page } from "playwright-core";
 
 import { isRecord } from "../guards.js";
 import type { ResolvedShopifyE2EConfig } from "../shopify-e2e-config.js";
 import { storefrontUrl } from "../urls.js";
 import {
 	clickFirstVisibleButton,
-	fillFirstVisible,
+	firstUsableLocator,
 	type SlowInputOptions,
+	slowFill,
 } from "./inputs.js";
 import { gotoLiveShopifyPage } from "./live-shopify-page.js";
 
@@ -80,6 +81,14 @@ const storefrontPasswordSelectors = [
 	'input[type="password"]',
 	'input[name="customer[password]"]',
 ];
+
+const storefrontPasswordOpenButtonNames = [
+	/enter using password/i,
+	/enter with password/i,
+	/password/i,
+];
+
+const storefrontPasswordSubmitButtonNames = [/^enter$/i, /^submit$/i];
 
 export async function ensureStorefrontUnlocked({
 	config,
@@ -237,22 +246,19 @@ async function unlockCurrentStorefrontPasswordPage(
 		);
 	}
 
-	const filled = await fillFirstVisible(
-		page,
-		storefrontPasswordSelectors,
-		config.storefrontPassword,
-		options,
-	);
+	const passwordField = await revealStorefrontPasswordForm(page, options);
 
-	if (!filled) {
+	if (!passwordField) {
 		throw new Error(
 			"Storefront password page is visible, but no password field was found.",
 		);
 	}
 
+	await slowFill(passwordField, config.storefrontPassword, options);
+
 	const clicked = await clickFirstVisibleButton(
 		page,
-		[/enter/i, /submit/i],
+		storefrontPasswordSubmitButtonNames,
 		options,
 	);
 
@@ -261,6 +267,45 @@ async function unlockCurrentStorefrontPasswordPage(
 	}
 
 	await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+}
+
+async function revealStorefrontPasswordForm(
+	page: Page,
+	options: SlowInputOptions,
+): Promise<Locator | null> {
+	const visiblePasswordField = await firstUsableLocator(
+		page,
+		storefrontPasswordSelectors,
+	);
+
+	if (visiblePasswordField) {
+		return visiblePasswordField;
+	}
+
+	const clicked = await clickFirstVisibleButton(
+		page,
+		storefrontPasswordOpenButtonNames,
+		options,
+	);
+
+	if (!clicked) {
+		return null;
+	}
+
+	await waitForStorefrontPasswordField(page);
+
+	return firstUsableLocator(page, storefrontPasswordSelectors);
+}
+
+async function waitForStorefrontPasswordField(page: Page): Promise<void> {
+	await Promise.any(
+		storefrontPasswordSelectors.map((selector) =>
+			page.locator(selector).first().waitFor({
+				state: "visible",
+				timeout: 2_500,
+			}),
+		),
+	).catch(() => undefined);
 }
 
 function isExpectedStorefrontPasswordPage(

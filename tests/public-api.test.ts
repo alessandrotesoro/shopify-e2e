@@ -11,6 +11,7 @@ describe("public API", () => {
 		expect(api.createShopifyE2E).toBeTypeOf("function");
 		expect(api.defineShopifyE2EConfig).toBeTypeOf("function");
 		expect(api.globalSetup).toBeTypeOf("function");
+		expect(api.globalSetupPath).toMatch(/playwright[\\/]global-setup\.js$/);
 		expect("createLiveShopifyPage" in api).toBe(false);
 		expect("buildCartPermalinkUrl" in api).toBe(false);
 		expect("slowFill" in api).toBe(false);
@@ -21,8 +22,17 @@ describe("public API", () => {
 		expect(configApi.missingLiveShopifyPrerequisites).toBeTypeOf(
 			"function",
 		);
+		expect(playwrightApi.completeShopifyCheckout).toBeTypeOf("function");
 		expect(playwrightApi.createLiveShopifyPage).toBeTypeOf("function");
+		expect(playwrightApi.expectShopifyCheckoutComplete).toBeTypeOf(
+			"function",
+		);
+		expect("fillShopifyCheckoutFields" in playwrightApi).toBe(false);
+		expect("fillShopifyPaymentFields" in playwrightApi).toBe(false);
 		expect(playwrightApi.globalSetup).toBeTypeOf("function");
+		expect(playwrightApi.globalSetupPath).toMatch(
+			/playwright[\\/]global-setup\.js$/,
+		);
 		expect(storefrontApi.ensureStorefrontUnlocked).toBeTypeOf("function");
 		expect(storefrontApi.resolveStorefrontVariantId).toBeTypeOf("function");
 		expect(storefrontApi.buildCartPermalinkUrl).toBeTypeOf("function");

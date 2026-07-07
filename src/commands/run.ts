@@ -4,7 +4,10 @@ import {
 	missingLiveShopifyPrerequisites,
 	resolveShopifyE2EConfig,
 } from "../shopify-e2e-config.js";
-import { prepareShopifySession } from "../shopify-session.js";
+import {
+	disconnectLiveShopifySession,
+	prepareShopifySession,
+} from "../shopify-session.js";
 import { runTestCommand } from "../test-runner.js";
 
 export default class Run extends Command {
@@ -49,16 +52,20 @@ export default class Run extends Command {
 			);
 		}
 
-		await prepareShopifySession(config, {
-			log: (message) => this.log(message),
-			waitForLogin: flags.wait,
-		});
+		try {
+			await prepareShopifySession(config, {
+				log: (message) => this.log(message),
+				waitForLogin: flags.wait,
+			});
 
-		const code = await runTestCommand(
-			config,
-			argv.map((entry) => String(entry)),
-		);
+			const code = await runTestCommand(
+				config,
+				argv.map((entry) => String(entry)),
+			);
 
-		process.exitCode = code;
+			process.exitCode = code;
+		} finally {
+			await disconnectLiveShopifySession();
+		}
 	}
 }
