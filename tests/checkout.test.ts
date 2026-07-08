@@ -64,9 +64,11 @@ describe("checkout helpers", () => {
 		});
 
 		expect(result).toEqual({
+			diagnostics: {
+				usedPaymentFrameFallback: false,
+			},
 			submitted: false,
 			timings: [],
-			usedPaymentFrameFallback: false,
 		});
 		expect(page.email.pressSequentially).not.toHaveBeenCalled();
 		expect(page.payButton.click).not.toHaveBeenCalled();

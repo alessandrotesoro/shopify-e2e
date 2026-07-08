@@ -27,8 +27,10 @@ describe("public API", () => {
 		expect(playwrightApi.expectShopifyCheckoutComplete).toBeTypeOf(
 			"function",
 		);
-		expect("fillShopifyCheckoutFields" in playwrightApi).toBe(false);
-		expect("fillShopifyPaymentFields" in playwrightApi).toBe(false);
+		expect(playwrightApi.fillShopifyCheckoutFields).toBeTypeOf("function");
+		expect(playwrightApi.fillShopifyCustomerFields).toBeTypeOf("function");
+		expect(playwrightApi.fillShopifyPaymentFields).toBeTypeOf("function");
+		expect(playwrightApi.fillShopifyShippingFields).toBeTypeOf("function");
 		expect(playwrightApi.globalSetup).toBeTypeOf("function");
 		expect(playwrightApi.globalSetupPath).toMatch(
 			/playwright[\\/]global-setup\.js$/,

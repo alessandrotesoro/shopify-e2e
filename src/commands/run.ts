@@ -1,4 +1,5 @@
 import { Command, Flags } from "@oclif/core";
+import { runAppSetupCommand } from "../app-setup-runner.js";
 import { configFlags, configOverridesFromFlags } from "../cli-config-flags.js";
 import {
 	missingLiveShopifyPrerequisites,
@@ -57,6 +58,17 @@ export default class Run extends Command {
 				log: (message) => this.log(message),
 				waitForLogin: flags.wait,
 			});
+
+			const setupCode = await runAppSetupCommand(config, {
+				log: (message) => this.log(message),
+			});
+
+			if (setupCode !== 0) {
+				this.error(
+					`App setup command failed with exit code ${setupCode}.`,
+					{ exit: setupCode },
+				);
+			}
 
 			const code = await runTestCommand(
 				config,

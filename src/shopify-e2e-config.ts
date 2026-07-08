@@ -6,6 +6,7 @@ import { configFromEnv, parseEnvFile } from "./config/env.js";
 import { findConfigFile, loadConfigFile } from "./config/file.js";
 import { mergeConfig } from "./config/merge.js";
 import {
+	normalizeOptionalCommand,
 	normalizeStringArray,
 	normalizeTestCommand,
 } from "./config/normalize.js";
@@ -17,19 +18,24 @@ import {
 
 export { parseEnvFile } from "./config/env.js";
 
-export type TestCommandMode = "playwright" | "custom" | "shell";
+export type CommandMode = "playwright" | "custom" | "shell";
 
-export interface TestCommandObject {
+export interface CommandObject {
 	args?: string[];
 	command?: string;
-	mode?: TestCommandMode;
+	mode?: CommandMode;
 	shell?: boolean;
 }
 
+export type CommandInput = string | CommandObject;
+
+export type TestCommandMode = CommandMode;
+export type TestCommandObject = CommandObject;
 export type TestCommandInput = string | TestCommandObject;
 
 export interface ShopifyE2EConfig {
 	appUrl?: string;
+	appSetupCommand?: CommandInput;
 	authStatePath?: string;
 	cdpPort?: number | string;
 	cdpUrl?: string;
@@ -52,12 +58,15 @@ export interface ResolveConfigOptions extends ShopifyE2EConfig {
 export interface ResolvedTestCommand {
 	args: string[];
 	command: string;
-	mode: TestCommandMode;
+	mode: CommandMode;
 	shell: boolean;
 }
 
+export type ResolvedCommand = ResolvedTestCommand;
+
 export interface ResolvedShopifyE2EConfig {
 	appUrl?: string;
+	appSetupCommand?: ResolvedCommand;
 	authStatePath: string;
 	cdpPort: string;
 	cdpUrl: string;
@@ -113,6 +122,7 @@ export async function resolveShopifyE2EConfig(
 
 	return {
 		appUrl: cleanString(merged.appUrl),
+		appSetupCommand: normalizeOptionalCommand(merged.appSetupCommand),
 		authStatePath: resolvePath(
 			cwd,
 			cleanString(merged.authStatePath) ??

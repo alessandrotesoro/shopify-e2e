@@ -5,6 +5,7 @@ import {
 	expectShopifyCheckoutComplete,
 	type ShopifyCheckoutCompletion,
 	type ShopifyCheckoutPhaseReporter,
+	type ShopifyCheckoutPhaseTiming,
 } from "./playwright/checkout.js";
 import {
 	clickFirstVisibleButton,
@@ -67,10 +68,13 @@ export interface ShopifyE2EStorefront {
 export interface ShopifyE2ECheckout {
 	cartUrl(options: ShopifyE2ECartOptions): string;
 	complete(
-		options: ShopifyE2ECompleteCheckoutOptions,
+		options?: ShopifyE2ECompleteCheckoutOptions,
 	): Promise<ShopifyCheckoutCompletion>;
-	expectComplete(page: Page, options?: { timeoutMs?: number }): Promise<void>;
+	expectComplete(options?: ShopifyE2EExpectCompleteOptions): Promise<void>;
 	openCart(options: ShopifyE2EOpenCartOptions): Promise<Page>;
+	purchase(
+		options: ShopifyE2EPurchaseOptions,
+	): Promise<ShopifyE2EPurchaseResult>;
 }
 
 export interface ShopifyE2EPageOptions extends SlowInputOptions {
@@ -90,6 +94,21 @@ export interface ShopifyE2EOpenCartOptions extends ShopifyE2ECartOptions {
 
 export interface ShopifyE2ECompleteCheckoutOptions
 	extends Omit<CompleteShopifyCheckoutOptions, "page"> {
+	page?: Page;
+}
+
+export interface ShopifyE2EExpectCompleteOptions {
+	page?: Page;
+	timeoutMs?: number;
+}
+
+export interface ShopifyE2EPurchaseOptions
+	extends ShopifyE2ECartOptions,
+		Omit<ShopifyE2ECompleteCheckoutOptions, "buyer" | "page"> {
+	page?: Page;
+}
+
+export interface ShopifyE2EPurchaseResult extends ShopifyCheckoutCompletion {
 	page: Page;
 }
 
@@ -124,6 +143,69 @@ export async function createShopifyE2E(
 		prepare: async (options) =>
 			prepareShopifySession(resolvedConfig, options),
 	};
+	const openCart = async ({
+		page,
+		phaseReporter,
+		...options
+	}: ShopifyE2EOpenCartOptions): Promise<Page> => {
+		const targetPage = page ?? (await admin.page());
+		const startedAt = performance.now();
+
+		await gotoCartPermalink({
+			config: resolvedConfig,
+			page: targetPage,
+			...options,
+		});
+		phaseReporter?.({
+			durationMs: performance.now() - startedAt,
+			phase: "checkout.entry",
+		});
+
+		return targetPage;
+	};
+	const complete = async ({
+		page,
+		...options
+	}: ShopifyE2ECompleteCheckoutOptions = {}): Promise<ShopifyCheckoutCompletion> =>
+		completeShopifyCheckout({
+			...options,
+			page: page ?? (await admin.page()),
+		});
+	const expectComplete = async ({
+		page,
+		...options
+	}: ShopifyE2EExpectCompleteOptions = {}): Promise<void> =>
+		expectShopifyCheckoutComplete(page ?? (await admin.page()), options);
+	const purchase = async ({
+		page,
+		quantity,
+		variantId,
+		...options
+	}: ShopifyE2EPurchaseOptions): Promise<ShopifyE2EPurchaseResult> => {
+		const targetPage = page ?? (await admin.page());
+		const entryTimings: ShopifyCheckoutPhaseTiming[] = [];
+
+		await openCart({
+			buyer: options.buyer,
+			page: targetPage,
+			phaseReporter: (timing) => {
+				entryTimings.push(timing);
+				options.phaseReporter?.(timing);
+			},
+			quantity,
+			variantId,
+		});
+		const completion = await complete({
+			...options,
+			page: targetPage,
+		});
+
+		return {
+			...completion,
+			page: targetPage,
+			timings: [...entryTimings, ...completion.timings],
+		};
+	};
 
 	return {
 		admin,
@@ -133,24 +215,10 @@ export async function createShopifyE2E(
 					config: resolvedConfig,
 					...options,
 				}),
-			complete: completeShopifyCheckout,
-			expectComplete: expectShopifyCheckoutComplete,
-			openCart: async ({ page, phaseReporter, ...options }) => {
-				const targetPage = page ?? (await admin.page());
-				const startedAt = performance.now();
-
-				await gotoCartPermalink({
-					config: resolvedConfig,
-					page: targetPage,
-					...options,
-				});
-				phaseReporter?.({
-					durationMs: performance.now() - startedAt,
-					phase: "checkout.entry",
-				});
-
-				return targetPage;
-			},
+			complete,
+			expectComplete,
+			openCart,
+			purchase,
 		},
 		config: resolvedConfig,
 		inputs: {

@@ -75,6 +75,11 @@ describe("resolveShopifyE2EConfig", () => {
 		await writeFile(
 			configPath,
 			JSON.stringify({
+				appSetupCommand: {
+					args: ["artisan", "e2e:shopify:prepare"],
+					command: "php",
+					mode: "custom",
+				},
 				appUrl: "https://shape.example",
 				live: "false",
 				shopDomain: "shape.myshopify.com",
@@ -88,6 +93,11 @@ describe("resolveShopifyE2EConfig", () => {
 		const config = await resolveShopifyE2EConfig({ cwd }, {});
 
 		expect(config.live).toBe(false);
+		expect(config.appSetupCommand).toMatchObject({
+			args: ["artisan", "e2e:shopify:prepare"],
+			command: "php",
+			mode: "custom",
+		});
 		expect(config.testCommand).toMatchObject({
 			args: ["playwright", "test"],
 			mode: "custom",
@@ -142,6 +152,51 @@ describe("resolveShopifyE2EConfig", () => {
 			resolveShopifyE2EConfig({ configPath, cwd }, {}),
 		).rejects.toThrow(
 			`Could not parse Shopify E2E config from ${configPath}.`,
+		);
+	});
+
+	it("throws app setup command shape errors with config file context", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-invalid-setup-config-"),
+		);
+		const configPath = join(cwd, "shopify-e2e.config.json");
+
+		await writeFile(
+			configPath,
+			JSON.stringify({
+				appSetupCommand: {
+					mode: "parallel",
+				},
+			}),
+		);
+
+		await expect(
+			resolveShopifyE2EConfig({ configPath, cwd }, {}),
+		).rejects.toThrow(
+			`Invalid Shopify E2E config at ${configPath}: appSetupCommand.command expected a string.`,
+		);
+	});
+
+	it("throws app setup command mode errors with config file context", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-invalid-setup-mode-config-"),
+		);
+		const configPath = join(cwd, "shopify-e2e.config.json");
+
+		await writeFile(
+			configPath,
+			JSON.stringify({
+				appSetupCommand: {
+					command: "php",
+					mode: "parallel",
+				},
+			}),
+		);
+
+		await expect(
+			resolveShopifyE2EConfig({ configPath, cwd }, {}),
+		).rejects.toThrow(
+			`Invalid Shopify E2E config at ${configPath}: appSetupCommand.mode expected one of: playwright, custom, shell.`,
 		);
 	});
 

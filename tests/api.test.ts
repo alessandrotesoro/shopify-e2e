@@ -5,8 +5,10 @@ import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 
 const mocks = vi.hoisted(() => ({
 	buildCartPermalinkUrl: vi.fn(() => "https://store.test/cart/123:1"),
+	completeShopifyCheckout: vi.fn(),
 	createLiveShopifyPage: vi.fn(),
 	ensureStorefrontUnlocked: vi.fn(),
+	expectShopifyCheckoutComplete: vi.fn(),
 	gotoCartPermalink: vi.fn(),
 	gotoLiveShopifyPage: vi.fn(),
 	prepareShopifySession: vi.fn(),
@@ -62,6 +64,17 @@ vi.mock("../src/playwright/inputs.js", async (importOriginal) => {
 	};
 });
 
+vi.mock("../src/playwright/checkout.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../src/playwright/checkout.js")>();
+
+	return {
+		...actual,
+		completeShopifyCheckout: mocks.completeShopifyCheckout,
+		expectShopifyCheckoutComplete: mocks.expectShopifyCheckoutComplete,
+	};
+});
+
 const { createShopifyE2E } = await import("../src/api.js");
 
 const page = {} as Page;
@@ -111,6 +124,11 @@ describe("createShopifyE2E", () => {
 	it("uses the shared Admin page for context methods by default", async () => {
 		mocks.resolveShopifyE2EConfig.mockResolvedValue(config);
 		mocks.createLiveShopifyPage.mockResolvedValue({ context: {}, page });
+		mocks.completeShopifyCheckout.mockResolvedValue({
+			diagnostics: { usedPaymentFrameFallback: false },
+			submitted: true,
+			timings: [],
+		});
 		mocks.resolveStorefrontVariantId.mockResolvedValue("123");
 
 		const shopify = await createShopifyE2E();
@@ -137,6 +155,18 @@ describe("createShopifyE2E", () => {
 				product: { handle: "test-product" },
 			}),
 		);
+
+		await expect(shopify.checkout.complete()).resolves.toMatchObject({
+			submitted: true,
+		});
+		expect(mocks.completeShopifyCheckout).toHaveBeenCalledWith({
+			page,
+		});
+
+		await shopify.checkout.expectComplete({ timeoutMs: 123 });
+		expect(mocks.expectShopifyCheckoutComplete).toHaveBeenCalledWith(page, {
+			timeoutMs: 123,
+		});
 	});
 
 	it("opens checkout cart permalinks with the resolved config", async () => {
@@ -181,5 +211,48 @@ describe("createShopifyE2E", () => {
 		expect(timings.map((timing) => timing.phase)).toEqual([
 			"checkout.entry",
 		]);
+	});
+
+	it("opens and completes checkout purchases on one shared page", async () => {
+		mocks.resolveShopifyE2EConfig.mockResolvedValue(config);
+		mocks.createLiveShopifyPage.mockResolvedValue({ context: {}, page });
+		mocks.completeShopifyCheckout.mockResolvedValue({
+			diagnostics: { usedPaymentFrameFallback: true },
+			submitted: true,
+			timings: [],
+		});
+		const shopify = await createShopifyE2E(config);
+		const buyer = { email: "buyer@example.com" };
+		const payment = { cardNumber: "4242424242424242" };
+		const timings: Array<{ durationMs: number; phase: string }> = [];
+
+		await expect(
+			shopify.checkout.purchase({
+				buyer,
+				payment,
+				phaseReporter: (timing) => timings.push(timing),
+				variantId: 123,
+			}),
+		).resolves.toMatchObject({
+			diagnostics: { usedPaymentFrameFallback: true },
+			page,
+			submitted: true,
+			timings: [expect.objectContaining({ phase: "checkout.entry" })],
+		});
+		expect(mocks.gotoCartPermalink).toHaveBeenCalledWith({
+			buyer,
+			config,
+			page,
+			variantId: 123,
+		});
+		expect(mocks.completeShopifyCheckout).toHaveBeenCalledWith({
+			buyer,
+			page,
+			payment,
+			phaseReporter: expect.any(Function),
+		});
+		expect(timings.map((timing) => timing.phase)).toContain(
+			"checkout.entry",
+		);
 	});
 });

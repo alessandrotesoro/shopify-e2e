@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	disconnectLiveShopifySession: vi.fn(),
 	prepareShopifySession: vi.fn(),
 	resolveShopifyE2EConfig: vi.fn(),
+	runAppSetupCommand: vi.fn(),
 	ensureChrome: vi.fn(),
 	authStateExists: vi.fn(),
 	restoreAuthState: vi.fn(),
@@ -23,6 +24,10 @@ vi.mock("../src/shopify-e2e-config.js", async (importOriginal) => {
 		resolveShopifyE2EConfig: mocks.resolveShopifyE2EConfig,
 	};
 });
+
+vi.mock("../src/app-setup-runner.js", () => ({
+	runAppSetupCommand: mocks.runAppSetupCommand,
+}));
 
 vi.mock("../src/shopify-session.js", () => ({
 	disconnectLiveShopifySession: mocks.disconnectLiveShopifySession,
@@ -99,6 +104,7 @@ describe("commands", () => {
 			} as Page,
 		});
 		mocks.runTestCommand.mockResolvedValue(0);
+		mocks.runAppSetupCommand.mockResolvedValue(0);
 		mocks.saveAuthState.mockResolvedValue({ path: config.authStatePath });
 		mocks.authStateExists.mockReturnValue(true);
 		mocks.restoreAuthState.mockResolvedValue({
@@ -174,10 +180,47 @@ describe("commands", () => {
 				waitForLogin: true,
 			}),
 		);
+		expect(mocks.runAppSetupCommand).toHaveBeenCalledWith(
+			config,
+			expect.objectContaining({
+				log: expect.any(Function),
+			}),
+		);
 		expect(mocks.runTestCommand).toHaveBeenCalledWith(config, [
 			"--project=chromium",
 		]);
+		const prepareOrder =
+			mocks.prepareShopifySession.mock.invocationCallOrder[0];
+		const setupOrder = mocks.runAppSetupCommand.mock.invocationCallOrder[0];
+		const testOrder = mocks.runTestCommand.mock.invocationCallOrder[0];
+
+		if (
+			prepareOrder === undefined ||
+			setupOrder === undefined ||
+			testOrder === undefined
+		) {
+			throw new Error(
+				"Expected session, setup, and test commands to run.",
+			);
+		}
+
+		expect(prepareOrder).toBeLessThan(setupOrder);
+		expect(setupOrder).toBeLessThan(testOrder);
 		expect(process.exitCode).toBe(7);
+		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
+	});
+
+	it("run stops before Playwright when the app setup command fails", async () => {
+		mocks.runAppSetupCommand.mockResolvedValue(5);
+
+		await expect(
+			Run.run(["--shop", "example.myshopify.com"], {
+				root: process.cwd(),
+			}),
+		).rejects.toThrow("App setup command failed with exit code 5.");
+		expect(mocks.prepareShopifySession).toHaveBeenCalledTimes(1);
+		expect(mocks.runAppSetupCommand).toHaveBeenCalledTimes(1);
+		expect(mocks.runTestCommand).not.toHaveBeenCalled();
 		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
 	});
 
@@ -206,6 +249,7 @@ describe("commands", () => {
 			/Missing live Shopify e2e prerequisites: SHOPIFY_E2E_APP_URL/,
 		);
 		expect(mocks.prepareShopifySession).not.toHaveBeenCalled();
+		expect(mocks.runAppSetupCommand).not.toHaveBeenCalled();
 		expect(mocks.runTestCommand).not.toHaveBeenCalled();
 		expect(mocks.disconnectLiveShopifySession).not.toHaveBeenCalled();
 	});

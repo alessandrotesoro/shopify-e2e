@@ -47,10 +47,14 @@ export type ShopifyCheckoutPhaseReporter = (
 	timing: ShopifyCheckoutPhaseTiming,
 ) => void;
 
+export interface ShopifyCheckoutDiagnostics {
+	usedPaymentFrameFallback: boolean;
+}
+
 export interface ShopifyCheckoutCompletion {
+	diagnostics: ShopifyCheckoutDiagnostics;
 	submitted: boolean;
 	timings: ShopifyCheckoutPhaseTiming[];
-	usedPaymentFrameFallback: boolean;
 }
 
 interface PaymentInputTarget {
@@ -62,7 +66,7 @@ interface PaymentInputTarget {
 	selectors: string[];
 }
 
-interface PaymentFillResult {
+export interface PaymentFillResult {
 	filled: boolean;
 	missingField?: string;
 	sawPaymentForm: boolean;
@@ -109,9 +113,11 @@ export async function completeShopifyCheckout(
 
 	const context: CheckoutRunContext = {
 		result: {
+			diagnostics: {
+				usedPaymentFrameFallback: false,
+			},
 			submitted: false,
 			timings: [],
-			usedPaymentFrameFallback: false,
 		},
 	};
 
@@ -147,7 +153,8 @@ export async function completeShopifyCheckout(
 			async () =>
 				fillShopifyPaymentFields(page, options.payment, options),
 		);
-		context.result.usedPaymentFrameFallback ||= paymentResult.usedFallback;
+		context.result.diagnostics.usedPaymentFrameFallback ||=
+			paymentResult.usedFallback;
 		const wasPaymentStep =
 			paymentResult.filled || paymentResult.sawPaymentForm;
 

@@ -1,3 +1,7 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
@@ -82,5 +86,52 @@ describe("buildTestCommand", () => {
 		});
 
 		expect(code).toBe(0);
+	});
+
+	it("loads env-file values for spawned test commands without overriding shell env", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-test-env-"));
+		const envFile = join(cwd, ".env");
+		const previousShellValue = process.env.SHOPIFY_E2E_SHELL_WINS;
+
+		await writeFile(
+			envFile,
+			[
+				"SHOPIFY_E2E_FILE_ONLY=file-value",
+				"SHOPIFY_E2E_SHELL_WINS=file-value",
+			].join("\n"),
+		);
+
+		process.env.SHOPIFY_E2E_SHELL_WINS = "shell-value";
+
+		try {
+			const code = await runTestCommand({
+				...baseConfig,
+				envFile,
+				testCommand: {
+					args: [
+						"-e",
+						[
+							"const ok =",
+							"process.env.SHOPIFY_E2E_FILE_ONLY === 'file-value'",
+							"&& process.env.SHOPIFY_E2E_SHELL_WINS === 'shell-value'",
+							"&& process.env.SHOPIFY_E2E_LIVE === '1';",
+							"process.exit(ok ? 0 : 7);",
+						].join(" "),
+					],
+					command: process.execPath,
+					mode: "custom",
+					shell: false,
+				},
+				testFiles: [],
+			});
+
+			expect(code).toBe(0);
+		} finally {
+			if (previousShellValue === undefined) {
+				delete process.env.SHOPIFY_E2E_SHELL_WINS;
+			} else {
+				process.env.SHOPIFY_E2E_SHELL_WINS = previousShellValue;
+			}
+		}
 	});
 });

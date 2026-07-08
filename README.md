@@ -55,6 +55,11 @@ export default defineShopifyE2EConfig({
 	chromeProfilePath: ".shopify-e2e/chrome-profile",
 	authStatePath: ".shopify-e2e/auth/shopify-storage-state.json",
 	storefrontPassword: process.env.SHOPIFY_E2E_STOREFRONT_PASSWORD,
+	appSetupCommand: {
+		command: "npm",
+		args: ["run", "e2e:shopify:prepare"],
+		mode: "custom",
+	},
 	testFiles: ["e2e"],
 	testCommand: {
 		command: process.platform === "win32" ? "npx.cmd" : "npx",
@@ -81,6 +86,13 @@ or `--env-file` when values should be loaded from a local env file.
 | `testFiles` | `SHOPIFY_E2E_TEST_FILES` |
 | `testCommand` | `SHOPIFY_E2E_TEST_COMMAND` |
 
+`appSetupCommand` is intentionally config-file only. Use it for app-owned
+fixture readiness, such as preparing local database rows after Shopify Admin
+login is ready and before Playwright starts. Environment-file values are
+available to this command, and real shell environment variables take precedence.
+During `shopify-e2e run`, the package prints the setup command before executing
+it so app-owned fixture work is visible.
+
 Do not commit Chrome profiles, auth-state files, storefront passwords, or local
 env files. Auth state contains Shopify cookies.
 
@@ -94,7 +106,7 @@ Run commands from the project that contains the tests.
 | `shopify-e2e open` | Start Chrome if needed, restore auth state, open Shopify Admin, and wait for login. |
 | `shopify-e2e auth save` | Save storage state from the current CDP Chrome context. |
 | `shopify-e2e auth restore` | Restore saved auth state into Chrome when a state file exists. |
-| `shopify-e2e run` | Prepare the Admin session and run the configured test command. |
+| `shopify-e2e run` | Prepare the Admin session, run the configured app setup command, and run the configured test command. |
 
 Pass Playwright arguments after `--`:
 
@@ -104,7 +116,8 @@ shopify-e2e run -- --project=chromium
 
 In the default Playwright mode, `shopify-e2e run` adds `--workers=1`. Custom
 shell commands are allowed, but the package cannot inspect them or enforce worker
-count inside them.
+count inside them. If `appSetupCommand` exits non-zero, Playwright is not
+started.
 
 ## Playwright Setup
 
@@ -148,17 +161,8 @@ test("opens checkout", async () => {
 		handle: "test-product",
 	});
 
-	await shopify.checkout.openCart({
+	await shopify.checkout.purchase({
 		variantId,
-		buyer: {
-			email: "buyer@example.com",
-			firstName: "Ada",
-			lastName: "Lovelace",
-		},
-	});
-
-	await shopify.checkout.complete({
-		page: await shopify.admin.page(),
 		buyer: {
 			email: "buyer@example.com",
 			firstName: "Ada",
@@ -187,10 +191,13 @@ The context exposes:
 - `shopify.checkout.cartUrl(options)` to build a Shopify cart permalink.
 - `shopify.checkout.openCart(options)` to open a cart permalink on the shared
   page.
+- `shopify.checkout.purchase(options)` to open the cart permalink and complete
+  the Shopify checkout on the shared page.
 - `shopify.checkout.complete(options)` to complete the current Shopify checkout
   with Playwright locators, package-owned payment iframe handling, and sanitized
-  phase timings.
-- `shopify.checkout.expectComplete(page)` to wait for Shopify's Thank You page.
+  phase timings. Pass `page` only when overriding the shared page.
+- `shopify.checkout.expectComplete(options)` to wait for Shopify's Thank You
+  page. Pass `page` only when overriding the shared page.
 - `shopify.inputs` for slower input helpers when Shopify pages reject instant
   typing.
 
@@ -202,7 +209,11 @@ through explicit subpaths:
 ```ts
 import { resolveShopifyE2EConfig } from "shopify-e2e/config";
 import { slowFill } from "shopify-e2e/inputs";
-import { completeShopifyCheckout, createLiveShopifyPage } from "shopify-e2e/playwright";
+import {
+	completeShopifyCheckout,
+	createLiveShopifyPage,
+	fillShopifyPaymentFields,
+} from "shopify-e2e/playwright";
 import { buildCartPermalinkUrl } from "shopify-e2e/storefront";
 ```
 
@@ -218,6 +229,8 @@ Live Shopify tests should stay serialized:
 - Do not run parallel checkout tabs.
 - Keep product data, checkout-download assertions, and webhook setup in the
   consuming project.
+- Use `appSetupCommand` only for app-owned fixture readiness. The package should
+  not contain application-specific product, order, webhook, or database logic.
 - Keep session files and secrets out of git.
 
 ## Troubleshooting

@@ -5,12 +5,12 @@ import { pathToFileURL } from "node:url";
 
 import { isRecord } from "../guards.js";
 import type {
+	CommandInput,
+	CommandMode,
+	CommandObject,
 	ShopifyE2EConfig,
-	TestCommandInput,
-	TestCommandMode,
-	TestCommandObject,
 } from "../shopify-e2e-config.js";
-import { defaultConfigFiles, testCommandModes } from "./defaults.js";
+import { commandModes, defaultConfigFiles } from "./defaults.js";
 import { cleanString } from "./primitives.js";
 
 export async function loadConfigFile(
@@ -104,6 +104,12 @@ function parseConfigFileInput({
 
 	return {
 		appUrl: optionalStringField(input, "appUrl", configPath),
+		appSetupCommand: optionalCommandField(
+			input,
+			"appSetupCommand",
+			configPath,
+			{ requireCommand: true },
+		),
 		authStatePath: optionalStringField(input, "authStatePath", configPath),
 		cdpPort: optionalStringOrNumberField(input, "cdpPort", configPath),
 		cdpUrl: optionalStringField(input, "cdpUrl", configPath),
@@ -130,7 +136,7 @@ function parseConfigFileInput({
 			"storefrontPassword",
 			configPath,
 		),
-		testCommand: optionalTestCommandField(input, "testCommand", configPath),
+		testCommand: optionalCommandField(input, "testCommand", configPath),
 		testFiles: optionalStringArrayField(input, "testFiles", configPath),
 	};
 }
@@ -236,11 +242,12 @@ function optionalStringArrayField(
 	throw invalidConfigField(configPath, field, "expected an array of strings");
 }
 
-function optionalTestCommandField(
+function optionalCommandField(
 	config: Record<string, unknown>,
 	field: string,
 	configPath: string,
-): TestCommandInput | undefined {
+	options: { requireCommand?: boolean } = {},
+): CommandInput | undefined {
 	const value = config[field];
 
 	if (value === undefined || value === null) {
@@ -261,17 +268,40 @@ function optionalTestCommandField(
 
 	return {
 		args: optionalStringArrayField(value, "args", configPath),
-		command: optionalStringField(value, "command", configPath),
-		mode: optionalTestCommandModeField(value, "mode", configPath),
+		command: options.requireCommand
+			? requiredStringField(
+					value,
+					"command",
+					`${field}.command`,
+					configPath,
+				)
+			: optionalStringField(value, "command", configPath),
+		mode: optionalCommandModeField(value, field, "mode", configPath),
 		shell: optionalBooleanField(value, "shell", configPath),
 	};
 }
 
-function optionalTestCommandModeField(
+function requiredStringField(
 	config: Record<string, unknown>,
-	field: keyof TestCommandObject,
+	field: string,
+	errorField: string,
 	configPath: string,
-): TestCommandMode | undefined {
+): string {
+	const value = optionalStringField(config, field, configPath);
+
+	if (value === undefined) {
+		throw invalidConfigField(configPath, errorField, "expected a string");
+	}
+
+	return value;
+}
+
+function optionalCommandModeField(
+	config: Record<string, unknown>,
+	parentField: string,
+	field: keyof CommandObject,
+	configPath: string,
+): CommandMode | undefined {
 	const value = config[field];
 
 	if (value === undefined || value === null) {
@@ -280,15 +310,15 @@ function optionalTestCommandModeField(
 
 	if (
 		typeof value === "string" &&
-		testCommandModes.includes(value as TestCommandMode)
+		commandModes.includes(value as CommandMode)
 	) {
-		return value as TestCommandMode;
+		return value as CommandMode;
 	}
 
 	throw invalidConfigField(
 		configPath,
-		`testCommand.${field}`,
-		`expected one of: ${testCommandModes.join(", ")}`,
+		`${parentField}.${field}`,
+		`expected one of: ${commandModes.join(", ")}`,
 	);
 }
 

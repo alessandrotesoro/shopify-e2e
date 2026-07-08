@@ -1,4 +1,7 @@
 export {
+	type CommandInput,
+	type CommandMode,
+	type CommandObject,
 	defineShopifyE2EConfig,
 	ensureParentDirectory,
 	hasLiveShopifyPrerequisites,
@@ -6,6 +9,7 @@ export {
 	missingLiveShopifyPrerequisites,
 	parseEnvFile,
 	type ResolveConfigOptions,
+	type ResolvedCommand,
 	type ResolvedShopifyE2EConfig,
 	type ResolvedTestCommand,
 	resolveShopifyE2EConfig,

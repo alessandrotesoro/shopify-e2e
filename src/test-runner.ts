@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 
+import { commandEnvironment } from "./app-setup-runner.js";
 import type { ResolvedShopifyE2EConfig } from "./shopify-e2e-config.js";
 
 export interface BuiltTestCommand {
@@ -65,11 +66,7 @@ export async function runTestCommand(
 	}
 
 	const child = spawn(command.command, command.args, {
-		env: {
-			...process.env,
-			SHOPIFY_E2E_LIVE: "1",
-			SHOPIFY_E2E_SKIP_GLOBAL_SETUP: "1",
-		},
+		env: commandEnvironment(config),
 		shell: command.shell,
 		stdio: "inherit",
 	});

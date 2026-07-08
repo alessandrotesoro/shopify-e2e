@@ -12,6 +12,7 @@ describe("README", () => {
 			"shopify-e2e auth save",
 			"shopify-e2e auth restore",
 			"shopify-e2e run",
+			"appSetupCommand",
 			"globalSetup",
 			"globalSetupPath",
 			"createShopifyE2E",

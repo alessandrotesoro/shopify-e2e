@@ -21,6 +21,10 @@ function applyConfig(target: ShopifyE2EConfig, source: ShopifyE2EConfig): void {
 		target.appUrl = source.appUrl;
 	}
 
+	if (hasValue(source.appSetupCommand)) {
+		target.appSetupCommand = source.appSetupCommand;
+	}
+
 	if (hasValue(source.authStatePath)) {
 		target.authStatePath = source.authStatePath;
 	}

@@ -1,12 +1,34 @@
 import type {
+	CommandInput,
+	ResolvedCommand,
 	ResolvedTestCommand,
 	TestCommandInput,
 } from "../shopify-e2e-config.js";
 import { cleanString } from "./primitives.js";
 
+export function normalizeOptionalCommand(
+	input: CommandInput | undefined,
+): ResolvedCommand | undefined {
+	if (input === undefined) {
+		return undefined;
+	}
+
+	return normalizeCommand(input);
+}
+
 export function normalizeTestCommand(
 	input: TestCommandInput | undefined,
 ): ResolvedTestCommand {
+	return normalizeCommand(input, {
+		command: process.platform === "win32" ? "npx.cmd" : "npx",
+		mode: "playwright",
+	});
+}
+
+function normalizeCommand(
+	input: CommandInput | undefined,
+	defaults: Partial<ResolvedCommand> = {},
+): ResolvedCommand {
 	if (typeof input === "string") {
 		return {
 			args: [],
@@ -16,12 +38,16 @@ export function normalizeTestCommand(
 		};
 	}
 
+	const command = cleanString(input?.command) ?? defaults.command;
+
+	if (!command) {
+		throw new Error("Shopify E2E command object requires a command.");
+	}
+
 	return {
 		args: normalizeStringArray(input?.args),
-		command:
-			cleanString(input?.command) ??
-			(process.platform === "win32" ? "npx.cmd" : "npx"),
-		mode: input?.mode ?? "playwright",
+		command,
+		mode: input?.mode ?? defaults.mode ?? "custom",
 		shell: input?.shell ?? input?.mode === "shell",
 	};
 }

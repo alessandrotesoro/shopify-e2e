@@ -1,9 +1,6 @@
 import { resolve } from "node:path";
 
-import type {
-	ShopifyE2EConfig,
-	TestCommandMode,
-} from "../shopify-e2e-config.js";
+import type { CommandMode, ShopifyE2EConfig } from "../shopify-e2e-config.js";
 
 export const defaultConfigFiles = [
 	"shopify-e2e.config.mjs",
@@ -14,11 +11,11 @@ export const defaultConfigFiles = [
 
 export const defaultCdpPort = "9222";
 
-export const testCommandModes = [
+export const commandModes = [
 	"playwright",
 	"custom",
 	"shell",
-] as const satisfies readonly TestCommandMode[];
+] as const satisfies readonly CommandMode[];
 
 export function defaultConfig(cwd: string): ShopifyE2EConfig {
 	return {
