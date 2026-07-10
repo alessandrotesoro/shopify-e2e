@@ -41,8 +41,6 @@ const resolvedConfig: ResolvedShopifyE2EConfig = {
 	testCommand: {
 		args: ["playwright", "test"],
 		command: "npx",
-		mode: "playwright",
-		shell: false,
 	},
 	testFiles: [],
 };

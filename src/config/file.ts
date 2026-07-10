@@ -9,6 +9,7 @@ import type {
 	CommandMode,
 	CommandObject,
 	ShopifyE2EConfig,
+	TestCommandInput,
 } from "../shopify-e2e-config.js";
 import { commandModes, defaultConfigFiles } from "./defaults.js";
 import { cleanString } from "./primitives.js";
@@ -143,8 +144,37 @@ function parseConfigFileInput({
 			"storefrontPassword",
 			configPath,
 		),
-		testCommand: optionalCommandField(input, "testCommand", configPath),
+		testCommand: optionalTestCommandField(input, "testCommand", configPath),
 		testFiles: optionalStringArrayField(input, "testFiles", configPath),
+	};
+}
+
+function optionalTestCommandField(
+	config: Record<string, unknown>,
+	field: string,
+	configPath: string,
+): TestCommandInput | undefined {
+	const value = config[field];
+
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+
+	if (!isRecord(value)) {
+		throw invalidConfigField(configPath, field, "expected an object");
+	}
+
+	if (Object.hasOwn(value, "mode") || Object.hasOwn(value, "shell")) {
+		throw invalidConfigField(
+			configPath,
+			field,
+			"is Playwright-only and accepts only command and args",
+		);
+	}
+
+	return {
+		args: optionalStringArrayField(value, "args", configPath),
+		command: optionalStringField(value, "command", configPath),
 	};
 }
 

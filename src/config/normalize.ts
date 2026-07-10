@@ -19,10 +19,14 @@ export function normalizeOptionalCommand(
 export function normalizeTestCommand(
 	input: TestCommandInput | undefined,
 ): ResolvedTestCommand {
-	return normalizeCommand(input, {
-		command: process.platform === "win32" ? "npx.cmd" : "npx",
-		mode: "playwright",
-	});
+	return {
+		args: normalizeStringArray(
+			input?.args ?? (input ? [] : ["playwright", "test"]),
+		),
+		command:
+			cleanString(input?.command) ??
+			(process.platform === "win32" ? "npx.cmd" : "npx"),
+	};
 }
 
 function normalizeCommand(

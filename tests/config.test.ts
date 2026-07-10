@@ -157,6 +157,17 @@ describe("resolveShopifyE2EConfig", () => {
 		);
 	});
 
+	it("rejects the legacy shell test-command environment variable", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-legacy-env-"));
+
+		await expect(
+			resolveShopifyE2EConfig(
+				{ cwd },
+				{ SHOPIFY_E2E_TEST_COMMAND: "bun run e2e" },
+			),
+		).rejects.toThrow("SHOPIFY_E2E_TEST_COMMAND is no longer supported");
+	});
+
 	it("rejects the legacy auth-state variable from an env file", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "shopify-e2e-legacy-env-file-"),
@@ -281,7 +292,6 @@ describe("resolveShopifyE2EConfig", () => {
 				shopDomain: "shape.myshopify.com",
 				testCommand: {
 					args: ["playwright", "test"],
-					mode: "custom",
 				},
 			}),
 		);
@@ -296,7 +306,7 @@ describe("resolveShopifyE2EConfig", () => {
 		});
 		expect(config.testCommand).toMatchObject({
 			args: ["playwright", "test"],
-			mode: "custom",
+			command: process.platform === "win32" ? "npx.cmd" : "npx",
 		});
 	});
 
@@ -415,8 +425,29 @@ describe("resolveShopifyE2EConfig", () => {
 		await writeFile(
 			configPath,
 			JSON.stringify({
+				testCommand: "bun run e2e",
+			}),
+		);
+
+		await expect(
+			resolveShopifyE2EConfig({ configPath, cwd }, {}),
+		).rejects.toThrow(
+			`Invalid Shopify E2E config at ${configPath}: testCommand expected an object.`,
+		);
+	});
+
+	it("rejects legacy test command modes instead of bypassing serial Playwright", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-invalid-test-command-"),
+		);
+		const configPath = join(cwd, "shopify-e2e.config.json");
+
+		await writeFile(
+			configPath,
+			JSON.stringify({
 				testCommand: {
-					mode: "parallel",
+					command: "bun",
+					mode: "custom",
 				},
 			}),
 		);
@@ -424,7 +455,7 @@ describe("resolveShopifyE2EConfig", () => {
 		await expect(
 			resolveShopifyE2EConfig({ configPath, cwd }, {}),
 		).rejects.toThrow(
-			`Invalid Shopify E2E config at ${configPath}: testCommand.mode expected one of: playwright, custom, shell.`,
+			`Invalid Shopify E2E config at ${configPath}: testCommand is Playwright-only and accepts only command and args.`,
 		);
 	});
 });

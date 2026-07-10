@@ -251,6 +251,15 @@ export async function prepareShopifySession(
 	}
 }
 
+export async function validateShopifySession(
+	config: ResolvedShopifyE2EConfig,
+): Promise<void> {
+	assertRunnableConfig(config);
+	assertLoopbackCdpUrl(config.cdpUrl);
+	await loadAuthProfile(config.authProfile);
+	await ensureChrome(config, adminStoreUrl(config.shopDomain));
+}
+
 export async function captureShopifyAuthProfile(
 	config: ResolvedShopifyE2EConfig,
 	options: CaptureShopifyAuthProfileOptions = {},

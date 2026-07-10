@@ -38,6 +38,5 @@ export {
 	type ResolvedTestCommand,
 	type ShopifyE2EConfig,
 	type TestCommandInput,
-	type TestCommandMode,
 	type TestCommandObject,
 } from "./shopify-e2e-config.js";

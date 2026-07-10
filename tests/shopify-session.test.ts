@@ -8,6 +8,7 @@ import type {
 
 const mocks = vi.hoisted(() => ({
 	connectOverCDP: vi.fn(),
+	ensureChrome: vi.fn(),
 	loadAuthProfile: vi.fn(),
 	waitForCdp: vi.fn(),
 }));
@@ -31,6 +32,7 @@ vi.mock("../src/browser.js", async (importOriginal) => {
 
 	return {
 		...original,
+		ensureChrome: mocks.ensureChrome,
 		waitForCdp: mocks.waitForCdp,
 	};
 });
@@ -40,6 +42,7 @@ const {
 	createShopifyRuntimeSession,
 	inspectShopifySession,
 	resetShopifyRuntimeLeaseForTests,
+	validateShopifySession,
 } = await import("../src/shopify-session.js");
 
 function profile(name: string): ResolvedShopifyAuthProfile {
@@ -65,8 +68,6 @@ function config(
 		testCommand: {
 			args: ["playwright", "test"],
 			command: "npx",
-			mode: "playwright",
-			shell: false,
 		},
 		testFiles: [],
 	};
@@ -117,6 +118,12 @@ describe("Shopify runtime session", () => {
 	beforeEach(() => {
 		resetShopifyRuntimeLeaseForTests();
 		mocks.connectOverCDP.mockReset();
+		mocks.ensureChrome.mockReset();
+		mocks.ensureChrome.mockResolvedValue({
+			cdpUrl: "http://127.0.0.1:9222",
+			profilePath: "/tmp/chrome",
+			started: false,
+		});
 		mocks.loadAuthProfile.mockReset();
 		mocks.loadAuthProfile.mockResolvedValue({ cookies: [], origins: [] });
 		mocks.waitForCdp.mockReset();
@@ -317,6 +324,57 @@ describe("Shopify runtime session", () => {
 
 		expect(fake.contextClose).toHaveBeenCalledOnce();
 		expect(fake.browserClose).toHaveBeenCalledOnce();
+	});
+});
+
+describe("Shopify session validation", () => {
+	beforeEach(() => {
+		mocks.connectOverCDP.mockReset();
+		mocks.ensureChrome.mockReset();
+		mocks.ensureChrome.mockResolvedValue({
+			cdpUrl: "http://127.0.0.1:9222",
+			profilePath: "/tmp/chrome",
+			started: false,
+		});
+		mocks.loadAuthProfile.mockReset();
+		mocks.loadAuthProfile.mockResolvedValue({ cookies: [], origins: [] });
+	});
+
+	it("rejects remote CDP before reading bearer profile state", async () => {
+		await expect(
+			validateShopifySession(
+				config(profile("customer-a"), "https://cdp.example.com"),
+			),
+		).rejects.toThrow("auth profiles require a loopback CDP URL");
+
+		expect(mocks.loadAuthProfile).not.toHaveBeenCalled();
+		expect(mocks.ensureChrome).not.toHaveBeenCalled();
+		expect(mocks.connectOverCDP).not.toHaveBeenCalled();
+	});
+
+	it("rejects missing or malformed selected state before ensuring Chrome", async () => {
+		mocks.loadAuthProfile.mockRejectedValue(new Error("malformed profile"));
+
+		await expect(validateShopifySession(config())).rejects.toThrow(
+			"malformed profile",
+		);
+		expect(mocks.ensureChrome).not.toHaveBeenCalled();
+		expect(mocks.connectOverCDP).not.toHaveBeenCalled();
+	});
+
+	it("validates profile and Chrome without creating a Playwright context", async () => {
+		const selected = config();
+
+		await validateShopifySession(selected);
+
+		expect(mocks.loadAuthProfile).toHaveBeenCalledWith(
+			selected.authProfile,
+		);
+		expect(mocks.ensureChrome).toHaveBeenCalledWith(
+			selected,
+			"https://admin.shopify.com/store/example",
+		);
+		expect(mocks.connectOverCDP).not.toHaveBeenCalled();
 	});
 });
 

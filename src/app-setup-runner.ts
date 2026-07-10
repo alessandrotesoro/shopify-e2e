@@ -23,11 +23,11 @@ export async function runAppSetupCommand(
 	);
 
 	return runCommand(config.appSetupCommand, {
-		env: commandEnvironment(config),
+		env: appSetupCommandEnvironment(config),
 	});
 }
 
-export function commandEnvironment(
+export function inheritedCommandEnvironment(
 	config: Pick<ResolvedShopifyE2EConfig, "envFile">,
 ): NodeJS.ProcessEnv {
 	const envFile = config.envFile ? parseEnvFile(config.envFile) : {};
@@ -36,8 +36,18 @@ export function commandEnvironment(
 		...envFile,
 		...process.env,
 		SHOPIFY_E2E_LIVE: "1",
-		SHOPIFY_E2E_SKIP_GLOBAL_SETUP: "1",
 	};
+}
+
+export function appSetupCommandEnvironment(
+	config: Pick<ResolvedShopifyE2EConfig, "envFile">,
+): NodeJS.ProcessEnv {
+	const env = inheritedCommandEnvironment(config);
+
+	delete env.SHOPIFY_E2E_AUTH_PROFILE;
+	delete env.SHOPIFY_E2E_SKIP_GLOBAL_SETUP;
+
+	return env;
 }
 
 function runCommand(

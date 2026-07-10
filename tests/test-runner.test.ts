@@ -8,130 +8,85 @@ import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 import { buildTestCommand, runTestCommand } from "../src/test-runner.js";
 
 const baseConfig: ResolvedShopifyE2EConfig = {
-	authStatePath: "/tmp/auth.json",
+	authProfile: {
+		name: "customer-a",
+		storageStatePath: "/tmp/.shopify-e2e/auth/profiles/customer-a.json",
+	},
 	cdpPort: "9222",
 	cdpUrl: "http://127.0.0.1:9222",
-	chromeProfilePath: "/tmp/profile",
+	chromeProfilePath: "/tmp/chrome",
 	cwd: "/tmp",
 	live: true,
 	shopDomain: "example.myshopify.com",
-	testCommand: {
-		args: ["playwright", "test"],
-		command: "npx",
-		mode: "playwright",
-		shell: false,
-	},
+	testCommand: { args: ["playwright", "test"], command: "npx" },
 	testFiles: ["e2e/live"],
 };
 
-describe("buildTestCommand", () => {
-	it("forces one worker for default Playwright runner commands", () => {
-		const command = buildTestCommand(baseConfig, ["--project=chromium"]);
-
-		expect(command.command).toBe("npx");
-		expect(command.args).toEqual([
-			"playwright",
-			"test",
-			"e2e/live",
-			"--project=chromium",
-			"--workers=1",
-		]);
-		expect(command.forcedWorkers).toBe(true);
-	});
-
-	it("warns for shell commands it cannot enforce", () => {
-		const command = buildTestCommand({
-			...baseConfig,
-			testCommand: {
-				args: [],
-				command: "bun run e2e",
-				mode: "shell",
-				shell: true,
-			},
+describe("test runner", () => {
+	it("always forces one Playwright worker", () => {
+		expect(buildTestCommand(baseConfig, ["--project=chromium"])).toEqual({
+			args: [
+				"playwright",
+				"test",
+				"e2e/live",
+				"--project=chromium",
+				"--workers=1",
+			],
+			command: "npx",
+			forcedWorkers: true,
+			shell: false,
 		});
-
-		expect(command.forcedWorkers).toBe(false);
-		expect(command.shell).toBe(true);
-		expect(command.warnings[0]).toContain("cannot enforce");
 	});
 
-	it("returns the spawned test command exit code", async () => {
-		const code = await runTestCommand({
-			...baseConfig,
-			testCommand: {
-				args: ["-e", "process.exit(7)"],
-				command: process.execPath,
-				mode: "custom",
-				shell: false,
-			},
-			testFiles: [],
-		});
-
-		expect(code).toBe(7);
-	});
-
-	it("marks CLI-launched runs so package global setup does not double-prepare Chrome", async () => {
-		const code = await runTestCommand({
-			...baseConfig,
-			testCommand: {
-				args: [
-					"-e",
-					"process.exit(process.env.SHOPIFY_E2E_SKIP_GLOBAL_SETUP === '1' ? 0 : 7)",
-				],
-				command: process.execPath,
-				mode: "custom",
-				shell: false,
-			},
-			testFiles: [],
-		});
-
-		expect(code).toBe(0);
-	});
-
-	it("loads env-file values for spawned test commands without overriding shell env", async () => {
+	it("applies selected profile and skip controls after inherited env", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-test-env-"));
 		const envFile = join(cwd, ".env");
-		const previousShellValue = process.env.SHOPIFY_E2E_SHELL_WINS;
-
+		const runnerFile = join(cwd, "runner.mjs");
 		await writeFile(
 			envFile,
 			[
-				"SHOPIFY_E2E_FILE_ONLY=file-value",
-				"SHOPIFY_E2E_SHELL_WINS=file-value",
+				"SHOPIFY_E2E_AUTH_PROFILE=from-file",
+				"SHOPIFY_E2E_SKIP_GLOBAL_SETUP=0",
 			].join("\n"),
 		);
-
-		process.env.SHOPIFY_E2E_SHELL_WINS = "shell-value";
+		await writeFile(
+			runnerFile,
+			[
+				"const ok = process.env.SHOPIFY_E2E_AUTH_PROFILE === 'customer-a'",
+				"&& process.env.SHOPIFY_E2E_SKIP_GLOBAL_SETUP === '1'",
+				"&& process.argv.includes('--workers=1');",
+				"process.exit(ok ? 0 : 7);",
+			].join(" "),
+		);
+		const previousProfile = process.env.SHOPIFY_E2E_AUTH_PROFILE;
+		const previousSkip = process.env.SHOPIFY_E2E_SKIP_GLOBAL_SETUP;
+		process.env.SHOPIFY_E2E_AUTH_PROFILE = "from-process";
+		process.env.SHOPIFY_E2E_SKIP_GLOBAL_SETUP = "0";
 
 		try {
 			const code = await runTestCommand({
 				...baseConfig,
 				envFile,
 				testCommand: {
-					args: [
-						"-e",
-						[
-							"const ok =",
-							"process.env.SHOPIFY_E2E_FILE_ONLY === 'file-value'",
-							"&& process.env.SHOPIFY_E2E_SHELL_WINS === 'shell-value'",
-							"&& process.env.SHOPIFY_E2E_LIVE === '1';",
-							"process.exit(ok ? 0 : 7);",
-						].join(" "),
-					],
+					args: [runnerFile],
 					command: process.execPath,
-					mode: "custom",
-					shell: false,
 				},
 				testFiles: [],
 			});
 
 			expect(code).toBe(0);
 		} finally {
-			if (previousShellValue === undefined) {
-				delete process.env.SHOPIFY_E2E_SHELL_WINS;
-			} else {
-				process.env.SHOPIFY_E2E_SHELL_WINS = previousShellValue;
-			}
+			restoreEnv("SHOPIFY_E2E_AUTH_PROFILE", previousProfile);
+			restoreEnv("SHOPIFY_E2E_SKIP_GLOBAL_SETUP", previousSkip);
 		}
 	});
 });
+
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[name];
+		return;
+	}
+
+	process.env[name] = value;
+}

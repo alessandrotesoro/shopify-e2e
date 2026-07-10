@@ -4,88 +4,57 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 
 const mocks = vi.hoisted(() => ({
-	disconnectLiveShopifySession: vi.fn(),
+	captureShopifyAuthProfile: vi.fn(),
 	prepareShopifySession: vi.fn(),
 	resolveShopifyE2EConfig: vi.fn(),
 	runAppSetupCommand: vi.fn(),
-	ensureChrome: vi.fn(),
-	authStateExists: vi.fn(),
-	restoreAuthState: vi.fn(),
 	runTestCommand: vi.fn(),
-	saveAuthState: vi.fn(),
+	validateShopifySession: vi.fn(),
+	waitForInteractiveConfirmation: vi.fn(),
 }));
 
-vi.mock("../src/shopify-e2e-config.js", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("../src/shopify-e2e-config.js")>();
-
-	return {
-		...actual,
-		resolveShopifyE2EConfig: mocks.resolveShopifyE2EConfig,
-	};
-});
+vi.mock("../src/shopify-e2e-config.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/shopify-e2e-config.js")>()),
+	resolveShopifyE2EConfig: mocks.resolveShopifyE2EConfig,
+}));
 
 vi.mock("../src/app-setup-runner.js", () => ({
 	runAppSetupCommand: mocks.runAppSetupCommand,
 }));
 
 vi.mock("../src/shopify-session.js", () => ({
-	disconnectLiveShopifySession: mocks.disconnectLiveShopifySession,
+	captureShopifyAuthProfile: mocks.captureShopifyAuthProfile,
 	prepareShopifySession: mocks.prepareShopifySession,
+	validateShopifySession: mocks.validateShopifySession,
 }));
 
-vi.mock("../src/auth-state.js", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("../src/auth-state.js")>();
+vi.mock("../src/interactive-session.js", () => ({
+	waitForInteractiveConfirmation: mocks.waitForInteractiveConfirmation,
+}));
 
-	return {
-		...actual,
-		authStateExists: mocks.authStateExists,
-		restoreAuthState: mocks.restoreAuthState,
-		saveAuthState: mocks.saveAuthState,
-	};
-});
-
-vi.mock("../src/browser.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/browser.js")>();
-
-	return {
-		...actual,
-		ensureChrome: mocks.ensureChrome,
-	};
-});
-
-vi.mock("../src/test-runner.js", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("../src/test-runner.js")>();
-
-	return {
-		...actual,
-		runTestCommand: mocks.runTestCommand,
-	};
-});
+vi.mock("../src/test-runner.js", () => ({
+	runTestCommand: mocks.runTestCommand,
+}));
 
 const { default: Open } = await import("../src/commands/open.js");
 const { default: Run } = await import("../src/commands/run.js");
 const { default: AuthSave } = await import("../src/commands/auth/save.js");
-const { default: AuthRestore } = await import(
-	"../src/commands/auth/restore.js"
-);
 
 const config: ResolvedShopifyE2EConfig = {
 	appUrl: "https://app.test",
-	authStatePath: "/tmp/auth.json",
+	authProfile: {
+		name: "customer-a",
+		storageStatePath: "/tmp/.shopify-e2e/auth/profiles/customer-a.json",
+	},
 	cdpPort: "9222",
 	cdpUrl: "http://127.0.0.1:9222",
-	chromeProfilePath: "/tmp/profile",
+	chromeProfilePath: "/tmp/chrome",
 	cwd: "/tmp",
 	live: true,
 	shopDomain: "example.myshopify.com",
 	testCommand: {
 		args: ["playwright", "test"],
 		command: "npx",
-		mode: "playwright",
-		shell: false,
 	},
 	testFiles: [],
 };
@@ -93,73 +62,74 @@ const config: ResolvedShopifyE2EConfig = {
 describe("commands", () => {
 	beforeEach(() => {
 		vi.resetAllMocks();
-		mocks.resolveShopifyE2EConfig.mockResolvedValue(config);
+		mocks.resolveShopifyE2EConfig.mockImplementation(
+			async (overrides = {}) => {
+				const selected =
+					typeof overrides.authProfile === "string"
+						? overrides.authProfile
+						: config.authProfile.name;
+
+				return {
+					...config,
+					testFiles: overrides.testFiles ?? config.testFiles,
+					authProfile: {
+						name: selected,
+						storageStatePath: `/tmp/.shopify-e2e/auth/profiles/${selected}.json`,
+					},
+				};
+			},
+		);
+		mocks.captureShopifyAuthProfile.mockResolvedValue({
+			chromeStarted: false,
+			profile: config.authProfile,
+			saved: true,
+		});
 		mocks.prepareShopifySession.mockResolvedValue({
-			authStatePath: config.authStatePath,
-			authStateRestored: true,
-			authStateSaved: true,
-			chromeStarted: true,
+			chromeStarted: false,
+			close: vi.fn(async () => undefined),
 			page: {
 				url: () => "https://admin.shopify.com/store/example",
 			} as Page,
 		});
-		mocks.runTestCommand.mockResolvedValue(0);
 		mocks.runAppSetupCommand.mockResolvedValue(0);
-		mocks.saveAuthState.mockResolvedValue({ path: config.authStatePath });
-		mocks.authStateExists.mockReturnValue(true);
-		mocks.restoreAuthState.mockResolvedValue({
-			path: config.authStatePath,
-			restored: true,
-		});
-		mocks.ensureChrome.mockResolvedValue({
-			cdpUrl: config.cdpUrl,
-			profilePath: config.chromeProfilePath,
-			started: false,
-		});
-		mocks.disconnectLiveShopifySession.mockResolvedValue(undefined);
+		mocks.runTestCommand.mockResolvedValue(0);
+		mocks.validateShopifySession.mockResolvedValue(undefined);
+		mocks.waitForInteractiveConfirmation.mockResolvedValue("confirmed");
 	});
 
 	afterEach(() => {
 		process.exitCode = undefined;
 	});
 
-	it("open parses config flags and prepares the Shopify session", async () => {
-		await Open.run(
-			[
-				"--shop",
-				"example.myshopify.com",
-				"--storefront-domain",
-				"store.example.com",
-				"--cdp-port",
-				"9333",
-				"--no-wait",
-			],
-			{ root: process.cwd() },
-		);
+	it("opens one isolated selected-profile inspection and closes it after completion", async () => {
+		await Open.run(["--auth-profile", "customer-a"], {
+			root: process.cwd(),
+		});
 
-		expect(mocks.resolveShopifyE2EConfig).toHaveBeenCalledWith(
-			expect.objectContaining({
-				cdpPort: 9333,
-				shopDomain: "example.myshopify.com",
-				storefrontDomain: "store.example.com",
-			}),
-		);
-		expect(mocks.prepareShopifySession).toHaveBeenCalledWith(
-			config,
-			expect.objectContaining({
-				waitForLogin: false,
-			}),
-		);
-		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
+		expect(mocks.prepareShopifySession).toHaveBeenCalledWith(config, {
+			waitForLogin: false,
+		});
+		expect(mocks.waitForInteractiveConfirmation).toHaveBeenCalledWith({
+			page: expect.anything(),
+		});
+		const session =
+			await mocks.prepareShopifySession.mock.results[0]?.value;
+		expect(session.close).toHaveBeenCalledOnce();
 	});
 
-	it("run forwards pass-through args and propagates the test exit code", async () => {
+	it("removes the obsolete open wait flag", async () => {
+		await expect(
+			Open.run(["--no-wait"], { root: process.cwd() }),
+		).rejects.toThrow(/Nonexistent flag: --no-wait/);
+	});
+
+	it("validates run without creating a parent context, then runs setup and tests", async () => {
 		mocks.runTestCommand.mockResolvedValue(7);
 
 		await Run.run(
 			[
-				"--shop",
-				"example.myshopify.com",
+				"--auth-profile",
+				"customer-a",
 				"--test-file",
 				"e2e/live.spec.ts",
 				"--",
@@ -168,121 +138,96 @@ describe("commands", () => {
 			{ root: process.cwd() },
 		);
 
-		expect(mocks.resolveShopifyE2EConfig).toHaveBeenCalledWith(
+		expect(mocks.prepareShopifySession).not.toHaveBeenCalled();
+		expect(mocks.validateShopifySession).toHaveBeenCalledWith(
 			expect.objectContaining({
-				shopDomain: "example.myshopify.com",
+				authProfile: expect.objectContaining({ name: "customer-a" }),
+			}),
+		);
+		expect(mocks.runAppSetupCommand).toHaveBeenCalledOnce();
+		expect(mocks.runTestCommand).toHaveBeenCalledWith(
+			expect.objectContaining({
+				authProfile: expect.objectContaining({ name: "customer-a" }),
 				testFiles: ["e2e/live.spec.ts"],
 			}),
+			["--project=chromium"],
 		);
-		expect(mocks.prepareShopifySession).toHaveBeenCalledWith(
-			config,
-			expect.objectContaining({
-				waitForLogin: true,
-			}),
+		expect(
+			mocks.validateShopifySession.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			mocks.runAppSetupCommand.mock.invocationCallOrder[0] ?? 0,
 		);
-		expect(mocks.runAppSetupCommand).toHaveBeenCalledWith(
-			config,
-			expect.objectContaining({
-				log: expect.any(Function),
-			}),
-		);
-		expect(mocks.runTestCommand).toHaveBeenCalledWith(config, [
-			"--project=chromium",
-		]);
-		const prepareOrder =
-			mocks.prepareShopifySession.mock.invocationCallOrder[0];
-		const setupOrder = mocks.runAppSetupCommand.mock.invocationCallOrder[0];
-		const testOrder = mocks.runTestCommand.mock.invocationCallOrder[0];
-
-		if (
-			prepareOrder === undefined ||
-			setupOrder === undefined ||
-			testOrder === undefined
-		) {
-			throw new Error(
-				"Expected session, setup, and test commands to run.",
-			);
-		}
-
-		expect(prepareOrder).toBeLessThan(setupOrder);
-		expect(setupOrder).toBeLessThan(testOrder);
+		expect(
+			mocks.runAppSetupCommand.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.runTestCommand.mock.invocationCallOrder[0] ?? 0);
 		expect(process.exitCode).toBe(7);
-		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
 	});
 
-	it("run stops before Playwright when the app setup command fails", async () => {
-		mocks.runAppSetupCommand.mockResolvedValue(5);
-
+	it.each([
+		"--wait",
+		"--test-command",
+	])("removes the obsolete run flag %s", async (flag) => {
 		await expect(
-			Run.run(["--shop", "example.myshopify.com"], {
-				root: process.cwd(),
-			}),
-		).rejects.toThrow("App setup command failed with exit code 5.");
-		expect(mocks.prepareShopifySession).toHaveBeenCalledTimes(1);
-		expect(mocks.runAppSetupCommand).toHaveBeenCalledTimes(1);
-		expect(mocks.runTestCommand).not.toHaveBeenCalled();
-		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
+			Run.run([flag, "unused"], { root: process.cwd() }),
+		).rejects.toThrow(/Nonexistent flag/);
 	});
 
-	it("run disconnects the shared browser when the test command fails", async () => {
-		mocks.runTestCommand.mockRejectedValue(new Error("failed"));
-
-		await expect(
-			Run.run(["--shop", "example.myshopify.com"], {
-				root: process.cwd(),
-			}),
-		).rejects.toThrow("failed");
-		expect(mocks.disconnectLiveShopifySession).toHaveBeenCalledTimes(1);
-	});
-
-	it("run fails before preparing the session when app URL is missing", async () => {
-		mocks.resolveShopifyE2EConfig.mockResolvedValue({
-			...config,
-			appUrl: undefined,
-		});
-
-		await expect(
-			Run.run(["--shop", "example.myshopify.com"], {
-				root: process.cwd(),
-			}),
-		).rejects.toThrow(
-			/Missing live Shopify e2e prerequisites: SHOPIFY_E2E_APP_URL/,
+	it("stops before setup and tests when the selected profile is invalid", async () => {
+		mocks.validateShopifySession.mockRejectedValue(
+			new Error("selected profile is malformed"),
 		);
-		expect(mocks.prepareShopifySession).not.toHaveBeenCalled();
+
+		await expect(
+			Run.run(["--auth-profile", "customer-a"], {
+				root: process.cwd(),
+			}),
+		).rejects.toThrow("selected profile is malformed");
 		expect(mocks.runAppSetupCommand).not.toHaveBeenCalled();
 		expect(mocks.runTestCommand).not.toHaveBeenCalled();
-		expect(mocks.disconnectLiveShopifySession).not.toHaveBeenCalled();
 	});
 
-	it("auth save only saves the current CDP context", async () => {
-		await AuthSave.run(["--auth-state", "/tmp/saved-auth.json"], {
-			root: process.cwd(),
-		});
-
-		expect(mocks.saveAuthState).toHaveBeenCalledWith(config);
-		expect(mocks.prepareShopifySession).not.toHaveBeenCalled();
-	});
-
-	it("auth restore skips Chrome startup when no auth state exists", async () => {
-		mocks.authStateExists.mockReturnValue(false);
-
-		await AuthRestore.run(["--shop", "example.myshopify.com"], {
-			root: process.cwd(),
-		});
-
-		expect(mocks.ensureChrome).not.toHaveBeenCalled();
-		expect(mocks.restoreAuthState).not.toHaveBeenCalled();
-	});
-
-	it("auth restore starts Chrome only when an auth state can be restored", async () => {
-		await AuthRestore.run(["--shop", "example.myshopify.com"], {
-			root: process.cwd(),
-		});
-
-		expect(mocks.ensureChrome).toHaveBeenCalledWith(
-			config,
-			"https://admin.shopify.com/store/example",
+	it("captures a selected profile from an explicit base profile", async () => {
+		await AuthSave.run(
+			[
+				"--auth-profile",
+				"customer-a",
+				"--from-auth-profile",
+				"admin-base",
+			],
+			{ root: process.cwd() },
 		);
-		expect(mocks.restoreAuthState).toHaveBeenCalledWith(config);
+
+		expect(mocks.captureShopifyAuthProfile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				authProfile: expect.objectContaining({ name: "customer-a" }),
+			}),
+			expect.objectContaining({
+				empty: false,
+				fromAuthProfile: {
+					name: "admin-base",
+					storageStatePath:
+						"/tmp/.shopify-e2e/auth/profiles/admin-base.json",
+				},
+			}),
+		);
+	});
+
+	it("captures an explicitly empty profile and rejects conflicting seed flags", async () => {
+		await AuthSave.run(["--auth-profile", "admin-base", "--empty"], {
+			root: process.cwd(),
+		});
+
+		expect(mocks.captureShopifyAuthProfile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				authProfile: expect.objectContaining({ name: "admin-base" }),
+			}),
+			expect.objectContaining({ empty: true }),
+		);
+
+		await expect(
+			AuthSave.run(["--empty", "--from-auth-profile", "admin-base"], {
+				root: process.cwd(),
+			}),
+		).rejects.toThrow(/cannot also be provided/);
 	});
 });

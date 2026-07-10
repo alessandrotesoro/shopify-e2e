@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-import { commandEnvironment } from "./app-setup-runner.js";
+import { inheritedCommandEnvironment } from "./app-setup-runner.js";
 import type { ResolvedShopifyE2EConfig } from "./shopify-e2e-config.js";
 
 export interface BuiltTestCommand {
@@ -8,7 +8,6 @@ export interface BuiltTestCommand {
 	command: string;
 	forcedWorkers: boolean;
 	shell: boolean;
-	warnings: string[];
 }
 
 export function buildTestCommand(
@@ -16,42 +15,17 @@ export function buildTestCommand(
 	passThroughArgs: string[] = [],
 ): BuiltTestCommand {
 	const base = config.testCommand;
-	const warnings: string[] = [];
-
-	if (base.mode === "shell") {
-		warnings.push(
-			"Custom shell test command configured; shopify-e2e cannot enforce Playwright --workers=1 inside that command.",
-		);
-
-		return {
-			args: [...config.testFiles, ...passThroughArgs],
-			command: base.command,
-			forcedWorkers: false,
-			shell: true,
-			warnings,
-		};
-	}
-
-	const forcedWorkers = base.mode === "playwright";
-	const workerArgs = forcedWorkers ? ["--workers=1"] : [];
-
-	if (!forcedWorkers) {
-		warnings.push(
-			"Custom test command mode configured; ensure live Shopify tests run with one worker.",
-		);
-	}
 
 	return {
 		args: [
 			...base.args,
 			...config.testFiles,
 			...passThroughArgs,
-			...workerArgs,
+			"--workers=1",
 		],
 		command: base.command,
-		forcedWorkers,
-		shell: base.shell,
-		warnings,
+		forcedWorkers: true,
+		shell: false,
 	};
 }
 
@@ -61,12 +35,8 @@ export async function runTestCommand(
 ): Promise<number> {
 	const command = buildTestCommand(config, passThroughArgs);
 
-	for (const warning of command.warnings) {
-		process.stderr.write(`${warning}\n`);
-	}
-
 	const child = spawn(command.command, command.args, {
-		env: commandEnvironment(config),
+		env: testCommandEnvironment(config),
 		shell: command.shell,
 		stdio: "inherit",
 	});
@@ -86,4 +56,14 @@ export async function runTestCommand(
 			);
 		});
 	});
+}
+
+export function testCommandEnvironment(
+	config: Pick<ResolvedShopifyE2EConfig, "authProfile" | "envFile">,
+): NodeJS.ProcessEnv {
+	return {
+		...inheritedCommandEnvironment(config),
+		SHOPIFY_E2E_AUTH_PROFILE: config.authProfile.name,
+		SHOPIFY_E2E_SKIP_GLOBAL_SETUP: "1",
+	};
 }

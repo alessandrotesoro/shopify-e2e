@@ -59,10 +59,5 @@ function isResolvedTestCommand(
 		return false;
 	}
 
-	return (
-		typeof value.command === "string" &&
-		Array.isArray(value.args) &&
-		typeof value.mode === "string" &&
-		typeof value.shell === "boolean"
-	);
+	return typeof value.command === "string" && Array.isArray(value.args);
 }

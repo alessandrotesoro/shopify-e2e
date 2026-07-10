@@ -68,8 +68,6 @@ async function configFor(
 		testCommand: {
 			args: ["playwright", "test"],
 			command: "npx",
-			mode: "playwright",
-			shell: false,
 		},
 		testFiles: [],
 	};

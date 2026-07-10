@@ -22,7 +22,6 @@ export function defaultConfig(): ShopifyE2EConfig {
 		testCommand: {
 			args: ["playwright", "test"],
 			command: process.platform === "win32" ? "npx.cmd" : "npx",
-			mode: "playwright",
 		},
 		testFiles: [],
 	};

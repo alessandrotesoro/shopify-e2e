@@ -37,12 +37,19 @@ describe("package metadata", () => {
 
 	it("keeps only command modules in the oclif command discovery tree", async () => {
 		await expect(commandFiles(resolve("src/commands"))).resolves.toEqual([
-			"auth/restore.ts",
 			"auth/save.ts",
 			"doctor.ts",
 			"open.ts",
 			"run.ts",
 		]);
+	});
+
+	it("cleans dist before every build", async () => {
+		const packageJson = JSON.parse(
+			await readFile(resolve("package.json"), "utf8"),
+		) as { scripts: Record<string, string> };
+
+		expect(packageJson.scripts.build).toBe("npm run clean && tsc");
 	});
 });
 

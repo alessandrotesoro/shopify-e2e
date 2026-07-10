@@ -1,49 +1,33 @@
-import { Command, Flags } from "@oclif/core";
+import { Command } from "@oclif/core";
+
 import { configFlags, configOverridesFromFlags } from "../cli-config-flags.js";
+import { waitForInteractiveConfirmation } from "../interactive-session.js";
 import { resolveShopifyE2EConfig } from "../shopify-e2e-config.js";
-import {
-	disconnectLiveShopifySession,
-	prepareShopifySession,
-} from "../shopify-session.js";
+import { prepareShopifySession } from "../shopify-session.js";
 
 export default class Open extends Command {
-	static flags = {
-		...configFlags,
-		wait: Flags.boolean({
-			allowNo: true,
-			default: true,
-			description: "Wait and poll until Shopify Admin login is ready.",
-		}),
-	};
-
-	static summary = "Open Shopify Admin in a reusable Chrome CDP session.";
+	static flags = configFlags;
+	static summary = "Inspect a named Shopify auth profile in isolation.";
 
 	async run(): Promise<void> {
 		const { flags } = await this.parse(Open);
 		const config = await resolveShopifyE2EConfig(
 			configOverridesFromFlags(flags),
 		);
+		const session = await prepareShopifySession(config, {
+			waitForLogin: false,
+		});
 
 		try {
-			const session = await prepareShopifySession(config, {
-				log: (message) => this.log(message),
-				waitForLogin: flags.wait,
-			});
-
 			this.log(
-				session.chromeStarted
-					? `Chrome opened with CDP at ${config.cdpUrl}`
-					: `Chrome CDP is already reachable at ${config.cdpUrl}`,
+				`Inspecting Shopify auth profile ${JSON.stringify(config.authProfile.name)} from ${config.authProfile.storageStatePath}.`,
 			);
-			this.log(`Profile directory: ${config.chromeProfilePath}`);
 			this.log(
-				session.authStateSaved
-					? `Auth state saved to ${session.authStatePath}`
-					: "Auth state was not saved because Shopify Admin was not confirmed logged in.",
+				"Press Enter, close the inspection page, or press Ctrl-C to finish.",
 			);
-			this.log(`Current page: ${session.page.url()}`);
+			await waitForInteractiveConfirmation({ page: session.page });
 		} finally {
-			await disconnectLiveShopifySession();
+			await session.close();
 		}
 	}
 }

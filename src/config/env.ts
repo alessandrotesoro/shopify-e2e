@@ -46,6 +46,12 @@ export function configFromEnv(env: NodeJS.ProcessEnv): ShopifyE2EConfig {
 		);
 	}
 
+	if (env.SHOPIFY_E2E_TEST_COMMAND !== undefined) {
+		throw new Error(
+			"SHOPIFY_E2E_TEST_COMMAND is no longer supported; configure the Playwright testCommand object in shopify-e2e.config.*.",
+		);
+	}
+
 	return {
 		appUrl: cleanString(env.SHOPIFY_E2E_APP_URL),
 		authProfile: env.SHOPIFY_E2E_AUTH_PROFILE,
@@ -58,7 +64,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv): ShopifyE2EConfig {
 		shopDomain: cleanString(env.SHOPIFY_E2E_SHOP_DOMAIN),
 		storefrontDomain: cleanString(env.SHOPIFY_E2E_STOREFRONT_DOMAIN),
 		storefrontPassword: cleanString(env.SHOPIFY_E2E_STOREFRONT_PASSWORD),
-		testCommand: cleanString(env.SHOPIFY_E2E_TEST_COMMAND),
 		testFiles: splitList(env.SHOPIFY_E2E_TEST_FILES),
 	};
 }

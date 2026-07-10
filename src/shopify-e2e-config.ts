@@ -31,9 +31,12 @@ export interface CommandObject {
 
 export type CommandInput = string | CommandObject;
 
-export type TestCommandMode = CommandMode;
-export type TestCommandObject = CommandObject;
-export type TestCommandInput = string | TestCommandObject;
+export interface TestCommandObject {
+	args?: string[];
+	command?: string;
+}
+
+export type TestCommandInput = TestCommandObject;
 
 export interface ShopifyE2EConfig {
 	appUrl?: string;
@@ -60,11 +63,14 @@ export interface ResolveConfigOptions extends ShopifyE2EConfig {
 export interface ResolvedTestCommand {
 	args: string[];
 	command: string;
+}
+
+export interface ResolvedCommand {
+	args: string[];
+	command: string;
 	mode: CommandMode;
 	shell: boolean;
 }
-
-export type ResolvedCommand = ResolvedTestCommand;
 
 export interface ResolvedShopifyAuthProfile {
 	name: string;
