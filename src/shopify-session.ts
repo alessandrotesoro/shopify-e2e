@@ -56,14 +56,22 @@ export interface ShopifySessionInspection {
 }
 
 export interface LiveShopifyPage {
+	close(): Promise<void>;
 	context: BrowserContext;
 	page: Page;
 }
 
 export interface PreparedShopifySession extends LiveShopifyPage {
-	authProfile: ResolvedShopifyAuthProfile;
+	authProfile: Readonly<ResolvedShopifyAuthProfile>;
 	browser: Browser;
 	chromeStarted: boolean;
+}
+
+export interface ShopifyRuntimeSession {
+	readonly authProfile: Readonly<ResolvedShopifyAuthProfile>;
+	readonly config: ResolvedShopifyE2EConfig;
+	close(): Promise<void>;
+	page(): Promise<Page>;
 }
 
 export interface PrepareShopifySessionOptions {
@@ -91,36 +99,156 @@ export interface CaptureShopifyAuthProfileResult {
 
 type RunnableShopifyConfig = ResolvedShopifyE2EConfig & { shopDomain: string };
 
-let sharedBrowser: Browser | null = null;
-let sharedContext: BrowserContext | null = null;
-let sharedPage: Page | null = null;
+interface ActiveShopifyRuntime {
+	browser: Browser;
+	context: BrowserContext;
+	page: Page;
+}
+
+let activeRuntimeLease: symbol | undefined;
+
+class OwnedShopifyRuntimeSession implements ShopifyRuntimeSession {
+	readonly authProfile: Readonly<ResolvedShopifyAuthProfile>;
+	readonly config: ResolvedShopifyE2EConfig;
+
+	private activeRuntime?: ActiveShopifyRuntime;
+	private activation?: Promise<ActiveShopifyRuntime>;
+	private closePromise?: Promise<void>;
+	private closed = false;
+
+	constructor(
+		config: ResolvedShopifyE2EConfig,
+		private readonly lease: symbol,
+	) {
+		this.config = config;
+		this.authProfile = config.authProfile;
+	}
+
+	async page(): Promise<Page> {
+		return (await this.activate()).page;
+	}
+
+	async close(): Promise<void> {
+		if (this.closePromise) {
+			return this.closePromise;
+		}
+
+		if (this.closed) {
+			return;
+		}
+
+		this.closed = true;
+		this.closePromise = this.closeOwnedRuntime();
+
+		return this.closePromise;
+	}
+
+	async activate(): Promise<ActiveShopifyRuntime> {
+		if (this.closed) {
+			throw new Error("This Shopify runtime session is closed.");
+		}
+
+		if (this.activeRuntime) {
+			return this.activeRuntime;
+		}
+
+		this.activation ??= this.initialize();
+
+		return this.activation;
+	}
+
+	private async initialize(): Promise<ActiveShopifyRuntime> {
+		let browser: Browser | undefined;
+		let context: BrowserContext | undefined;
+
+		try {
+			assertLoopbackCdpUrl(this.config.cdpUrl);
+			await loadAuthProfile(this.authProfile);
+			browser = await connectToChrome(this.config);
+			context = await browser.newContext({
+				storageState: this.authProfile.storageStatePath,
+				viewport: null,
+			});
+			const page = await context.newPage();
+			page.setDefaultTimeout(30_000);
+			page.setDefaultNavigationTimeout(45_000);
+			this.activeRuntime = { browser, context, page };
+
+			return this.activeRuntime;
+		} catch (error) {
+			this.closed = true;
+			await cleanupOwnedRuntime({ browser, context }, this.lease, error);
+			throw error;
+		}
+	}
+
+	private async closeOwnedRuntime(): Promise<void> {
+		if (this.activation && !this.activeRuntime) {
+			await this.activation.catch(() => undefined);
+		}
+
+		const runtime = this.activeRuntime;
+		this.activeRuntime = undefined;
+
+		await cleanupOwnedRuntime(runtime ?? {}, this.lease);
+	}
+}
+
+export function createShopifyRuntimeSession(
+	config: ResolvedShopifyE2EConfig,
+): ShopifyRuntimeSession {
+	return createOwnedShopifyRuntimeSession(config);
+}
+
+function createOwnedShopifyRuntimeSession(
+	config: ResolvedShopifyE2EConfig,
+): OwnedShopifyRuntimeSession {
+	assertRunnableConfig(config);
+
+	if (activeRuntimeLease) {
+		throw new Error(
+			"A Shopify runtime session is already active. Close it before creating another client.",
+		);
+	}
+
+	const immutableConfig = freezeRuntimeConfig(config);
+	const lease = Symbol(immutableConfig.authProfile.name);
+	activeRuntimeLease = lease;
+
+	return new OwnedShopifyRuntimeSession(immutableConfig, lease);
+}
 
 export async function prepareShopifySession(
 	config: ResolvedShopifyE2EConfig,
 	options: PrepareShopifySessionOptions = {},
 ): Promise<PreparedShopifySession> {
-	assertRunnableConfig(config);
+	const session = createOwnedShopifyRuntimeSession(config);
+	const runnableConfig = session.config as RunnableShopifyConfig;
+	const adminUrl = adminStoreUrl(runnableConfig.shopDomain);
 
-	const adminUrl = adminStoreUrl(config.shopDomain);
-	const chrome = await ensureChrome(config, adminUrl, {
-		fetch: options.fetch,
-	});
-	const { browser, context } = await liveShopifyBrowser(config);
-	const page = await reusableLiveShopifyPage(context, config);
+	try {
+		const chrome = await ensureChrome(runnableConfig, adminUrl, {
+			fetch: options.fetch,
+		});
+		const { browser, context, page } = await session.activate();
 
-	await page.goto(adminUrl, {
-		timeout: 45_000,
-		waitUntil: "domcontentloaded",
-	});
-	await waitForLoggedInShopifyAdmin(page, config, options);
+		await page.goto(adminUrl, {
+			timeout: 45_000,
+			waitUntil: "domcontentloaded",
+		});
+		await waitForLoggedInShopifyAdmin(page, runnableConfig, options);
 
-	return {
-		authProfile: config.authProfile,
-		browser,
-		chromeStarted: chrome.started,
-		context,
-		page,
-	};
+		return {
+			authProfile: session.authProfile,
+			browser,
+			chromeStarted: chrome.started,
+			close: () => session.close(),
+			context,
+			page,
+		};
+	} catch (error) {
+		return closeAfterFailure(session, error);
+	}
 }
 
 export async function captureShopifyAuthProfile(
@@ -200,17 +328,19 @@ export async function captureShopifyAuthProfile(
 export async function createLiveShopifyPage(
 	config: ResolvedShopifyE2EConfig,
 ): Promise<LiveShopifyPage> {
-	assertRunnableConfig(config);
+	const session = createOwnedShopifyRuntimeSession(config);
 
-	const { context } = await liveShopifyBrowser(config);
-	const page = await reusableLiveShopifyPage(context, config);
-	page.setDefaultTimeout(30_000);
-	page.setDefaultNavigationTimeout(45_000);
+	try {
+		const { context, page } = await session.activate();
 
-	return {
-		context,
-		page,
-	};
+		return {
+			close: () => session.close(),
+			context,
+			page,
+		};
+	} catch (error) {
+		return closeAfterFailure(session, error);
+	}
 }
 
 export async function openLiveShopifyPage(
@@ -222,9 +352,12 @@ export async function openLiveShopifyPage(
 	try {
 		await gotoLiveShopifyPage(session.page, url);
 	} catch (error) {
-		throw new Error(`Could not open live Shopify page at ${url}.`, {
-			cause: error,
-		});
+		return closeAfterFailure(
+			session,
+			new Error(`Could not open live Shopify page at ${url}.`, {
+				cause: error,
+			}),
+		);
 	}
 
 	return session;
@@ -298,55 +431,8 @@ export async function inspectShopifySession(
 	}
 }
 
-export async function disconnectLiveShopifySession(): Promise<void> {
-	const browser = sharedBrowser;
-	const context = sharedContext;
-
-	sharedBrowser = null;
-	sharedContext = null;
-	sharedPage = null;
-
-	try {
-		await context?.close();
-	} finally {
-		if (browser?.isConnected()) {
-			await browser.close();
-		}
-	}
-}
-
-export function resetLiveShopifySessionForTests(): void {
-	sharedBrowser = null;
-	sharedContext = null;
-	sharedPage = null;
-}
-
-async function liveShopifyBrowser(
-	config: ResolvedShopifyE2EConfig,
-): Promise<{ browser: Browser; context: BrowserContext }> {
-	if (sharedBrowser?.isConnected() && sharedContext) {
-		return { browser: sharedBrowser, context: sharedContext };
-	}
-
-	assertLoopbackCdpUrl(config.cdpUrl);
-	const storageState = await loadAuthProfile(config.authProfile);
-	const browser = await connectToChrome(config);
-	let context: BrowserContext;
-
-	try {
-		context = await browser.newContext({ storageState });
-	} catch (error) {
-		if (browser.isConnected()) {
-			await browser.close();
-		}
-
-		throw error;
-	}
-
-	sharedBrowser = browser;
-	sharedContext = context;
-
-	return { browser, context };
+export function resetShopifyRuntimeLeaseForTests(): void {
+	activeRuntimeLease = undefined;
 }
 
 async function connectToChrome(
@@ -362,40 +448,71 @@ async function connectToChrome(
 	});
 }
 
-async function reusableLiveShopifyPage(
-	context: BrowserContext,
-	config: ResolvedShopifyE2EConfig,
-): Promise<Page> {
-	const pages = context.pages().filter((page) => !page.isClosed());
-	const page =
-		sharedPage && !sharedPage.isClosed()
-			? sharedPage
-			: (findShopifyAdminPage(pages, config) ??
-				pages[0] ??
-				(await context.newPage()));
+async function cleanupOwnedRuntime(
+	runtime: { browser?: Browser; context?: BrowserContext },
+	lease: symbol,
+	priorError?: unknown,
+): Promise<void> {
+	const cleanupErrors: unknown[] = [];
 
-	sharedPage = page;
-
-	for (const extraPage of pages) {
-		if (extraPage !== page) {
-			await extraPage.close().catch(() => undefined);
-		}
+	try {
+		await runtime.context?.close();
+	} catch (error) {
+		cleanupErrors.push(error);
+	} finally {
+		releaseRuntimeLease(lease);
 	}
 
-	return page;
+	try {
+		if (runtime.browser?.isConnected()) {
+			await runtime.browser.close();
+		}
+	} catch (error) {
+		cleanupErrors.push(error);
+	}
+
+	if (cleanupErrors.length === 1 && priorError === undefined) {
+		throw cleanupErrors[0];
+	}
+
+	if (cleanupErrors.length > 0) {
+		throw new AggregateError(
+			priorError === undefined
+				? cleanupErrors
+				: [priorError, ...cleanupErrors],
+			"Could not cleanly close Shopify runtime.",
+		);
+	}
 }
 
-function findShopifyAdminPage(
-	pages: Page[],
-	config: ResolvedShopifyE2EConfig,
-): Page | undefined {
-	const { shopDomain } = config;
+function releaseRuntimeLease(lease: symbol): void {
+	if (activeRuntimeLease === lease) {
+		activeRuntimeLease = undefined;
+	}
+}
 
-	if (!shopDomain) {
-		return undefined;
+function freezeRuntimeConfig(
+	config: ResolvedShopifyE2EConfig,
+): ResolvedShopifyE2EConfig {
+	const authProfile = Object.freeze({ ...config.authProfile });
+
+	return Object.freeze({ ...config, authProfile });
+}
+
+async function closeAfterFailure(
+	session: Pick<ShopifyRuntimeSession, "close">,
+	error: unknown,
+): Promise<never> {
+	try {
+		await session.close();
+	} catch (closeError) {
+		throw new AggregateError(
+			[error, closeError],
+			"Shopify runtime failed and could not close cleanly.",
+		);
 	}
 
-	return pages.find((page) => isReadyAdminUrl(page.url(), shopDomain));
+	throw error;
 }
 
 async function waitForLoggedInShopifyAdmin(

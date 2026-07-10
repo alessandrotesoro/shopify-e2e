@@ -4,16 +4,16 @@ import type { ResolvedShopifyE2EConfig } from "../src/shopify-e2e-config.js";
 
 const mocks = vi.hoisted(() => ({
 	createSessionPage: vi.fn(),
-	resolveShopifyE2EConfig: vi.fn(),
+	resolveConfigInput: vi.fn(),
 }));
 
-vi.mock("../src/shopify-e2e-config.js", async (importOriginal) => {
+vi.mock("../src/resolve-config.js", async (importOriginal) => {
 	const actual =
-		await importOriginal<typeof import("../src/shopify-e2e-config.js")>();
+		await importOriginal<typeof import("../src/resolve-config.js")>();
 
 	return {
 		...actual,
-		resolveShopifyE2EConfig: mocks.resolveShopifyE2EConfig,
+		resolveConfigInput: mocks.resolveConfigInput,
 	};
 });
 
@@ -28,7 +28,10 @@ const { createLiveShopifyPage } = await import(
 );
 
 const resolvedConfig: ResolvedShopifyE2EConfig = {
-	authStatePath: "/tmp/auth.json",
+	authProfile: {
+		name: "customer-a",
+		storageStatePath: "/tmp/profiles/customer-a.json",
+	},
 	cdpPort: "9222",
 	cdpUrl: "http://127.0.0.1:9222",
 	chromeProfilePath: "/tmp/profile",
@@ -45,35 +48,35 @@ const resolvedConfig: ResolvedShopifyE2EConfig = {
 };
 
 describe("live Shopify Playwright helpers", () => {
-	it("resolves partial config options before opening the shared page", async () => {
+	it("resolves partial config and returns the owned close lifecycle", async () => {
 		const partialConfig = {
-			authStatePath: "/tmp/custom-auth.json",
+			authProfile: "customer-a",
 			cdpUrl: "http://127.0.0.1:9333",
 		};
-		const livePage = { page: {} };
+		const close = vi.fn(async () => undefined);
+		const livePage = { close, context: {}, page: {} };
 
-		mocks.resolveShopifyE2EConfig.mockResolvedValue(resolvedConfig);
+		mocks.resolveConfigInput.mockResolvedValue(resolvedConfig);
 		mocks.createSessionPage.mockResolvedValue(livePage);
 
-		await expect(createLiveShopifyPage(partialConfig)).resolves.toBe(
-			livePage,
-		);
-		expect(mocks.resolveShopifyE2EConfig).toHaveBeenCalledWith(
-			partialConfig,
-		);
+		const result = await createLiveShopifyPage(partialConfig);
+
+		expect(result).toBe(livePage);
+		expect(result.close).toBe(close);
+		expect(mocks.resolveConfigInput).toHaveBeenCalledWith(partialConfig);
 		expect(mocks.createSessionPage).toHaveBeenCalledWith(resolvedConfig);
 	});
 
-	it("uses already resolved config objects without resolving them again", async () => {
-		const livePage = { page: {} };
-
-		mocks.resolveShopifyE2EConfig.mockReset();
+	it("delegates repeated close calls to an idempotent owned session", async () => {
+		const close = vi.fn(async () => undefined);
+		const livePage = { close, context: {}, page: {} };
+		mocks.resolveConfigInput.mockResolvedValue(resolvedConfig);
 		mocks.createSessionPage.mockResolvedValue(livePage);
 
-		await expect(createLiveShopifyPage(resolvedConfig)).resolves.toBe(
-			livePage,
-		);
-		expect(mocks.resolveShopifyE2EConfig).not.toHaveBeenCalled();
-		expect(mocks.createSessionPage).toHaveBeenCalledWith(resolvedConfig);
+		const result = await createLiveShopifyPage(resolvedConfig);
+		await result.close();
+		await result.close();
+
+		expect(close).toHaveBeenCalledTimes(2);
 	});
 });
