@@ -11,9 +11,11 @@ import {
 	normalizeTestCommand,
 } from "./config/normalize.js";
 import {
+	authProfileStorageStatePath,
 	cdpPortFromUrl,
 	cleanString,
 	resolvePath,
+	validateAuthProfileName,
 } from "./config/primitives.js";
 
 export { parseEnvFile } from "./config/env.js";
@@ -36,7 +38,7 @@ export type TestCommandInput = string | TestCommandObject;
 export interface ShopifyE2EConfig {
 	appUrl?: string;
 	appSetupCommand?: CommandInput;
-	authStatePath?: string;
+	authProfile?: string;
 	cdpPort?: number | string;
 	cdpUrl?: string;
 	chromeExecutablePath?: string;
@@ -64,10 +66,15 @@ export interface ResolvedTestCommand {
 
 export type ResolvedCommand = ResolvedTestCommand;
 
+export interface ResolvedShopifyAuthProfile {
+	name: string;
+	storageStatePath: string;
+}
+
 export interface ResolvedShopifyE2EConfig {
 	appUrl?: string;
 	appSetupCommand?: ResolvedCommand;
-	authStatePath: string;
+	authProfile: ResolvedShopifyAuthProfile;
 	cdpPort: string;
 	cdpUrl: string;
 	chromeExecutablePath?: string;
@@ -93,6 +100,8 @@ export async function resolveShopifyE2EConfig(
 	options: ResolveConfigOptions = {},
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<ResolvedShopifyE2EConfig> {
+	rejectLegacyProgrammaticAuthStatePath(options);
+
 	const cwd = options.cwd ?? process.cwd();
 	const optionConfigPath = cleanString(options.configPath);
 	const configPath = optionConfigPath
@@ -102,16 +111,11 @@ export async function resolveShopifyE2EConfig(
 	const envFile = cleanString(
 		options.envFile ?? env.SHOPIFY_E2E_ENV_FILE ?? fileConfig.envFile,
 	);
-	const mergedEnv = envFile
-		? { ...parseEnvFile(resolvePath(cwd, envFile)), ...env }
-		: env;
+	const fileEnv = envFile ? parseEnvFile(resolvePath(cwd, envFile)) : {};
+	configFromEnv(fileEnv);
+	const mergedEnv = { ...fileEnv, ...env };
 	const envConfig = configFromEnv(mergedEnv);
-	const merged = mergeConfig(
-		defaultConfig(cwd),
-		fileConfig,
-		envConfig,
-		options,
-	);
+	const merged = mergeConfig(defaultConfig(), fileConfig, envConfig, options);
 	const configuredCdpUrl = cleanString(merged.cdpUrl);
 	const configuredCdpPort = cleanString(
 		merged.cdpPort === undefined ? undefined : String(merged.cdpPort),
@@ -119,15 +123,15 @@ export async function resolveShopifyE2EConfig(
 	const cdpPort =
 		configuredCdpPort ?? cdpPortFromUrl(configuredCdpUrl) ?? defaultCdpPort;
 	const cdpUrl = configuredCdpUrl ?? `http://127.0.0.1:${cdpPort}`;
+	const authProfileName = validateAuthProfileName(merged.authProfile);
 
 	return {
 		appUrl: cleanString(merged.appUrl),
 		appSetupCommand: normalizeOptionalCommand(merged.appSetupCommand),
-		authStatePath: resolvePath(
-			cwd,
-			cleanString(merged.authStatePath) ??
-				".shopify-e2e/auth/shopify-storage-state.json",
-		),
+		authProfile: {
+			name: authProfileName,
+			storageStatePath: authProfileStorageStatePath(cwd, authProfileName),
+		},
 		cdpPort,
 		cdpUrl,
 		chromeExecutablePath: cleanString(merged.chromeExecutablePath),
@@ -146,6 +150,16 @@ export async function resolveShopifyE2EConfig(
 		testCommand: normalizeTestCommand(merged.testCommand),
 		testFiles: normalizeStringArray(merged.testFiles),
 	};
+}
+
+function rejectLegacyProgrammaticAuthStatePath(
+	options: ResolveConfigOptions,
+): void {
+	if (Object.hasOwn(options, "authStatePath")) {
+		throw new Error(
+			"authStatePath is no longer supported; use authProfile.",
+		);
+	}
 }
 
 export async function ensureParentDirectory(path: string): Promise<void> {

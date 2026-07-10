@@ -1,3 +1,4 @@
+export { assertLoopbackCdpUrl, isLoopbackCdpUrl } from "./browser.js";
 export {
 	type CommandInput,
 	type CommandMode,
@@ -10,6 +11,7 @@ export {
 	parseEnvFile,
 	type ResolveConfigOptions,
 	type ResolvedCommand,
+	type ResolvedShopifyAuthProfile,
 	type ResolvedShopifyE2EConfig,
 	type ResolvedTestCommand,
 	resolveShopifyE2EConfig,

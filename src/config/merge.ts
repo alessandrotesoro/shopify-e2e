@@ -25,8 +25,8 @@ function applyConfig(target: ShopifyE2EConfig, source: ShopifyE2EConfig): void {
 		target.appSetupCommand = source.appSetupCommand;
 	}
 
-	if (hasValue(source.authStatePath)) {
-		target.authStatePath = source.authStatePath;
+	if (source.authProfile !== undefined) {
+		target.authProfile = source.authProfile;
 	}
 
 	if (hasValue(source.cdpPort)) {

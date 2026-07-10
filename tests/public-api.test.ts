@@ -18,6 +18,8 @@ describe("public API", () => {
 	});
 
 	it("keeps advanced helpers available through explicit subpath entrypoints", () => {
+		expect(configApi.assertLoopbackCdpUrl).toBeTypeOf("function");
+		expect(configApi.isLoopbackCdpUrl).toBeTypeOf("function");
 		expect(configApi.resolveShopifyE2EConfig).toBeTypeOf("function");
 		expect(configApi.missingLiveShopifyPrerequisites).toBeTypeOf(
 			"function",

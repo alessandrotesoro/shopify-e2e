@@ -29,7 +29,10 @@ interface ChildProcessDouble extends EventEmitter {
 
 const config: ResolvedShopifyE2EConfig = {
 	appUrl: "https://app.test",
-	authStatePath: "/tmp/auth.json",
+	authProfile: {
+		name: "customer-a",
+		storageStatePath: "/tmp/auth/profiles/customer-a.json",
+	},
 	cdpPort: "9333",
 	cdpUrl: "http://127.0.0.1:9333",
 	chromeExecutablePath: "/Applications/Test Chrome",

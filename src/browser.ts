@@ -22,6 +22,40 @@ export type FetchLike = (
 	init?: { signal?: AbortSignal },
 ) => Promise<FetchLikeResponse>;
 
+export function isLoopbackCdpUrl(cdpUrl: string): boolean {
+	try {
+		const url = new URL(cdpUrl);
+		const hostname = url.hostname.replace(/^\[|\]$/g, "");
+
+		return (
+			["http:", "https:", "ws:", "wss:"].includes(url.protocol) &&
+			(hostname === "localhost" ||
+				hostname === "::1" ||
+				isLoopbackIpv4(hostname))
+		);
+	} catch {
+		return false;
+	}
+}
+
+function isLoopbackIpv4(hostname: string): boolean {
+	const octets = hostname.split(".");
+
+	return (
+		octets.length === 4 &&
+		octets[0] === "127" &&
+		octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+	);
+}
+
+export function assertLoopbackCdpUrl(cdpUrl: string): void {
+	if (!isLoopbackCdpUrl(cdpUrl)) {
+		throw new Error(
+			`Shopify auth profiles require a loopback CDP URL; received ${cdpUrl}.`,
+		);
+	}
+}
+
 export async function ensureChrome(
 	config: ResolvedShopifyE2EConfig,
 	startUrl: string,

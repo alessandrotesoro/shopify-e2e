@@ -40,9 +40,15 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv): ShopifyE2EConfig {
+	if (env.SHOPIFY_E2E_AUTH_STATE_PATH !== undefined) {
+		throw new Error(
+			"SHOPIFY_E2E_AUTH_STATE_PATH is no longer supported; use SHOPIFY_E2E_AUTH_PROFILE.",
+		);
+	}
+
 	return {
 		appUrl: cleanString(env.SHOPIFY_E2E_APP_URL),
-		authStatePath: cleanString(env.SHOPIFY_E2E_AUTH_STATE_PATH),
+		authProfile: env.SHOPIFY_E2E_AUTH_PROFILE,
 		cdpPort: cleanString(env.SHOPIFY_E2E_CDP_PORT),
 		cdpUrl: cleanString(env.SHOPIFY_E2E_CDP_URL),
 		chromeExecutablePath: cleanString(env.SHOPIFY_E2E_CHROME_PATH),

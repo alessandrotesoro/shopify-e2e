@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-
 import type { CommandMode, ShopifyE2EConfig } from "../shopify-e2e-config.js";
 
 export const defaultConfigFiles = [
@@ -17,13 +15,9 @@ export const commandModes = [
 	"shell",
 ] as const satisfies readonly CommandMode[];
 
-export function defaultConfig(cwd: string): ShopifyE2EConfig {
+export function defaultConfig(): ShopifyE2EConfig {
 	return {
-		authStatePath: resolve(
-			cwd,
-			".shopify-e2e/auth/shopify-storage-state.json",
-		),
-		chromeProfilePath: resolve(cwd, ".shopify-e2e/chrome-profile"),
+		authProfile: "default",
 		live: false,
 		testCommand: {
 			args: ["playwright", "test"],

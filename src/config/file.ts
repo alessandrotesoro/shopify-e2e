@@ -30,18 +30,12 @@ export async function loadConfigFile(
 		});
 	}
 
-	try {
-		const imported = (await import(
-			`${pathToFileURL(configPath).toString()}?t=${Date.now()}`
-		)) as {
-			config?: unknown;
-			default?: unknown;
-		};
+	let imported: { config?: unknown; default?: unknown };
 
-		return parseConfigFileInput({
-			configPath,
-			input: imported.default ?? imported.config ?? {},
-		});
+	try {
+		imported = (await import(
+			`${pathToFileURL(configPath).toString()}?t=${Date.now()}`
+		)) as typeof imported;
 	} catch (error) {
 		throw new Error(
 			`Could not load Shopify E2E config from ${configPath}.`,
@@ -50,6 +44,11 @@ export async function loadConfigFile(
 			},
 		);
 	}
+
+	return parseConfigFileInput({
+		configPath,
+		input: imported.default ?? imported.config ?? {},
+	});
 }
 
 export async function findConfigFile(cwd: string): Promise<string | undefined> {
@@ -102,6 +101,14 @@ function parseConfigFileInput({
 		throw invalidConfigField(configPath, "root", "expected an object");
 	}
 
+	if (Object.hasOwn(input, "authStatePath")) {
+		throw invalidConfigField(
+			configPath,
+			"authStatePath",
+			"is no longer supported; use authProfile",
+		);
+	}
+
 	return {
 		appUrl: optionalStringField(input, "appUrl", configPath),
 		appSetupCommand: optionalCommandField(
@@ -110,7 +117,7 @@ function parseConfigFileInput({
 			configPath,
 			{ requireCommand: true },
 		),
-		authStatePath: optionalStringField(input, "authStatePath", configPath),
+		authProfile: optionalStringField(input, "authProfile", configPath),
 		cdpPort: optionalStringOrNumberField(input, "cdpPort", configPath),
 		cdpUrl: optionalStringField(input, "cdpUrl", configPath),
 		chromeExecutablePath: optionalStringField(

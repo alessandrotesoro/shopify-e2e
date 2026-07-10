@@ -6,8 +6,8 @@ export const configFlags = {
 	"app-url": Flags.string({
 		description: "Shopify app URL used by the app under test.",
 	}),
-	"auth-state": Flags.string({
-		description: "Path to the Playwright storage-state file.",
+	"auth-profile": Flags.string({
+		description: "Named Shopify auth profile to use.",
 	}),
 	"cdp-port": Flags.integer({
 		description: "Chrome DevTools Protocol port.",
@@ -27,7 +27,7 @@ export const configFlags = {
 		description:
 			"Path to an env file to load before reading SHOPIFY_E2E_* values.",
 	}),
-	"profile-path": Flags.string({
+	"chrome-profile-path": Flags.string({
 		description: "Path to the persistent Chrome profile directory.",
 	}),
 	shop: Flags.string({
@@ -46,17 +46,21 @@ export function configOverridesFromFlags(
 ): ResolveConfigOptions {
 	return {
 		appUrl: stringFlag(flags["app-url"]),
-		authStatePath: stringFlag(flags["auth-state"]),
+		authProfile: rawStringFlag(flags["auth-profile"]),
 		cdpPort: numberFlag(flags["cdp-port"]),
 		cdpUrl: stringFlag(flags["cdp-url"]),
 		chromeExecutablePath: stringFlag(flags["chrome-path"]),
-		chromeProfilePath: stringFlag(flags["profile-path"]),
+		chromeProfilePath: stringFlag(flags["chrome-profile-path"]),
 		configPath: stringFlag(flags.config),
 		envFile: stringFlag(flags["env-file"]),
 		shopDomain: stringFlag(flags.shop),
 		storefrontDomain: stringFlag(flags["storefront-domain"]),
 		storefrontPassword: stringFlag(flags["storefront-password"]),
 	};
+}
+
+function rawStringFlag(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
 }
 
 function stringFlag(value: unknown): string | undefined {

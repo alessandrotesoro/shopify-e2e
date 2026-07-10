@@ -33,6 +33,7 @@ export {
 	defineShopifyE2EConfig,
 	type ResolveConfigOptions,
 	type ResolvedCommand,
+	type ResolvedShopifyAuthProfile,
 	type ResolvedShopifyE2EConfig,
 	type ResolvedTestCommand,
 	type ShopifyE2EConfig,

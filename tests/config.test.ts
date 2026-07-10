@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+	configFlags,
+	configOverridesFromFlags,
+} from "../src/cli-config-flags.js";
+import { resolveConfigInput } from "../src/resolve-config.js";
+import {
 	parseEnvFile,
+	type ResolveConfigOptions,
 	resolveShopifyE2EConfig,
 } from "../src/shopify-e2e-config.js";
 
@@ -17,6 +23,7 @@ describe("resolveShopifyE2EConfig", () => {
 		await writeFile(
 			configPath,
 			`export default {
+				authProfile: "config-customer",
 				shopDomain: "config-shop.myshopify.com",
 				appUrl: "https://config.example",
 				cdpPort: 9333,
@@ -28,10 +35,12 @@ describe("resolveShopifyE2EConfig", () => {
 			{
 				configPath,
 				cwd,
+				authProfile: "option-customer",
 				shopDomain: "flag-shop.myshopify.com",
 			},
 			{
 				SHOPIFY_E2E_APP_URL: "https://env.example",
+				SHOPIFY_E2E_AUTH_PROFILE: "env-customer",
 				SHOPIFY_E2E_STOREFRONT_DOMAIN: "store.example.com",
 			},
 		);
@@ -39,8 +48,195 @@ describe("resolveShopifyE2EConfig", () => {
 		expect(config.shopDomain).toBe("flag-shop.myshopify.com");
 		expect(config.storefrontDomain).toBe("store.example.com");
 		expect(config.appUrl).toBe("https://env.example");
+		expect(config.authProfile).toEqual({
+			name: "option-customer",
+			storageStatePath: join(
+				cwd,
+				".shopify-e2e/auth/profiles/option-customer.json",
+			),
+		});
 		expect(config.cdpUrl).toBe("http://127.0.0.1:9333");
 		expect(config.testFiles).toEqual(["config-tests"]);
+
+		const envConfig = await resolveShopifyE2EConfig(
+			{ configPath, cwd },
+			{ SHOPIFY_E2E_AUTH_PROFILE: "env-customer" },
+		);
+		expect(envConfig.authProfile.name).toBe("env-customer");
+
+		const fileConfig = await resolveShopifyE2EConfig(
+			{ configPath, cwd },
+			{},
+		);
+		expect(fileConfig.authProfile.name).toBe("config-customer");
+	});
+
+	it("resolves the default profile under the fixed project-local root", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-default-profile-"),
+		);
+		const config = await resolveShopifyE2EConfig({ cwd }, {});
+
+		expect(config.authProfile).toEqual({
+			name: "default",
+			storageStatePath: join(
+				cwd,
+				".shopify-e2e/auth/profiles/default.json",
+			),
+		});
+	});
+
+	it.each([
+		"default",
+		"customer-a",
+		"customer-01",
+		"0",
+		"a".repeat(64),
+	])("accepts the canonical profile name %s", async (authProfile) => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-valid-profile-"));
+		const config = await resolveShopifyE2EConfig({ authProfile, cwd }, {});
+
+		expect(config.authProfile).toEqual({
+			name: authProfile,
+			storageStatePath: join(
+				cwd,
+				`.shopify-e2e/auth/profiles/${authProfile}.json`,
+			),
+		});
+	});
+
+	it.each([
+		["uppercase", "Customer-a"],
+		["underscore separator", "customer_a"],
+		["slash separator", "customer/a"],
+		["dot separator", "customer.a"],
+		["space separator", "customer a"],
+		["empty", ""],
+		["leading hyphen", "-customer"],
+		["trailing hyphen", "customer-"],
+		["consecutive hyphens", "customer--a"],
+		["overlength", "a".repeat(65)],
+	])("rejects an invalid %s profile name", async (_label, authProfile) => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-invalid-profile-"),
+		);
+
+		await expect(
+			resolveShopifyE2EConfig({ authProfile, cwd }, {}),
+		).rejects.toThrow(
+			`Invalid Shopify auth profile name ${JSON.stringify(authProfile)}.`,
+		);
+	});
+
+	it("rejects legacy authStatePath in config files with file context", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-legacy-config-"));
+		const configPath = join(cwd, "shopify-e2e.config.json");
+
+		await writeFile(
+			configPath,
+			JSON.stringify({ authStatePath: "/tmp/legacy-auth.json" }),
+		);
+
+		await expect(
+			resolveShopifyE2EConfig({ configPath, cwd }, {}),
+		).rejects.toThrow(
+			`Invalid Shopify E2E config at ${configPath}: authStatePath is no longer supported; use authProfile.`,
+		);
+	});
+
+	it("rejects the legacy auth-state environment variable", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-legacy-env-"));
+
+		await expect(
+			resolveShopifyE2EConfig(
+				{ cwd },
+				{ SHOPIFY_E2E_AUTH_STATE_PATH: "/tmp/legacy-auth.json" },
+			),
+		).rejects.toThrow(
+			"SHOPIFY_E2E_AUTH_STATE_PATH is no longer supported; use SHOPIFY_E2E_AUTH_PROFILE.",
+		);
+	});
+
+	it("rejects the legacy auth-state variable from an env file", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-legacy-env-file-"),
+		);
+		const envFile = join(cwd, ".env");
+
+		await writeFile(
+			envFile,
+			"SHOPIFY_E2E_AUTH_STATE_PATH=/tmp/legacy-auth.json",
+		);
+
+		await expect(
+			resolveShopifyE2EConfig({ cwd, envFile }, {}),
+		).rejects.toThrow(
+			"SHOPIFY_E2E_AUTH_STATE_PATH is no longer supported; use SHOPIFY_E2E_AUTH_PROFILE.",
+		);
+	});
+
+	it("rejects legacy authStatePath in programmatic input", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-legacy-option-"));
+		const options = {
+			authStatePath: "/tmp/legacy-auth.json",
+			cwd,
+		} as ResolveConfigOptions;
+
+		await expect(resolveShopifyE2EConfig(options, {})).rejects.toThrow(
+			"authStatePath is no longer supported; use authProfile.",
+		);
+	});
+
+	it("recognizes resolved configuration by its resolved profile shape", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-resolved-input-"),
+		);
+		const resolved = await resolveShopifyE2EConfig(
+			{ authProfile: "customer-a", cwd },
+			{},
+		);
+
+		await expect(resolveConfigInput(resolved)).resolves.toBe(resolved);
+	});
+
+	it("does not trust a forged path in resolved configuration input", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "shopify-e2e-forged-resolved-input-"),
+		);
+		const resolved = await resolveShopifyE2EConfig(
+			{ authProfile: "customer-a", cwd },
+			{},
+		);
+		const forged = {
+			...resolved,
+			authProfile: {
+				...resolved.authProfile,
+				storageStatePath: join(cwd, "outside-fixed-root.json"),
+			},
+		};
+
+		await expect(resolveConfigInput(forged)).rejects.toThrow(
+			"Invalid Shopify auth profile name",
+		);
+	});
+
+	it("maps profile and Chrome profile flags without legacy aliases", () => {
+		expect(configFlags).toHaveProperty("auth-profile");
+		expect(configFlags).toHaveProperty("chrome-profile-path");
+		expect(configFlags).not.toHaveProperty("auth-state");
+		expect(configFlags).not.toHaveProperty("profile-path");
+		expect(
+			configOverridesFromFlags({
+				"auth-profile": "customer-a",
+				"chrome-profile-path": "/tmp/chrome-profile",
+			}),
+		).toMatchObject({
+			authProfile: "customer-a",
+			chromeProfilePath: "/tmp/chrome-profile",
+		});
+		expect(
+			configOverridesFromFlags({ "auth-profile": "" }).authProfile,
+		).toBe("");
 	});
 
 	it("auto-discovers default config files under cwd", async () => {
@@ -140,6 +336,16 @@ describe("resolveShopifyE2EConfig", () => {
 
 		expect(config.cdpUrl).toBe("http://127.0.0.1:9335");
 		expect(config.cdpPort).toBe("9335");
+	});
+
+	it("resolves a non-loopback CDP URL for diagnostic reporting", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "shopify-e2e-remote-cdp-"));
+		const config = await resolveShopifyE2EConfig(
+			{ cdpUrl: "https://cdp.example.com", cwd },
+			{},
+		);
+
+		expect(config.cdpUrl).toBe("https://cdp.example.com");
 	});
 
 	it("throws config file errors with file context", async () => {
