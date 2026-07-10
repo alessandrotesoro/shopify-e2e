@@ -9,10 +9,10 @@ export {
 	type ShopifyE2EExpectCompleteOptions,
 	type ShopifyE2EInputs,
 	type ShopifyE2EOpenCartOptions,
-	type ShopifyE2EPageOptions,
 	type ShopifyE2EPurchaseOptions,
 	type ShopifyE2EPurchaseResult,
 	type ShopifyE2EStorefront,
+	type ShopifyE2EStorefrontOptions,
 } from "./api.js";
 export type {
 	CompleteShopifyCheckoutOptions,

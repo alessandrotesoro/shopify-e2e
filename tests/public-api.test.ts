@@ -13,6 +13,7 @@ describe("public API", () => {
 		expect(api.globalSetup).toBeTypeOf("function");
 		expect(api.globalSetupPath).toMatch(/playwright[\\/]global-setup\.js$/);
 		expect("createLiveShopifyPage" in api).toBe(false);
+		expect("createShopifyRuntimeSession" in api).toBe(false);
 		expect("buildCartPermalinkUrl" in api).toBe(false);
 		expect("slowFill" in api).toBe(false);
 	});

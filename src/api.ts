@@ -30,11 +30,8 @@ import type { ShopifyE2EConfigInput } from "./resolve-config.js";
 import { resolveConfigInput } from "./resolve-config.js";
 import type { ResolvedShopifyE2EConfig } from "./shopify-e2e-config.js";
 import {
-	createLiveShopifyPage,
+	createShopifyRuntimeSession,
 	gotoLiveShopifyPage,
-	type PreparedShopifySession,
-	type PrepareShopifySessionOptions,
-	prepareShopifySession,
 } from "./shopify-session.js";
 import { adminStoreUrl } from "./urls.js";
 
@@ -43,6 +40,7 @@ export type { ShopifyE2EConfigInput };
 export interface ShopifyE2E {
 	admin: ShopifyE2EAdmin;
 	checkout: ShopifyE2ECheckout;
+	close(): Promise<void>;
 	config: ResolvedShopifyE2EConfig;
 	inputs: ShopifyE2EInputs;
 	storefront: ShopifyE2EStorefront;
@@ -52,16 +50,13 @@ export interface ShopifyE2EAdmin {
 	goto(pathOrUrl?: string): Promise<Page>;
 	open(pathOrUrl?: string): Promise<Page>;
 	page(): Promise<Page>;
-	prepare(
-		options?: PrepareShopifySessionOptions,
-	): Promise<PreparedShopifySession>;
 }
 
 export interface ShopifyE2EStorefront {
-	unlock(options?: ShopifyE2EPageOptions): Promise<boolean>;
+	unlock(options?: ShopifyE2EStorefrontOptions): Promise<boolean>;
 	variantId(
 		product: StorefrontProductInput,
-		options?: ShopifyE2EPageOptions,
+		options?: ShopifyE2EStorefrontOptions,
 	): Promise<string>;
 }
 
@@ -77,9 +72,7 @@ export interface ShopifyE2ECheckout {
 	): Promise<ShopifyE2EPurchaseResult>;
 }
 
-export interface ShopifyE2EPageOptions extends SlowInputOptions {
-	page?: Page;
-}
+export type ShopifyE2EStorefrontOptions = SlowInputOptions;
 
 export interface ShopifyE2ECartOptions {
 	buyer?: ShopifyCheckoutBuyer;
@@ -88,25 +81,19 @@ export interface ShopifyE2ECartOptions {
 }
 
 export interface ShopifyE2EOpenCartOptions extends ShopifyE2ECartOptions {
-	page?: Page;
 	phaseReporter?: ShopifyCheckoutPhaseReporter;
 }
 
 export interface ShopifyE2ECompleteCheckoutOptions
-	extends Omit<CompleteShopifyCheckoutOptions, "page"> {
-	page?: Page;
-}
+	extends Omit<CompleteShopifyCheckoutOptions, "page"> {}
 
 export interface ShopifyE2EExpectCompleteOptions {
-	page?: Page;
 	timeoutMs?: number;
 }
 
 export interface ShopifyE2EPurchaseOptions
 	extends ShopifyE2ECartOptions,
-		Omit<ShopifyE2ECompleteCheckoutOptions, "buyer" | "page"> {
-	page?: Page;
-}
+		Omit<ShopifyE2ECompleteCheckoutOptions, "buyer"> {}
 
 export interface ShopifyE2EPurchaseResult extends ShopifyCheckoutCompletion {
 	page: Page;
@@ -127,12 +114,19 @@ export async function createShopifyE2E(
 	config?: ShopifyE2EConfigInput,
 ): Promise<ShopifyE2E> {
 	const resolvedConfig = await resolveConfigInput(config);
-	const adminPage = async (): Promise<Page> =>
-		(await createLiveShopifyPage(resolvedConfig)).page;
+	const runtimeSession = createShopifyRuntimeSession(resolvedConfig);
+	const clientConfig = runtimeSession.config;
+	const adminPage = (): Promise<Page> => runtimeSession.page();
+	let closePromise: Promise<void> | undefined;
+	const close = (): Promise<void> => {
+		closePromise ??= runtimeSession.close();
+
+		return closePromise;
+	};
 	const gotoAdminPage = async (pathOrUrl?: string): Promise<Page> => {
 		const page = await adminPage();
 
-		await gotoLiveShopifyPage(page, adminUrl(resolvedConfig, pathOrUrl));
+		await gotoLiveShopifyPage(page, adminUrl(clientConfig, pathOrUrl));
 
 		return page;
 	};
@@ -140,21 +134,18 @@ export async function createShopifyE2E(
 		goto: gotoAdminPage,
 		open: gotoAdminPage,
 		page: adminPage,
-		prepare: async (options) =>
-			prepareShopifySession(resolvedConfig, options),
 	};
 	const openCart = async ({
-		page,
 		phaseReporter,
 		...options
 	}: ShopifyE2EOpenCartOptions): Promise<Page> => {
-		const targetPage = page ?? (await admin.page());
+		const targetPage = await admin.page();
 		const startedAt = performance.now();
 
 		await gotoCartPermalink({
-			config: resolvedConfig,
-			page: targetPage,
 			...options,
+			config: clientConfig,
+			page: targetPage,
 		});
 		phaseReporter?.({
 			durationMs: performance.now() - startedAt,
@@ -163,31 +154,29 @@ export async function createShopifyE2E(
 
 		return targetPage;
 	};
-	const complete = async ({
-		page,
-		...options
-	}: ShopifyE2ECompleteCheckoutOptions = {}): Promise<ShopifyCheckoutCompletion> =>
+	const complete = async (
+		options: ShopifyE2ECompleteCheckoutOptions = {},
+	): Promise<ShopifyCheckoutCompletion> =>
 		completeShopifyCheckout({
 			...options,
-			page: page ?? (await admin.page()),
+			page: await admin.page(),
 		});
-	const expectComplete = async ({
-		page,
-		...options
-	}: ShopifyE2EExpectCompleteOptions = {}): Promise<void> =>
-		expectShopifyCheckoutComplete(page ?? (await admin.page()), options);
+	const expectComplete = async (
+		options: ShopifyE2EExpectCompleteOptions = {},
+	): Promise<void> =>
+		expectShopifyCheckoutComplete(await admin.page(), {
+			timeoutMs: options.timeoutMs,
+		});
 	const purchase = async ({
-		page,
 		quantity,
 		variantId,
 		...options
 	}: ShopifyE2EPurchaseOptions): Promise<ShopifyE2EPurchaseResult> => {
-		const targetPage = page ?? (await admin.page());
+		const targetPage = await admin.page();
 		const entryTimings: ShopifyCheckoutPhaseTiming[] = [];
 
 		await openCart({
 			buyer: options.buyer,
-			page: targetPage,
 			phaseReporter: (timing) => {
 				entryTimings.push(timing);
 				options.phaseReporter?.(timing);
@@ -197,7 +186,6 @@ export async function createShopifyE2E(
 		});
 		const completion = await complete({
 			...options,
-			page: targetPage,
 		});
 
 		return {
@@ -212,15 +200,16 @@ export async function createShopifyE2E(
 		checkout: {
 			cartUrl: (options) =>
 				buildCartPermalinkUrl({
-					config: resolvedConfig,
 					...options,
+					config: clientConfig,
 				}),
 			complete,
 			expectComplete,
 			openCart,
 			purchase,
 		},
-		config: resolvedConfig,
+		close,
+		config: clientConfig,
 		inputs: {
 			clickFirstVisibleButton,
 			fillFirstVisible,
@@ -233,21 +222,17 @@ export async function createShopifyE2E(
 		},
 		storefront: {
 			unlock: async (options = {}) => {
-				const targetPage = options.page ?? (await admin.page());
-
 				return ensureStorefrontUnlocked({
 					...options,
-					config: resolvedConfig,
-					page: targetPage,
+					config: clientConfig,
+					page: await admin.page(),
 				});
 			},
 			variantId: async (product, options = {}) => {
-				const targetPage = options.page ?? (await admin.page());
-
 				return resolveStorefrontVariantId({
 					...options,
-					config: resolvedConfig,
-					page: targetPage,
+					config: clientConfig,
+					page: await admin.page(),
 					product,
 				});
 			},
