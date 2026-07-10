@@ -1,17 +1,32 @@
-import type { Browser, BrowserContext, Page } from "playwright-core";
 import {
-	connectToChrome,
-	restoreAuthState,
-	saveAuthState,
-} from "./auth-state.js";
+	type Browser,
+	type BrowserContext,
+	chromium,
+	type Page,
+} from "playwright-core";
 import {
+	emptyShopifyStorageState,
+	loadAuthProfile,
+	loadCaptureTargetAuthProfile,
+	saveAuthProfile,
+} from "./auth-profile.js";
+import {
+	assertLoopbackCdpUrl,
 	delay,
 	ensureChrome,
 	type FetchLike,
 	fetchWithTimeout,
+	waitForCdp,
 } from "./browser.js";
 import {
+	assertInteractiveInput,
+	type InteractiveInput,
+	type InteractiveSignals,
+	waitForInteractiveConfirmation,
+} from "./interactive-session.js";
+import {
 	missingLiveShopifyPrerequisites,
+	type ResolvedShopifyAuthProfile,
 	type ResolvedShopifyE2EConfig,
 } from "./shopify-e2e-config.js";
 import {
@@ -46,9 +61,7 @@ export interface LiveShopifyPage {
 }
 
 export interface PreparedShopifySession extends LiveShopifyPage {
-	authStatePath: string;
-	authStateRestored: boolean;
-	authStateSaved: boolean;
+	authProfile: ResolvedShopifyAuthProfile;
 	browser: Browser;
 	chromeStarted: boolean;
 }
@@ -57,9 +70,23 @@ export interface PrepareShopifySessionOptions {
 	fetch?: FetchLike;
 	log?: (message: string) => void;
 	pollIntervalMs?: number;
-	saveAuthState?: boolean;
 	timeoutMs?: number;
 	waitForLogin?: boolean;
+}
+
+export interface CaptureShopifyAuthProfileOptions {
+	empty?: boolean;
+	fromAuthProfile?: ResolvedShopifyAuthProfile;
+	input?: InteractiveInput;
+	log?: (message: string) => void;
+	signals?: InteractiveSignals;
+	warn?: (message: string) => void;
+}
+
+export interface CaptureShopifyAuthProfileResult {
+	chromeStarted: boolean;
+	profile: ResolvedShopifyAuthProfile;
+	saved: boolean;
 }
 
 type RunnableShopifyConfig = ResolvedShopifyE2EConfig & { shopDomain: string };
@@ -80,28 +107,94 @@ export async function prepareShopifySession(
 	});
 	const { browser, context } = await liveShopifyBrowser(config);
 	const page = await reusableLiveShopifyPage(context, config);
-	const restore = await restoreAuthState(config, context, page);
 
 	await page.goto(adminUrl, {
 		timeout: 45_000,
 		waitUntil: "domcontentloaded",
 	});
-	const loggedIn = await waitForLoggedInShopifyAdmin(page, config, options);
-	const authStateSaved = loggedIn && options.saveAuthState !== false;
-
-	if (authStateSaved) {
-		await saveAuthState(config, context);
-	}
+	await waitForLoggedInShopifyAdmin(page, config, options);
 
 	return {
-		authStatePath: config.authStatePath,
-		authStateRestored: restore.restored,
-		authStateSaved,
+		authProfile: config.authProfile,
 		browser,
 		chromeStarted: chrome.started,
 		context,
 		page,
 	};
+}
+
+export async function captureShopifyAuthProfile(
+	config: ResolvedShopifyE2EConfig,
+	options: CaptureShopifyAuthProfileOptions = {},
+): Promise<CaptureShopifyAuthProfileResult> {
+	assertRunnableConfig(config);
+
+	if (options.empty && options.fromAuthProfile) {
+		throw new Error(
+			"Shopify auth profile capture cannot combine empty state with a base profile.",
+		);
+	}
+
+	assertInteractiveInput(options.input);
+	assertLoopbackCdpUrl(config.cdpUrl);
+
+	const storageState = options.empty
+		? emptyShopifyStorageState()
+		: options.fromAuthProfile
+			? await loadAuthProfile(options.fromAuthProfile)
+			: ((await loadCaptureTargetAuthProfile(config.authProfile)) ??
+				emptyShopifyStorageState());
+	const adminUrl = adminStoreUrl(config.shopDomain);
+	const chrome = await ensureChrome(config, adminUrl);
+	const browser = await connectToChrome(config);
+	let context: BrowserContext | undefined;
+
+	try {
+		context = await browser.newContext({ storageState });
+		const page = await context.newPage();
+		page.setDefaultTimeout(30_000);
+		page.setDefaultNavigationTimeout(45_000);
+		await page.goto(adminUrl, {
+			timeout: 45_000,
+			waitUntil: "domcontentloaded",
+		});
+		options.log?.(
+			`Complete login for Shopify auth profile ${JSON.stringify(config.authProfile.name)}, then press Enter to save. Closing the page or pressing Ctrl-C cancels.`,
+		);
+
+		const confirmation = await waitForInteractiveConfirmation({
+			input: options.input,
+			page,
+			signals: options.signals,
+		});
+
+		if (confirmation === "cancelled") {
+			return {
+				chromeStarted: chrome.started,
+				profile: config.authProfile,
+				saved: false,
+			};
+		}
+
+		const capturedState = await context.storageState({ indexedDB: true });
+		await saveAuthProfile(config.authProfile, capturedState, {
+			warn: options.warn,
+		});
+
+		return {
+			chromeStarted: chrome.started,
+			profile: config.authProfile,
+			saved: true,
+		};
+	} finally {
+		try {
+			await context?.close();
+		} finally {
+			if (browser.isConnected()) {
+				await browser.close();
+			}
+		}
+	}
 }
 
 export async function createLiveShopifyPage(
@@ -207,13 +300,18 @@ export async function inspectShopifySession(
 
 export async function disconnectLiveShopifySession(): Promise<void> {
 	const browser = sharedBrowser;
+	const context = sharedContext;
 
 	sharedBrowser = null;
 	sharedContext = null;
 	sharedPage = null;
 
-	if (browser?.isConnected()) {
-		await browser.close();
+	try {
+		await context?.close();
+	} finally {
+		if (browser?.isConnected()) {
+			await browser.close();
+		}
 	}
 }
 
@@ -230,12 +328,38 @@ async function liveShopifyBrowser(
 		return { browser: sharedBrowser, context: sharedContext };
 	}
 
-	const { browser, context } = await connectToChrome(config);
+	assertLoopbackCdpUrl(config.cdpUrl);
+	const storageState = await loadAuthProfile(config.authProfile);
+	const browser = await connectToChrome(config);
+	let context: BrowserContext;
+
+	try {
+		context = await browser.newContext({ storageState });
+	} catch (error) {
+		if (browser.isConnected()) {
+			await browser.close();
+		}
+
+		throw error;
+	}
 
 	sharedBrowser = browser;
 	sharedContext = context;
 
 	return { browser, context };
+}
+
+async function connectToChrome(
+	config: ResolvedShopifyE2EConfig,
+): Promise<Browser> {
+	assertLoopbackCdpUrl(config.cdpUrl);
+	await waitForCdp(config.cdpUrl);
+
+	return chromium.connectOverCDP(config.cdpUrl, {
+		isLocal: true,
+		noDefaults: true,
+		timeout: 30_000,
+	});
 }
 
 async function reusableLiveShopifyPage(
