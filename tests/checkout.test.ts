@@ -90,6 +90,22 @@ describe("checkout helpers", () => {
 		).rejects.toThrow("Your card was declined");
 	});
 
+	it("does not treat Shopify's free-order message as validation", async () => {
+		const page = checkoutPageDouble({
+			completeAfterSubmit: false,
+			validationText: "Your order is free. No payment is required.",
+		});
+
+		await expect(
+			completeShopifyCheckout({
+				actionDelayMs: 0,
+				inputDelayMs: 0,
+				maxSteps: 1,
+				page,
+			}),
+		).rejects.toThrow("did not show progress");
+	});
+
 	it("identifies the Thank You phase when checkout completion times out", async () => {
 		const page = checkoutPageDouble({
 			completeAfterSubmit: false,
@@ -246,6 +262,27 @@ describe("checkout helpers", () => {
 		expect(page.cardNumber.pressSequentially).not.toHaveBeenCalled();
 	});
 
+	it("skips payment filling when Shopify says no payment is required", async () => {
+		const page = paymentPageDouble({ noPaymentRequired: true });
+
+		const result = await fillShopifyPaymentFields(
+			page,
+			{
+				cardNumber: "4242424242424242",
+				expiry: "12 / 30",
+				securityCode: "111",
+			},
+			{ actionDelayMs: 0, inputDelayMs: 0 },
+		);
+
+		expect(result).toEqual({
+			filled: false,
+			sawPaymentForm: true,
+			usedFallback: false,
+		});
+		expect(page.cardNumber.pressSequentially).not.toHaveBeenCalled();
+	});
+
 	it("skips payment discovery when no payment form is present", async () => {
 		const page = paymentPageDouble({
 			paymentFrameElementVisible: false,
@@ -342,6 +379,7 @@ interface PaymentPageDoubleOptions {
 	paymentFrameElementVisible?: boolean;
 	paymentFrameLocatorVisible?: boolean;
 	paymentSectionVisible?: boolean;
+	noPaymentRequired?: boolean;
 	savedPaymentSelected?: boolean;
 }
 
@@ -498,6 +536,9 @@ function paymentPageDouble(
 	const paymentSection = locatorDouble({
 		visible: options.paymentSectionVisible ?? false,
 	});
+	const noPaymentRequired = locatorDouble({
+		visible: options.noPaymentRequired ?? false,
+	});
 	const savedPayment = locatorDouble({
 		checked: options.savedPaymentSelected ?? false,
 	});
@@ -530,10 +571,19 @@ function paymentPageDouble(
 			first: () => (options?.name?.test("4242") ? savedPayment : hidden),
 		})),
 		getByText: vi.fn((text: RegExp | string) => ({
-			first: () =>
-				typeof text !== "string" && text.test("Payment")
+			first: () => {
+				if (
+					typeof text !== "string" &&
+					options.noPaymentRequired &&
+					text.test("No payment is required")
+				) {
+					return noPaymentRequired;
+				}
+
+				return typeof text !== "string" && text.test("Payment")
 					? paymentSection
-					: hidden,
+					: hidden;
+			},
 		})),
 		locator: vi.fn((selector: string) => ({
 			first: () =>

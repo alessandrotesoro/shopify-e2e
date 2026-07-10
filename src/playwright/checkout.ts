@@ -98,7 +98,7 @@ const progressTimeoutMs = 15_000;
 const thankYouCopyPattern =
 	/thank you|order confirmed|your order is confirmed/i;
 const checkoutValidationPattern =
-	/card was declined|declined|invalid|is required|are required|can't be blank|enter a valid|there was a problem|could not process|try a different card/i;
+	/card was declined|declined|invalid|(?<!payment )is required|(?<!payments )are required|can't be blank|enter a valid|there was a problem|could not process|try a different card/i;
 
 export async function completeShopifyCheckout(
 	options: CompleteShopifyCheckoutOptions,
@@ -270,6 +270,10 @@ export async function fillShopifyPaymentFields(
 
 	if (!payment?.cardNumber) {
 		return emptyResult;
+	}
+
+	if (await hasNoPaymentRequired(page)) {
+		return { ...emptyResult, sawPaymentForm: true };
 	}
 
 	if (await hasSavedPaymentMethod(page, payment)) {
@@ -828,6 +832,14 @@ async function hasPaymentFormSignal(page: Page): Promise<boolean> {
 	return (
 		(await hasPaymentSection(page)) || (await hasPaymentIframeElement(page))
 	);
+}
+
+async function hasNoPaymentRequired(page: Page): Promise<boolean> {
+	return page
+		.getByText(/no payment is required|order is free/i)
+		.first()
+		.isVisible()
+		.catch(() => false);
 }
 
 async function hasPaymentIframeElement(page: Page): Promise<boolean> {
