@@ -1,12 +1,15 @@
 import { defineConfig } from "@playwright/test";
-import { globalSetupPath } from "shopify-e2e";
 
 export default defineConfig({
-	globalSetup: globalSetupPath,
-	workers: 1,
+	fullyParallel: false,
+	outputDir: "test-results/browser-isolation",
+	retries: 0,
+	testDir: "./tests/browser",
 	use: {
+		headless: true,
 		screenshot: "off",
 		trace: "off",
 		video: "off",
 	},
+	workers: 1,
 });

@@ -51,6 +51,26 @@ describe("package metadata", () => {
 
 		expect(packageJson.scripts.build).toBe("npm run clean && tsc");
 	});
+
+	it("provides a serial bundled-Chromium isolation gate", async () => {
+		const packageJson = JSON.parse(
+			await readFile(resolve("package.json"), "utf8"),
+		) as { scripts: Record<string, string> };
+		const integrationConfig = await readFile(
+			resolve("playwright.integration.config.ts"),
+			"utf8",
+		);
+
+		expect(packageJson.scripts["test:browser"]).toBe(
+			"playwright test --config playwright.integration.config.ts",
+		);
+		expect(packageJson.scripts.test).toBe(
+			"vitest run --exclude tests/browser/**",
+		);
+		expect(integrationConfig).toContain('testDir: "./tests/browser"');
+		expect(integrationConfig).toContain("workers: 1");
+		expect(integrationConfig).toContain("headless: true");
+	});
 });
 
 async function commandFiles(root: string): Promise<string[]> {

@@ -2,10 +2,10 @@ import { defineShopifyE2EConfig } from "shopify-e2e";
 
 export default defineShopifyE2EConfig({
 	shopDomain: "example.myshopify.com",
-	appUrl: "https://example-app.ngrok.app",
+	appUrl: "https://app.example.test",
+	authProfile: "default",
 	cdpPort: 9222,
 	chromeProfilePath: ".shopify-e2e/chrome-profile",
-	authStatePath: ".shopify-e2e/auth/shopify-storage-state.json",
 	storefrontPassword: process.env.SHOPIFY_E2E_STOREFRONT_PASSWORD,
 	appSetupCommand: {
 		command: "npm",
@@ -16,6 +16,5 @@ export default defineShopifyE2EConfig({
 	testCommand: {
 		command: process.platform === "win32" ? "npx.cmd" : "npx",
 		args: ["playwright", "test"],
-		mode: "playwright",
 	},
 });

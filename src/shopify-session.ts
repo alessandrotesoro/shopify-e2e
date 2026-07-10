@@ -105,6 +105,14 @@ interface ActiveShopifyRuntime {
 	page: Page;
 }
 
+interface ShopifyRuntimeDependencies {
+	connectToBrowser(config: ResolvedShopifyE2EConfig): Promise<Browser>;
+}
+
+const defaultRuntimeDependencies: ShopifyRuntimeDependencies = {
+	connectToBrowser: connectToChrome,
+};
+
 let activeRuntimeLease: symbol | undefined;
 
 class OwnedShopifyRuntimeSession implements ShopifyRuntimeSession {
@@ -119,6 +127,7 @@ class OwnedShopifyRuntimeSession implements ShopifyRuntimeSession {
 	constructor(
 		config: ResolvedShopifyE2EConfig,
 		private readonly lease: symbol,
+		private readonly dependencies: ShopifyRuntimeDependencies,
 	) {
 		this.config = config;
 		this.authProfile = config.authProfile;
@@ -164,7 +173,7 @@ class OwnedShopifyRuntimeSession implements ShopifyRuntimeSession {
 		try {
 			assertLoopbackCdpUrl(this.config.cdpUrl);
 			await loadAuthProfile(this.authProfile);
-			browser = await connectToChrome(this.config);
+			browser = await this.dependencies.connectToBrowser(this.config);
 			context = await browser.newContext({
 				storageState: this.authProfile.storageStatePath,
 				viewport: null,
@@ -196,12 +205,14 @@ class OwnedShopifyRuntimeSession implements ShopifyRuntimeSession {
 
 export function createShopifyRuntimeSession(
 	config: ResolvedShopifyE2EConfig,
+	dependencies: ShopifyRuntimeDependencies = defaultRuntimeDependencies,
 ): ShopifyRuntimeSession {
-	return createOwnedShopifyRuntimeSession(config);
+	return createOwnedShopifyRuntimeSession(config, dependencies);
 }
 
 function createOwnedShopifyRuntimeSession(
 	config: ResolvedShopifyE2EConfig,
+	dependencies: ShopifyRuntimeDependencies = defaultRuntimeDependencies,
 ): OwnedShopifyRuntimeSession {
 	assertRunnableConfig(config);
 
@@ -215,7 +226,7 @@ function createOwnedShopifyRuntimeSession(
 	const lease = Symbol(immutableConfig.authProfile.name);
 	activeRuntimeLease = lease;
 
-	return new OwnedShopifyRuntimeSession(immutableConfig, lease);
+	return new OwnedShopifyRuntimeSession(immutableConfig, lease, dependencies);
 }
 
 export async function prepareShopifySession(
