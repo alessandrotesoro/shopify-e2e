@@ -1,4 +1,5 @@
 import {
+	access,
 	mkdir,
 	mkdtemp,
 	realpath,
@@ -9,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadShopifyConfig } from "../src/config/load-config.js";
 import { ShopifyE2EPreflightError } from "../src/errors.js";
@@ -87,6 +88,24 @@ describe("dedicated Shopify configuration", () => {
 		await expect(
 			import("node:fs/promises").then(({ stat }) => stat(sentinel)),
 		).rejects.toThrow();
+	});
+
+	it("does not leave a transformed consumer config in jiti's filesystem cache", async () => {
+		const project = await makeProject();
+		const temporaryRoot = join(project, "temporary-root");
+		await mkdir(temporaryRoot);
+		await writeConfig(project, "export default { testDir: 'tests' };\n");
+		vi.stubEnv("TEMP", temporaryRoot);
+		vi.stubEnv("TMP", temporaryRoot);
+		vi.stubEnv("TMPDIR", temporaryRoot);
+
+		try {
+			await loadShopifyConfig({ cwd: project });
+		} finally {
+			vi.unstubAllEnvs();
+		}
+
+		await expect(access(join(temporaryRoot, "jiti"))).rejects.toThrow();
 	});
 
 	it.each([

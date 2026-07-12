@@ -79,6 +79,7 @@ export async function loadShopifyConfig(
 
 	try {
 		const jiti = createJiti(import.meta.url, {
+			fsCache: false,
 			interopDefault: false,
 			moduleCache: false,
 		});

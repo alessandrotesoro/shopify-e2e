@@ -52,7 +52,7 @@ shopify-e2e run --grep-invert "draft order"
 
 The CLI runs only Playwright, supplies a generated package-owned Playwright configuration with the validated absolute test directory, and enforces exactly one worker. Before Playwright starts, it prints the selected dedicated configuration and Shopify test directory to standard error.
 
-The consuming application's ordinary `playwright.config.*` files and Playwright specs outside the selected Shopify directory are not discovered, loaded, or run by the CLI. There is no fallback to an ordinary Playwright configuration.
+The CLI never discovers an ordinary `playwright.config.*` file or uses one as an implicit fallback. It loads only the conventional dedicated configuration or the exact contained TypeScript file selected with `--config`; that selected file is then subject to the dedicated one-field contract. Playwright specs outside its validated Shopify directory are not discovered or run.
 
 Use `shopify-e2e run --help` for the oclif-generated command reference.
 
@@ -69,6 +69,8 @@ Playwright output is inherited directly, so CI can use the final CLI exit code a
 ## Phase-one limits
 
 Phase one does not provide browser lifecycle management, authentication profiles, Shopify setup, storefront or checkout behavior, helper APIs, additional commands, multiple test roots, configured globs, runner adapters, or unrestricted Playwright argument passthrough.
+
+The package exposes no programmatic API or importable subpaths. The installed `shopify-e2e` executable is the supported product surface.
 
 Worker overrides, projects, file selectors, reporters, UI and debug modes, headed mode, retries, shards, and update controls are unavailable. Add these options directly to `shopify-e2e run` and oclif rejects them before Playwright starts.
 
