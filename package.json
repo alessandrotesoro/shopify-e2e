@@ -16,9 +16,10 @@
 		"build": "npm run clean && tsc -p tsconfig.json",
 		"clean": "rm -rf dist",
 		"lint": "biome check bin src tests package.json tsconfig.json tsconfig.test.json vitest.config.ts biome.json",
-		"test": "npm run build && vitest run",
+		"test": "npm run build && vitest run --exclude tests/installed-cli.test.ts",
+		"test:installed": "vitest run tests/installed-cli.test.ts",
 		"typecheck": "tsc -p tsconfig.test.json",
-		"verify": "npm run lint && npm run typecheck && npm test && npm pack --dry-run"
+		"verify": "npm run lint && npm run typecheck && npm test && npm run build && npm pack --dry-run && npm run test:installed"
 	},
 	"dependencies": {
 		"@oclif/core": "4.11.14",
