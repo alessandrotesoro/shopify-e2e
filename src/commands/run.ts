@@ -120,10 +120,10 @@ export default class Run extends Command {
 				grepInvert: flags["grep-invert"],
 			});
 		} catch (error) {
-			if (error instanceof ShopifyE2EPreflightError) {
-				this.error(error.message, { exit: error.exitCode });
-			}
-			if (error instanceof ShopifyE2EInfrastructureError) {
+			if (
+				error instanceof ShopifyE2EPreflightError ||
+				error instanceof ShopifyE2EInfrastructureError
+			) {
 				this.error(error.message, { exit: error.exitCode });
 			}
 			this.error("shopify-e2e could not complete Playwright execution", {

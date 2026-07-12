@@ -1,36 +1,29 @@
+import type { Stats } from "node:fs";
 import { lstat, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { relative, resolve, sep } from "node:path";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
+import { isPathContained } from "../path-boundary.js";
 
 const conventionalConfigName = "shopify-e2e.config.ts";
 
-function isSameOrContained(root: string, candidate: string): boolean {
-	const pathFromRoot = relative(root, candidate);
-	return (
-		pathFromRoot === "" ||
-		(!pathFromRoot.startsWith(`..${sep}`) &&
-			pathFromRoot !== ".." &&
-			!isAbsolute(pathFromRoot))
-	);
-}
-
 function isStrictlyContained(root: string, candidate: string): boolean {
-	return candidate !== root && isSameOrContained(root, candidate);
+	return candidate !== root && isPathContained(root, candidate);
 }
 
 async function assertNoSymlinkComponents(
 	root: string,
 	candidate: string,
 	label: string,
-): Promise<void> {
+): Promise<Stats> {
 	const pathFromRoot = relative(root, candidate);
 	const components = pathFromRoot.split(sep).filter(Boolean);
 	let current = root;
+	let selectedMetadata: Stats | undefined;
 
 	for (const component of components) {
 		current = resolve(current, component);
-		const metadata = await lstat(current).catch((cause: unknown) => {
+		selectedMetadata = await lstat(current).catch((cause: unknown) => {
 			throw new ShopifyE2EPreflightError(
 				`${label} does not exist: ${current}`,
 				{
@@ -38,12 +31,19 @@ async function assertNoSymlinkComponents(
 				},
 			);
 		});
-		if (metadata.isSymbolicLink()) {
+		if (selectedMetadata.isSymbolicLink()) {
 			throw new ShopifyE2EPreflightError(
 				`${label} must not use a symbolic link: ${current}`,
 			);
 		}
 	}
+
+	if (!selectedMetadata) {
+		throw new ShopifyE2EPreflightError(
+			`${label} must be inside the consuming project: ${candidate}`,
+		);
+	}
+	return selectedMetadata;
 }
 
 export async function resolveProjectRoot(cwd: string): Promise<string> {
@@ -87,13 +87,11 @@ export async function resolveShopifyConfigPath(
 		);
 	}
 
-	await assertNoSymlinkComponents(
+	const selectedMetadata = await assertNoSymlinkComponents(
 		projectRoot,
 		selectedPath,
 		"Dedicated Shopify config",
 	);
-
-	const selectedMetadata = await lstat(selectedPath);
 	if (!selectedMetadata.isFile()) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must be a regular file: ${selectedPath}`,
@@ -122,13 +120,11 @@ export async function resolveShopifyTestDir(
 		);
 	}
 
-	await assertNoSymlinkComponents(
+	const selectedMetadata = await assertNoSymlinkComponents(
 		projectRoot,
 		selectedPath,
 		"Shopify test directory",
 	);
-
-	const selectedMetadata = await lstat(selectedPath);
 	if (!selectedMetadata.isDirectory()) {
 		throw new ShopifyE2EPreflightError(
 			`Shopify test path must be a directory: ${selectedPath}`,

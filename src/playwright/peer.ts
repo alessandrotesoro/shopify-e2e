@@ -1,11 +1,12 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import semver from "semver";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
+import { isPathContained } from "../path-boundary.js";
 
 export const SUPPORTED_PLAYWRIGHT_RANGE = ">=1.61.1 <1.62.0";
 
@@ -20,16 +21,6 @@ interface PlaywrightPackageMetadata {
 	readonly bin: unknown;
 	readonly name: unknown;
 	readonly version: unknown;
-}
-
-function isContained(parent: string, candidate: string): boolean {
-	const pathFromParent = relative(parent, candidate);
-	return (
-		pathFromParent === "" ||
-		(!pathFromParent.startsWith(`..${sep}`) &&
-			pathFromParent !== ".." &&
-			!isAbsolute(pathFromParent))
-	);
 }
 
 function preflight(message: string, cause?: unknown): ShopifyE2EPreflightError {
@@ -128,7 +119,7 @@ export async function resolvePlaywrightPeer(
 
 	const declaredBin = readDeclaredBin(metadata, consumerRoot);
 	const declaredBinPath = resolve(packageRoot, declaredBin);
-	if (!isContained(packageRoot, declaredBinPath)) {
+	if (!isPathContained(packageRoot, declaredBinPath)) {
 		throw preflight(
 			`Consumer @playwright/test declared bin must stay inside its package: ${consumerRoot}`,
 		);
@@ -143,7 +134,7 @@ export async function resolvePlaywrightPeer(
 			error,
 		);
 	}
-	if (!isContained(packageRoot, executablePath)) {
+	if (!isPathContained(packageRoot, executablePath)) {
 		throw preflight(
 			`Consumer @playwright/test declared bin resolved outside its package: ${consumerRoot}`,
 		);
