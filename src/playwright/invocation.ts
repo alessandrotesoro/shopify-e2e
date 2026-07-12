@@ -23,9 +23,9 @@ const CONTROL_FLAGS = {
 	grepInvert: "--grep-invert",
 } as const;
 
-function translateControls(
+const translateControls = (
 	controls: PlaywrightRunControls | undefined,
-): string[] {
+): string[] => {
 	if (!controls) return [];
 
 	const args: string[] = [];
@@ -46,11 +46,11 @@ function translateControls(
 		args.push(CONTROL_FLAGS[control], value);
 	}
 	return args;
-}
+};
 
-export function buildPlaywrightInvocation(
+export const buildPlaywrightInvocation = (
 	options: BuildPlaywrightInvocationOptions,
-): PlaywrightInvocation {
+): PlaywrightInvocation => {
 	return {
 		args: [
 			options.peer.executablePath,
@@ -62,4 +62,4 @@ export function buildPlaywrightInvocation(
 		],
 		executable: process.execPath,
 	};
-}
+};

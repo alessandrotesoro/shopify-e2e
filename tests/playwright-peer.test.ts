@@ -16,12 +16,12 @@ import { resolvePlaywrightPeer } from "../src/playwright/peer.js";
 
 const temporaryDirectories: string[] = [];
 
-async function makeConsumer(): Promise<string> {
+const makeConsumer = async (): Promise<string> => {
 	const consumer = await mkdtemp(join(tmpdir(), "shopify-e2e-peer-"));
 	temporaryDirectories.push(consumer);
 	await writeFile(join(consumer, "package.json"), '{"type":"module"}\n');
 	return realpath(consumer);
-}
+};
 
 interface FakePeerOptions {
 	readonly bin?: unknown;
@@ -29,10 +29,17 @@ interface FakePeerOptions {
 	readonly version?: string;
 }
 
-async function installFakePeer(
-	consumer: string,
-	options: FakePeerOptions = {},
-): Promise<{ readonly binPath: string; readonly packageRoot: string }> {
+interface InstallFakePeerArgs extends FakePeerOptions {
+	readonly consumer: string;
+}
+
+const installFakePeer = async ({
+	consumer,
+	...options
+}: InstallFakePeerArgs): Promise<{
+	readonly binPath: string;
+	readonly packageRoot: string;
+}> => {
 	const packageRoot = join(consumer, "node_modules", "@playwright", "test");
 	const bin = Object.hasOwn(options, "bin")
 		? options.bin
@@ -63,7 +70,7 @@ async function installFakePeer(
 		await writeFile(binPath, "// fake Playwright CLI\n");
 	}
 	return { binPath, packageRoot };
-}
+};
 
 afterEach(async () => {
 	await Promise.all(
@@ -76,7 +83,7 @@ afterEach(async () => {
 describe("consumer Playwright peer resolution", () => {
 	it("resolves the compatible peer and declared executable from the consumer cwd", async () => {
 		const consumer = await makeConsumer();
-		const fakePeer = await installFakePeer(consumer);
+		const fakePeer = await installFakePeer({ consumer });
 
 		await expect(resolvePlaywrightPeer(consumer)).resolves.toEqual({
 			executablePath: fakePeer.binPath,
@@ -97,7 +104,7 @@ describe("consumer Playwright peer resolution", () => {
 		"not-semver",
 	])("rejects incompatible version %s with consumer context", async (version) => {
 		const consumer = await makeConsumer();
-		await installFakePeer(consumer, { version });
+		await installFakePeer({ consumer, version });
 
 		const promise = resolvePlaywrightPeer(consumer);
 
@@ -112,7 +119,7 @@ describe("consumer Playwright peer resolution", () => {
 		{ bin: { playwright: "" }, label: "empty" },
 	])("rejects a $label declared Playwright bin", async ({ bin }) => {
 		const consumer = await makeConsumer();
-		await installFakePeer(consumer, { bin });
+		await installFakePeer({ bin, consumer });
 
 		await expect(resolvePlaywrightPeer(consumer)).rejects.toThrow(
 			/declar.*playwright.*bin/i,
@@ -121,7 +128,8 @@ describe("consumer Playwright peer resolution", () => {
 
 	it("rejects a declared bin that escapes the real package root", async () => {
 		const consumer = await makeConsumer();
-		await installFakePeer(consumer, {
+		await installFakePeer({
+			consumer,
 			bin: { playwright: "../../escaped.js" },
 		});
 		await writeFile(
@@ -136,7 +144,7 @@ describe("consumer Playwright peer resolution", () => {
 
 	it("rejects a contained bin symlink whose target escapes the real package root", async () => {
 		const consumer = await makeConsumer();
-		const { binPath } = await installFakePeer(consumer);
+		const { binPath } = await installFakePeer({ consumer });
 		const outside = join(consumer, "outside-cli.js");
 		await rm(binPath);
 		await writeFile(outside, "// outside peer\n");
@@ -149,7 +157,7 @@ describe("consumer Playwright peer resolution", () => {
 
 	it("rejects a declared bin file that is missing", async () => {
 		const consumer = await makeConsumer();
-		const { binPath } = await installFakePeer(consumer);
+		const { binPath } = await installFakePeer({ consumer });
 		await rm(binPath);
 
 		await expect(resolvePlaywrightPeer(consumer)).rejects.toThrow(
@@ -159,7 +167,7 @@ describe("consumer Playwright peer resolution", () => {
 
 	it("rejects a declared bin that is not a regular file", async () => {
 		const consumer = await makeConsumer();
-		await installFakePeer(consumer, { binKind: "directory" });
+		await installFakePeer({ binKind: "directory", consumer });
 
 		await expect(resolvePlaywrightPeer(consumer)).rejects.toThrow(
 			/regular file/i,

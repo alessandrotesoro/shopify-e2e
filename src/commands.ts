@@ -1,4 +1,4 @@
-import Run from "./commands/run.js";
+import { Run } from "./commands/run.js";
 
 const commands = {
 	run: Run,

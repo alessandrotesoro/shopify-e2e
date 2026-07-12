@@ -24,32 +24,37 @@ interface FakeRuntime {
 	readonly runtime: ChildProcessRuntime;
 }
 
-function makeRuntime(platform: NodeJS.Platform = "linux"): FakeRuntime {
+const makeRuntime = (platform: NodeJS.Platform = "linux"): FakeRuntime => {
 	const child = new FakeChild();
 	const forwarded: Array<{ pid: number; signal: NodeJS.Signals }> = [];
 	const listeners = new Map<NodeJS.Signals, Set<() => void>>();
 	const runtime: ChildProcessRuntime = {
-		addSignalListener(signal, listener) {
+		addSignalListener({ listener, signal }) {
 			const signalListeners = listeners.get(signal) ?? new Set();
 			signalListeners.add(listener);
 			listeners.set(signal, signalListeners);
 		},
-		forwardSignal: vi.fn((pid, signal) => {
+		forwardSignal: vi.fn(({ pid, signal }) => {
 			forwarded.push({ pid, signal });
 			return true;
 		}),
 		platform,
-		removeSignalListener(signal, listener) {
+		removeSignalListener({ listener, signal }) {
 			listeners.get(signal)?.delete(listener);
 		},
 		spawn: vi.fn(() => child as never),
 	};
 	return { child, forwarded, listeners, runtime };
+};
+
+interface EmitSignalArgs {
+	readonly fake: FakeRuntime;
+	readonly signal: NodeJS.Signals;
 }
 
-function emitSignal(fake: FakeRuntime, signal: NodeJS.Signals): void {
+const emitSignal = ({ fake, signal }: EmitSignalArgs): void => {
 	for (const listener of fake.listeners.get(signal) ?? []) listener();
-}
+};
 
 const invocation = {
 	args: ["/consumer/@playwright/test/cli.js", "test", "--workers=1"],
@@ -69,7 +74,7 @@ afterEach(async () => {
 describe("Playwright child lifecycle", () => {
 	it("spawns Node once with inherited stdio, no shell, and a POSIX process group", async () => {
 		const fake = makeRuntime();
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 
 		expect(fake.runtime.spawn).toHaveBeenCalledWith(
 			process.execPath,
@@ -87,7 +92,7 @@ describe("Playwright child lifecycle", () => {
 
 	it.each([0, 1, 17])("preserves numeric child exit %i", async (exitCode) => {
 		const fake = makeRuntime();
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 
 		fake.child.emit("exit", exitCode, null);
 
@@ -105,10 +110,10 @@ describe("Playwright child lifecycle", () => {
 		signal,
 	}) => {
 		const fake = makeRuntime();
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 
-		emitSignal(fake, signal);
-		emitSignal(fake, signal);
+		emitSignal({ fake, signal });
+		emitSignal({ fake, signal });
 		expect(fake.forwarded).toEqual([{ pid: -fake.child.pid, signal }]);
 		fake.child.emit("exit", null, signal);
 
@@ -120,10 +125,10 @@ describe("Playwright child lifecycle", () => {
 
 	it("uses the supported child signal seam instead of negative pids off POSIX", async () => {
 		const fake = makeRuntime("win32");
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 
-		emitSignal(fake, "SIGINT");
-		emitSignal(fake, "SIGINT");
+		emitSignal({ fake, signal: "SIGINT" });
+		emitSignal({ fake, signal: "SIGINT" });
 		expect(fake.forwarded).toEqual([]);
 		expect(fake.child.kill).toHaveBeenCalledTimes(1);
 		expect(fake.child.kill).toHaveBeenCalledWith("SIGINT");
@@ -137,7 +142,7 @@ describe("Playwright child lifecycle", () => {
 		vi.mocked(fake.runtime.forwardSignal).mockImplementationOnce(() => {
 			throw new Error("signal delivery failed");
 		});
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 		let settlements = 0;
 		void resultPromise.then(
 			() => {
@@ -148,7 +153,7 @@ describe("Playwright child lifecycle", () => {
 			},
 		);
 
-		emitSignal(fake, "SIGTERM");
+		emitSignal({ fake, signal: "SIGTERM" });
 		await Promise.resolve();
 
 		expect(fake.forwarded).toEqual([
@@ -173,7 +178,7 @@ describe("Playwright child lifecycle", () => {
 	it("force-terminates the direct child off POSIX when signal delivery returns false", async () => {
 		const fake = makeRuntime("win32");
 		fake.child.kill.mockReturnValueOnce(false).mockReturnValueOnce(true);
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 		let settlements = 0;
 		void resultPromise.then(
 			() => {
@@ -184,7 +189,7 @@ describe("Playwright child lifecycle", () => {
 			},
 		);
 
-		emitSignal(fake, "SIGINT");
+		emitSignal({ fake, signal: "SIGINT" });
 		await Promise.resolve();
 
 		expect(fake.forwarded).toEqual([]);
@@ -205,9 +210,9 @@ describe("Playwright child lifecycle", () => {
 		vi.mocked(fake.runtime.forwardSignal).mockImplementationOnce(() => {
 			throw new Error("signal delivery failed");
 		});
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 
-		emitSignal(fake, "SIGTERM");
+		emitSignal({ fake, signal: "SIGTERM" });
 		expect(fake.forwarded).toEqual([
 			{ pid: -fake.child.pid, signal: "SIGKILL" },
 		]);
@@ -221,7 +226,7 @@ describe("Playwright child lifecycle", () => {
 
 	it("turns a spawn error into a secret-safe infrastructure failure and settles once", async () => {
 		const fake = makeRuntime();
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 
 		fake.child.emit("error", new Error("spawn EACCES TOKEN=secret"));
 		fake.child.emit("exit", 0, null);
@@ -238,7 +243,7 @@ describe("Playwright child lifecycle", () => {
 
 	it("treats an indeterminate child completion as package infrastructure failure", async () => {
 		const fake = makeRuntime();
-		const resultPromise = runChild(invocation, fake.runtime);
+		const resultPromise = runChild({ invocation, runtime: fake.runtime });
 
 		fake.child.emit("exit", null, null);
 
@@ -273,7 +278,7 @@ setInterval(() => {}, 1000);
 			resolve(import.meta.dirname, "../dist/process/run-child.js"),
 		).href;
 		const helperSource = `import { runChild } from ${JSON.stringify(builtModuleUrl)};
-const code = await runChild({ executable: process.execPath, args: [${JSON.stringify(childPath)}] });
+const code = await runChild({ invocation: { executable: process.execPath, args: [${JSON.stringify(childPath)}] } });
 process.exit(code);
 `;
 		const { spawn } = await import("node:child_process");
@@ -289,7 +294,7 @@ process.exit(code);
 		if (helperPid === undefined) {
 			throw new Error("signal-test helper did not start");
 		}
-		let helperExited = false;
+		let hasHelperExited = false;
 
 		try {
 			await expect
@@ -306,15 +311,17 @@ process.exit(code);
 			}>((resolveOutcome) => {
 				helper.once("exit", (code, signal) => resolveOutcome({ code, signal }));
 			});
-			helperExited = true;
+			hasHelperExited = true;
 
 			expect(outcome).toEqual({ code: 143, signal: null });
 			expect(await readFile(signalLogPath, "utf8")).toBe("SIGTERM\n");
 		} finally {
-			if (!helperExited && helper.pid) {
+			if (!hasHelperExited && helper.pid) {
 				try {
 					process.kill(-helper.pid, "SIGKILL");
-				} catch {}
+				} catch {
+					// Best-effort cleanup: the helper may already have exited.
+				}
 			}
 		}
 	},

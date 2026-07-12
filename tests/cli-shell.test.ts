@@ -19,19 +19,25 @@ const unrelatedCommandPath = resolve(projectRoot, "dist/commands/unrelated.js");
 const importSentinelPath = resolve(projectRoot, "dist/unrelated-imported");
 const temporaryDirectories: string[] = [];
 
-function runCli(
-	args: readonly string[],
+interface RunCliArgs {
+	readonly args: readonly string[];
+	readonly cwd?: string;
+	readonly environmentOverrides?: NodeJS.ProcessEnv;
+}
+
+const runCli = ({
+	args,
 	cwd = projectRoot,
-	environmentOverrides: NodeJS.ProcessEnv = {},
-) {
+	environmentOverrides = {},
+}: RunCliArgs) => {
 	return spawnSync(process.execPath, [binPath, ...args], {
 		cwd,
 		encoding: "utf8",
 		env: { ...process.env, ...environmentOverrides, NO_COLOR: "1" },
 	});
-}
+};
 
-async function makeConsumerFixture(): Promise<string> {
+const makeConsumerFixture = async (): Promise<string> => {
 	const consumer = await mkdtemp(join(tmpdir(), "shopify-e2e-cli-"));
 	temporaryDirectories.push(consumer);
 	const testDir = join(consumer, "shopify-tests");
@@ -46,9 +52,9 @@ async function makeConsumerFixture(): Promise<string> {
 		'import { test } from "@playwright/test";\ntest("shopify checkout", () => {});\n',
 	);
 	return consumer;
-}
+};
 
-async function makeRunnableConsumer(): Promise<string> {
+const makeRunnableConsumer = async (): Promise<string> => {
 	const consumer = await makeConsumerFixture();
 	await mkdir(join(consumer, "node_modules", "@playwright"), {
 		recursive: true,
@@ -59,11 +65,11 @@ async function makeRunnableConsumer(): Promise<string> {
 		"dir",
 	);
 	return consumer;
-}
+};
 
-async function makeConsumerWithExitingPlaywright(
+const makeConsumerWithExitingPlaywright = async (
 	exitCode: number,
-): Promise<string> {
+): Promise<string> => {
 	const consumer = await makeConsumerFixture();
 	const peerRoot = join(consumer, "node_modules", "@playwright", "test");
 	await mkdir(peerRoot, { recursive: true });
@@ -82,7 +88,7 @@ async function makeConsumerWithExitingPlaywright(
 	);
 	await writeFile(join(peerRoot, "cli.js"), `process.exit(${exitCode});\n`);
 	return consumer;
-}
+};
 
 describe.sequential("built CLI shell", () => {
 	afterEach(async () => {
@@ -98,7 +104,7 @@ describe.sequential("built CLI shell", () => {
 	it.each([{ args: [] }, { args: ["--help"] }])("prints root help for $args", ({
 		args,
 	}) => {
-		const result = runCli(args);
+		const result = runCli({ args });
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("USAGE");
@@ -108,7 +114,7 @@ describe.sequential("built CLI shell", () => {
 	});
 
 	it("prints run command help", () => {
-		const result = runCli(["run", "--help"]);
+		const result = runCli({ args: ["run", "--help"] });
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("USAGE");
@@ -132,7 +138,7 @@ describe.sequential("built CLI shell", () => {
 		["run", "--reporter", "html"],
 		["run", "--ui"],
 	])("rejects unsupported run input before preflight: %s", (...args) => {
-		const result = runCli(args);
+		const result = runCli({ args });
 
 		expect(result.status).toBe(2);
 		expect(result.stderr).toMatch(
@@ -143,7 +149,7 @@ describe.sequential("built CLI shell", () => {
 
 	it("runs a browserless Shopify spec and reports the selected boundary", async () => {
 		const consumer = await makeRunnableConsumer();
-		const result = runCli(["run"], consumer);
+		const result = runCli({ args: ["run"], cwd: consumer });
 
 		expect(result.status, result.stderr).toBe(0);
 		expect(result.stdout).toMatch(/1 passed/i);
@@ -155,7 +161,10 @@ describe.sequential("built CLI shell", () => {
 
 	it("preserves Playwright's exit when an allowed filter selects no tests", async () => {
 		const consumer = await makeRunnableConsumer();
-		const result = runCli(["run", "--grep", "does not match"], consumer);
+		const result = runCli({
+			args: ["run", "--grep", "does not match"],
+			cwd: consumer,
+		});
 
 		expect(result.status).toBe(1);
 		expect(`${result.stdout}\n${result.stderr}`).toMatch(/no tests found/i);
@@ -164,7 +173,7 @@ describe.sequential("built CLI shell", () => {
 
 	it("preserves a representative nonstandard Playwright child exit", async () => {
 		const consumer = await makeConsumerWithExitingPlaywright(17);
-		const result = runCli(["run"], consumer);
+		const result = runCli({ args: ["run"], cwd: consumer });
 
 		expect(result.status, result.stderr).toBe(17);
 		expect(result.stderr).toContain("Shopify config:");
@@ -178,10 +187,14 @@ describe.sequential("built CLI shell", () => {
 			"missing-temporary-parent",
 			"private-value",
 		);
-		const result = runCli(["run"], consumer, {
-			TEMP: missingTemporaryRoot,
-			TMP: missingTemporaryRoot,
-			TMPDIR: missingTemporaryRoot,
+		const result = runCli({
+			args: ["run"],
+			cwd: consumer,
+			environmentOverrides: {
+				TEMP: missingTemporaryRoot,
+				TMP: missingTemporaryRoot,
+				TMPDIR: missingTemporaryRoot,
+			},
 		});
 
 		expect(result.status).toBe(1);
@@ -196,7 +209,7 @@ describe.sequential("built CLI shell", () => {
 	it("reports a missing dedicated config as preflight exit 2", async () => {
 		const consumer = await mkdtemp(join(tmpdir(), "shopify-e2e-cli-"));
 		temporaryDirectories.push(consumer);
-		const result = runCli(["run"], consumer);
+		const result = runCli({ args: ["run"], cwd: consumer });
 
 		expect(result.status).toBe(2);
 		expect(result.stderr).toMatch(/dedicated Shopify config.*does not exist/i);
@@ -207,7 +220,7 @@ describe.sequential("built CLI shell", () => {
 		const packageJson = JSON.parse(
 			await readFile(resolve(projectRoot, "package.json"), "utf8"),
 		) as { name: string; version: string };
-		const result = runCli(["--version"]);
+		const result = runCli({ args: ["--version"] });
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(packageJson.name);
@@ -222,7 +235,7 @@ describe.sequential("built CLI shell", () => {
 			`import {writeFileSync} from 'node:fs';\nwriteFileSync(${JSON.stringify(importSentinelPath)}, 'imported');\n`,
 		);
 
-		const result = runCli(["unrelated"]);
+		const result = runCli({ args: ["unrelated"] });
 
 		expect(result.status).not.toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toMatch(

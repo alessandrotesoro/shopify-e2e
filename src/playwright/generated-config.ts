@@ -9,9 +9,9 @@ export interface GeneratedPlaywrightConfig {
 	readonly configPath: string;
 }
 
-export async function createGeneratedPlaywrightConfig(
+export const createGeneratedPlaywrightConfig = async (
 	testDir: string,
-): Promise<GeneratedPlaywrightConfig> {
+): Promise<GeneratedPlaywrightConfig> => {
 	if (!isAbsolute(testDir)) {
 		throw new ShopifyE2EPreflightError(
 			"Generated Playwright config requires an absolute Shopify test directory",
@@ -39,4 +39,4 @@ export async function createGeneratedPlaywrightConfig(
 		cleanup: () => rm(directoryPath, { force: true, recursive: true }),
 		configPath,
 	};
-}
+};

@@ -1,6 +1,14 @@
 import { isAbsolute, relative, sep } from "node:path";
 
-export function isPathContained(parent: string, candidate: string): boolean {
+export interface IsPathContainedArgs {
+	readonly candidate: string;
+	readonly parent: string;
+}
+
+export const isPathContained = ({
+	candidate,
+	parent,
+}: IsPathContainedArgs): boolean => {
 	const pathFromParent = relative(parent, candidate);
 	return (
 		pathFromParent === "" ||
@@ -8,4 +16,4 @@ export function isPathContained(parent: string, candidate: string): boolean {
 			pathFromParent !== ".." &&
 			!isAbsolute(pathFromParent))
 	);
-}
+};

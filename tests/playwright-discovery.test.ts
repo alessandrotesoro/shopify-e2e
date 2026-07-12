@@ -41,14 +41,14 @@ const extensions = [
 	"ctsx",
 ] as const;
 
-async function makeTestDir(): Promise<string> {
+const makeTestDir = async (): Promise<string> => {
 	const root = await mkdtemp(join(tmpdir(), "shopify-e2e-discovery-"));
 	temporaryDirectories.push(root);
 	const physicalRoot = await realpath(root);
 	const testDir = join(physicalRoot, "shopify-tests");
 	await mkdir(testDir);
 	return testDir;
-}
+};
 
 afterEach(async () => {
 	await Promise.all(
@@ -141,15 +141,13 @@ describe("Playwright-compatible candidate discovery", () => {
 		});
 		const candidates = extensions.flatMap((extension, extensionIndex) =>
 			(["spec", "test"] as const).map((naming, namingIndex) => {
-				const directory = join(
-					testDir,
-					`level-${extensionIndex % 3}`,
-					namingIndex === 0 ? "shallow" : "deeply/nested",
-				);
-				return join(
-					directory,
-					`${extensionIndex === 0 && naming === "spec" ? "ignored-by-rule" : `candidate-${extensionIndex}`}.${naming}.${extension}`,
-				);
+				const nesting = namingIndex === 0 ? "shallow" : "deeply/nested";
+				const candidateName =
+					extensionIndex === 0 && naming === "spec"
+						? "ignored-by-rule"
+						: `candidate-${extensionIndex}`;
+				const directory = join(testDir, `level-${extensionIndex % 3}`, nesting);
+				return join(directory, `${candidateName}.${naming}.${extension}`);
 			}),
 		);
 		const expectedRelative = candidates

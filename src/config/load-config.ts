@@ -7,24 +7,39 @@ import {
 	resolveShopifyConfigPath,
 	resolveShopifyTestDir,
 } from "./project-boundary.js";
-import type {
-	LoadedShopifyConfig,
-	LoadShopifyConfigOptions,
-	ShopifyE2EConfig,
-} from "./types.js";
 
-function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+export interface ShopifyE2EConfig {
+	readonly testDir: string;
+}
+
+export interface LoadShopifyConfigOptions {
+	readonly configPath?: string;
+	readonly cwd: string;
+}
+
+export interface LoadedShopifyConfig {
+	readonly configPath: string;
+	readonly projectRoot: string;
+	readonly testDir: string;
+}
+
+const isRecord = (value: unknown): value is Record<PropertyKey, unknown> => {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		return false;
 	}
 	const prototype = Object.getPrototypeOf(value) as unknown;
 	return prototype === Object.prototype || prototype === null;
+};
+
+interface ValidateConfigExportArgs {
+	readonly configPath: string;
+	readonly value: unknown;
 }
 
-function validateConfigExport(
-	value: unknown,
-	configPath: string,
-): ShopifyE2EConfig {
+const validateConfigExport = ({
+	configPath,
+	value,
+}: ValidateConfigExportArgs): ShopifyE2EConfig => {
 	if (!isRecord(value)) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must default-export an object: ${configPath}`,
@@ -45,27 +60,32 @@ function validateConfigExport(
 		);
 	}
 	return { testDir };
+};
+
+interface WithConfigContextArgs {
+	readonly configPath: string;
+	readonly error: unknown;
 }
 
-function withConfigContext(
-	error: unknown,
-	configPath: string,
-): ShopifyE2EPreflightError {
+const withConfigContext = ({
+	configPath,
+	error,
+}: WithConfigContextArgs): ShopifyE2EPreflightError => {
 	if (error instanceof ShopifyE2EPreflightError) return error;
 	return new ShopifyE2EPreflightError(
 		`Dedicated Shopify config could not load: ${configPath}`,
 		{ cause: error },
 	);
-}
+};
 
-export async function loadShopifyConfig(
+export const loadShopifyConfig = async (
 	options: LoadShopifyConfigOptions,
-): Promise<LoadedShopifyConfig> {
+): Promise<LoadedShopifyConfig> => {
 	const projectRoot = await resolveProjectRoot(options.cwd);
-	const configPath = await resolveShopifyConfigPath(
+	const configPath = await resolveShopifyConfigPath({
+		explicitConfigPath: options.configPath,
 		projectRoot,
-		options.configPath,
-	);
+	});
 
 	try {
 		const jiti = createJiti(import.meta.url, {
@@ -81,11 +101,17 @@ export async function loadShopifyConfig(
 			);
 		}
 
-		const config = validateConfigExport(moduleNamespace.default, configPath);
-		const testDir = await resolveShopifyTestDir(projectRoot, config.testDir);
+		const config = validateConfigExport({
+			configPath,
+			value: moduleNamespace.default,
+		});
+		const testDir = await resolveShopifyTestDir({
+			configuredTestDir: config.testDir,
+			projectRoot,
+		});
 		await discoverShopifySpecs(testDir);
 		return { configPath, projectRoot, testDir };
 	} catch (error) {
-		throw withConfigContext(error, configPath);
+		throw withConfigContext({ configPath, error });
 	}
-}
+};

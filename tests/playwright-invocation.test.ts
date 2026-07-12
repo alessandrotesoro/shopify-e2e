@@ -23,7 +23,7 @@ import { resolvePlaywrightPeer } from "../src/playwright/peer.js";
 
 const temporaryDirectories: string[] = [];
 
-async function makeTestRoot(): Promise<string> {
+const makeTestRoot = async (): Promise<string> => {
 	const project = await mkdtemp(join(tmpdir(), "shopify-e2e-invocation-"));
 	temporaryDirectories.push(project);
 	const testDir = join(project, "shopify-tests");
@@ -40,13 +40,15 @@ async function makeTestRoot(): Promise<string> {
 		'import { test } from "@playwright/test";\ntest("baseline", () => {});\n',
 	);
 	return testDir;
-}
+};
 
-async function expectCleaned(config: GeneratedPlaywrightConfig): Promise<void> {
+const expectCleaned = async (
+	config: GeneratedPlaywrightConfig,
+): Promise<void> => {
 	await config.cleanup();
 	await config.cleanup();
 	await expect(access(dirname(config.configPath))).rejects.toThrow();
-}
+};
 
 afterEach(async () => {
 	await Promise.all(

@@ -16,11 +16,11 @@ import { ShopifyE2EPreflightError } from "../src/errors.js";
 
 const temporaryDirectories: string[] = [];
 
-async function makeProject(): Promise<string> {
+const makeProject = async (): Promise<string> => {
 	const project = await mkdtemp(join(tmpdir(), "shopify-e2e-boundary-"));
 	temporaryDirectories.push(project);
 	return realpath(project);
-}
+};
 
 afterEach(async () => {
 	await Promise.all(
@@ -36,9 +36,12 @@ describe("Shopify test-directory boundary", () => {
 		const testDir = join(project, "tests", "shopify");
 		await mkdir(testDir, { recursive: true });
 
-		await expect(resolveShopifyTestDir(project, "tests/shopify")).resolves.toBe(
-			testDir,
-		);
+		await expect(
+			resolveShopifyTestDir({
+				configuredTestDir: "tests/shopify",
+				projectRoot: project,
+			}),
+		).resolves.toBe(testDir);
 	});
 
 	it.each([
@@ -48,7 +51,10 @@ describe("Shopify test-directory boundary", () => {
 		const project = await makeProject();
 
 		await expect(
-			resolveShopifyTestDir(project, testDir),
+			resolveShopifyTestDir({
+				configuredTestDir: testDir,
+				projectRoot: project,
+			}),
 		).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
 	});
 
@@ -56,21 +62,30 @@ describe("Shopify test-directory boundary", () => {
 		const project = await makeProject();
 		await writeFile(join(project, "tests"), "not a directory");
 
-		await expect(resolveShopifyTestDir(project, "tests")).rejects.toThrow(
-			/directory/i,
-		);
+		await expect(
+			resolveShopifyTestDir({
+				configuredTestDir: "tests",
+				projectRoot: project,
+			}),
+		).rejects.toThrow(/directory/i);
 	});
 
 	it("rejects lexical traversal and absolute paths outside the project", async () => {
 		const project = await makeProject();
 		const outside = await makeProject();
 
-		await expect(resolveShopifyTestDir(project, "../outside")).rejects.toThrow(
-			/inside.*project/i,
-		);
-		await expect(resolveShopifyTestDir(project, outside)).rejects.toThrow(
-			/inside.*project/i,
-		);
+		await expect(
+			resolveShopifyTestDir({
+				configuredTestDir: "../outside",
+				projectRoot: project,
+			}),
+		).rejects.toThrow(/inside.*project/i);
+		await expect(
+			resolveShopifyTestDir({
+				configuredTestDir: outside,
+				projectRoot: project,
+			}),
+		).rejects.toThrow(/inside.*project/i);
 	});
 
 	it("rejects a test-root symlink that resolves inside the project", async () => {
@@ -79,9 +94,12 @@ describe("Shopify test-directory boundary", () => {
 		await mkdir(realTests);
 		await symlink(realTests, join(project, "tests"));
 
-		await expect(resolveShopifyTestDir(project, "tests")).rejects.toThrow(
-			/symbolic link/i,
-		);
+		await expect(
+			resolveShopifyTestDir({
+				configuredTestDir: "tests",
+				projectRoot: project,
+			}),
+		).rejects.toThrow(/symbolic link/i);
 	});
 
 	it("rejects a test-root symlink that escapes the project", async () => {
@@ -89,8 +107,11 @@ describe("Shopify test-directory boundary", () => {
 		const outside = await makeProject();
 		await symlink(outside, join(project, "tests"));
 
-		await expect(resolveShopifyTestDir(project, "tests")).rejects.toThrow(
-			/symbolic link|inside.*project/i,
-		);
+		await expect(
+			resolveShopifyTestDir({
+				configuredTestDir: "tests",
+				projectRoot: project,
+			}),
+		).rejects.toThrow(/symbolic link|inside.*project/i);
 	});
 });

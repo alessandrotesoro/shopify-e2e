@@ -47,18 +47,23 @@ export interface RunCommandDependencies {
 const defaultDependencies: RunCommandDependencies = {
 	buildInvocation: buildPlaywrightInvocation,
 	createGeneratedConfig: createGeneratedPlaywrightConfig,
-	reportSelection(selection) {
+	reportSelection: (selection) => {
 		process.stderr.write(`Shopify config: ${selection.configPath}\n`);
 		process.stderr.write(`Shopify test directory: ${selection.testDir}\n`);
 	},
 	resolvePeer: resolvePlaywrightPeer,
-	runChild,
+	runChild: (invocation) => runChild({ invocation }),
 };
 
-export async function orchestrateShopifyRun(
-	options: RunCommandOptions,
-	dependencies: RunCommandDependencies = defaultDependencies,
-): Promise<number> {
+export interface OrchestrateShopifyRunArgs {
+	readonly dependencies?: RunCommandDependencies;
+	readonly options: RunCommandOptions;
+}
+
+export const orchestrateShopifyRun = async ({
+	dependencies = defaultDependencies,
+	options,
+}: OrchestrateShopifyRunArgs): Promise<number> => {
 	const loadedConfig = await loadShopifyConfig({
 		configPath: options.configPath,
 		cwd: options.cwd,
@@ -87,9 +92,9 @@ export async function orchestrateShopifyRun(
 	} finally {
 		await generatedConfig.cleanup();
 	}
-}
+};
 
-export default class Run extends Command {
+export class Run extends Command {
 	static override description =
 		"Run the dedicated Shopify Playwright E2E lane. Run controls are package-owned; arbitrary Playwright arguments are not accepted. Playwright workers, projects, file selectors, reporters, UI, and debug controls are intentionally unavailable.";
 
@@ -114,10 +119,12 @@ export default class Run extends Command {
 		let exitCode: number;
 		try {
 			exitCode = await orchestrateShopifyRun({
-				configPath: flags.config,
-				cwd: process.cwd(),
-				grep: flags.grep,
-				grepInvert: flags["grep-invert"],
+				options: {
+					configPath: flags.config,
+					cwd: process.cwd(),
+					grep: flags.grep,
+					grepInvert: flags["grep-invert"],
+				},
 			});
 		} catch (error) {
 			if (

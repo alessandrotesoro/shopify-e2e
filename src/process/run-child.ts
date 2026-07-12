@@ -8,71 +8,86 @@ const forwardedSignals = ["SIGINT", "SIGTERM"] as const;
 type ForwardedSignal = (typeof forwardedSignals)[number];
 type ChildSignal = ForwardedSignal | "SIGKILL";
 type SignalListener = () => void;
+type ChildOutcome = { error: Error } | { exitCode: number };
+
+export interface AddSignalListenerArgs {
+	readonly listener: SignalListener;
+	readonly signal: ForwardedSignal;
+}
+
+export interface ForwardSignalArgs {
+	readonly pid: number;
+	readonly signal: ChildSignal;
+}
+
+export interface RemoveSignalListenerArgs {
+	readonly listener: SignalListener;
+	readonly signal: ForwardedSignal;
+}
 
 export interface ChildProcessRuntime {
-	readonly addSignalListener: (
-		signal: ForwardedSignal,
-		listener: SignalListener,
-	) => void;
-	readonly forwardSignal: (pid: number, signal: ChildSignal) => boolean;
+	readonly addSignalListener: (args: AddSignalListenerArgs) => void;
+	readonly forwardSignal: (args: ForwardSignalArgs) => boolean;
 	readonly platform: NodeJS.Platform;
-	readonly removeSignalListener: (
-		signal: ForwardedSignal,
-		listener: SignalListener,
-	) => void;
+	readonly removeSignalListener: (args: RemoveSignalListenerArgs) => void;
 	readonly spawn: typeof spawn;
 }
 
 const defaultRuntime: ChildProcessRuntime = {
-	addSignalListener(signal, listener) {
+	addSignalListener: ({ listener, signal }) => {
 		process.on(signal, listener);
 	},
-	forwardSignal(pid, signal) {
+	forwardSignal: ({ pid, signal }) => {
 		return process.kill(pid, signal);
 	},
 	platform: process.platform,
-	removeSignalListener(signal, listener) {
+	removeSignalListener: ({ listener, signal }) => {
 		process.off(signal, listener);
 	},
 	spawn,
 };
 
-function isPosix(platform: NodeJS.Platform): boolean {
+const isPosix = (platform: NodeJS.Platform): boolean => {
 	return platform !== "win32";
-}
+};
 
-function signalExitCode(signal: NodeJS.Signals): number | undefined {
+const signalExitCode = (signal: NodeJS.Signals): number | undefined => {
 	const signalNumber = constants.signals[signal];
 	return typeof signalNumber === "number" ? 128 + signalNumber : undefined;
+};
+
+export interface RunChildArgs {
+	readonly invocation: PlaywrightInvocation;
+	readonly runtime?: ChildProcessRuntime;
 }
 
-export async function runChild(
-	invocation: PlaywrightInvocation,
-	runtime: ChildProcessRuntime = defaultRuntime,
-): Promise<number> {
-	const posix = isPosix(runtime.platform);
+export const runChild = async ({
+	invocation,
+	runtime = defaultRuntime,
+}: RunChildArgs): Promise<number> => {
+	const isPosixPlatform = isPosix(runtime.platform);
 	const child = runtime.spawn(invocation.executable, invocation.args, {
-		detached: posix,
+		detached: isPosixPlatform,
 		shell: false,
 		stdio: "inherit",
 	});
 
 	return new Promise<number>((resolve, reject) => {
-		let settled = false;
+		let isSettled = false;
 		let forwardingError: ShopifyE2EInfrastructureError | undefined;
 		const deliveredSignals = new Set<ForwardedSignal>();
 		const signalListeners = new Map<ForwardedSignal, SignalListener>();
 
 		const removeSignalListeners = (): void => {
 			for (const [signal, listener] of signalListeners) {
-				runtime.removeSignalListener(signal, listener);
+				runtime.removeSignalListener({ listener, signal });
 			}
 			signalListeners.clear();
 		};
 
-		const settle = (outcome: { error: Error } | { exitCode: number }): void => {
-			if (settled) return;
-			settled = true;
+		const settle = (outcome: ChildOutcome): void => {
+			if (isSettled) return;
+			isSettled = true;
 			removeSignalListeners();
 			if ("error" in outcome) reject(outcome.error);
 			else resolve(outcome.exitCode);
@@ -84,20 +99,27 @@ export async function runChild(
 			forwardingError = error;
 			removeSignalListeners();
 
-			let terminationInitiated = false;
-			if (posix && child.pid !== undefined) {
+			let isTerminationInitiated = false;
+			if (isPosixPlatform && child.pid !== undefined) {
 				try {
-					terminationInitiated = runtime.forwardSignal(-child.pid, "SIGKILL");
-				} catch {}
+					isTerminationInitiated = runtime.forwardSignal({
+						pid: -child.pid,
+						signal: "SIGKILL",
+					});
+				} catch {
+					// Preserve the original forwarding error; direct-child recovery follows.
+				}
 			}
 
-			if (!terminationInitiated) {
+			if (!isTerminationInitiated) {
 				try {
-					terminationInitiated = child.kill("SIGKILL");
-				} catch {}
+					isTerminationInitiated = child.kill("SIGKILL");
+				} catch {
+					// Preserve the original forwarding error as the single CLI diagnostic.
+				}
 			}
 
-			if (!terminationInitiated) settle({ error });
+			if (!isTerminationInitiated) settle({ error });
 		};
 
 		for (const signal of forwardedSignals) {
@@ -105,13 +127,16 @@ export async function runChild(
 				if (forwardingError || deliveredSignals.has(signal)) return;
 				deliveredSignals.add(signal);
 				try {
-					let delivered: boolean;
-					if (posix && child.pid !== undefined) {
-						delivered = runtime.forwardSignal(-child.pid, signal);
+					let wasSignalDelivered: boolean;
+					if (isPosixPlatform && child.pid !== undefined) {
+						wasSignalDelivered = runtime.forwardSignal({
+							pid: -child.pid,
+							signal,
+						});
 					} else {
-						delivered = child.kill(signal);
+						wasSignalDelivered = child.kill(signal);
 					}
-					if (!delivered) {
+					if (!wasSignalDelivered) {
 						recoverFromForwardingFailure(
 							new ShopifyE2EInfrastructureError(
 								`Could not forward ${signal} to the Playwright process`,
@@ -128,7 +153,7 @@ export async function runChild(
 				}
 			};
 			signalListeners.set(signal, listener);
-			runtime.addSignalListener(signal, listener);
+			runtime.addSignalListener({ listener, signal });
 		}
 
 		child.once("error", (cause) => {
@@ -168,4 +193,4 @@ export async function runChild(
 			});
 		});
 	});
-}
+};

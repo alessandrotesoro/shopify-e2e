@@ -3,19 +3,32 @@ import { lstat, realpath, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
-import { isPathContained } from "../path-boundary.js";
+import { isPathContained } from "../path-boundary.utils.js";
 
 const conventionalConfigName = "shopify-e2e.config.ts";
 
-function isStrictlyContained(root: string, candidate: string): boolean {
-	return candidate !== root && isPathContained(root, candidate);
+interface IsStrictlyContainedArgs {
+	readonly candidate: string;
+	readonly root: string;
 }
 
-async function assertNoSymlinkComponents(
-	root: string,
-	candidate: string,
-	label: string,
-): Promise<Stats> {
+const isStrictlyContained = ({
+	candidate,
+	root,
+}: IsStrictlyContainedArgs): boolean =>
+	candidate !== root && isPathContained({ candidate, parent: root });
+
+interface AssertNoSymlinkComponentsArgs {
+	readonly candidate: string;
+	readonly label: string;
+	readonly root: string;
+}
+
+const assertNoSymlinkComponents = async ({
+	candidate,
+	label,
+	root,
+}: AssertNoSymlinkComponentsArgs): Promise<Stats> => {
 	const pathFromRoot = relative(root, candidate);
 	const components = pathFromRoot.split(sep).filter(Boolean);
 	let current = root;
@@ -44,9 +57,9 @@ async function assertNoSymlinkComponents(
 		);
 	}
 	return selectedMetadata;
-}
+};
 
-export async function resolveProjectRoot(cwd: string): Promise<string> {
+export const resolveProjectRoot = async (cwd: string): Promise<string> => {
 	let projectRoot: string;
 	try {
 		projectRoot = await realpath(resolve(cwd));
@@ -63,12 +76,17 @@ export async function resolveProjectRoot(cwd: string): Promise<string> {
 		);
 	}
 	return projectRoot;
+};
+
+export interface ResolveShopifyConfigPathArgs {
+	readonly explicitConfigPath?: string;
+	readonly projectRoot: string;
 }
 
-export async function resolveShopifyConfigPath(
-	projectRoot: string,
-	explicitConfigPath?: string,
-): Promise<string> {
+export const resolveShopifyConfigPath = async ({
+	explicitConfigPath,
+	projectRoot,
+}: ResolveShopifyConfigPathArgs): Promise<string> => {
 	const selectedPath = resolve(
 		projectRoot,
 		explicitConfigPath ?? conventionalConfigName,
@@ -79,17 +97,17 @@ export async function resolveShopifyConfigPath(
 			`Dedicated Shopify config must be a .ts file: ${selectedPath}`,
 		);
 	}
-	if (!isStrictlyContained(projectRoot, selectedPath)) {
+	if (!isStrictlyContained({ candidate: selectedPath, root: projectRoot })) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must be inside the consuming project: ${selectedPath}`,
 		);
 	}
 
-	const selectedMetadata = await assertNoSymlinkComponents(
-		projectRoot,
-		selectedPath,
-		"Dedicated Shopify config",
-	);
+	const selectedMetadata = await assertNoSymlinkComponents({
+		candidate: selectedPath,
+		label: "Dedicated Shopify config",
+		root: projectRoot,
+	});
 	if (!selectedMetadata.isFile()) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must be a regular file: ${selectedPath}`,
@@ -97,30 +115,35 @@ export async function resolveShopifyConfigPath(
 	}
 
 	const physicalPath = await realpath(selectedPath);
-	if (!isStrictlyContained(projectRoot, physicalPath)) {
+	if (!isStrictlyContained({ candidate: physicalPath, root: projectRoot })) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must resolve inside the consuming project: ${selectedPath}`,
 		);
 	}
 	return physicalPath;
+};
+
+export interface ResolveShopifyTestDirArgs {
+	readonly configuredTestDir: string;
+	readonly projectRoot: string;
 }
 
-export async function resolveShopifyTestDir(
-	projectRoot: string,
-	configuredTestDir: string,
-): Promise<string> {
+export const resolveShopifyTestDir = async ({
+	configuredTestDir,
+	projectRoot,
+}: ResolveShopifyTestDirArgs): Promise<string> => {
 	const selectedPath = resolve(projectRoot, configuredTestDir);
-	if (!isStrictlyContained(projectRoot, selectedPath)) {
+	if (!isStrictlyContained({ candidate: selectedPath, root: projectRoot })) {
 		throw new ShopifyE2EPreflightError(
 			`Shopify test directory must be inside the consuming project: ${selectedPath}`,
 		);
 	}
 
-	const selectedMetadata = await assertNoSymlinkComponents(
-		projectRoot,
-		selectedPath,
-		"Shopify test directory",
-	);
+	const selectedMetadata = await assertNoSymlinkComponents({
+		candidate: selectedPath,
+		label: "Shopify test directory",
+		root: projectRoot,
+	});
 	if (!selectedMetadata.isDirectory()) {
 		throw new ShopifyE2EPreflightError(
 			`Shopify test path must be a directory: ${selectedPath}`,
@@ -128,10 +151,10 @@ export async function resolveShopifyTestDir(
 	}
 
 	const physicalPath = await realpath(selectedPath);
-	if (!isStrictlyContained(projectRoot, physicalPath)) {
+	if (!isStrictlyContained({ candidate: physicalPath, root: projectRoot })) {
 		throw new ShopifyE2EPreflightError(
 			`Shopify test directory must resolve inside the consuming project: ${selectedPath}`,
 		);
 	}
 	return physicalPath;
-}
+};

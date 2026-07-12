@@ -24,11 +24,11 @@ import type { GeneratedPlaywrightConfig } from "../src/playwright/generated-conf
 
 const temporaryDirectories: string[] = [];
 
-async function makeConsumer(): Promise<{
+const makeConsumer = async (): Promise<{
 	readonly configPath: string;
 	readonly projectRoot: string;
 	readonly testDir: string;
-}> {
+}> => {
 	const projectRoot = await mkdtemp(join(tmpdir(), "shopify-e2e-run-"));
 	temporaryDirectories.push(projectRoot);
 	const testDir = join(projectRoot, "shopify-tests");
@@ -50,12 +50,17 @@ async function makeConsumer(): Promise<{
 		projectRoot: physicalRoot,
 		testDir: join(physicalRoot, "shopify-tests"),
 	};
+};
+
+interface MakeDependenciesArgs {
+	readonly exitCode?: number;
+	readonly generatedConfig: GeneratedPlaywrightConfig;
 }
 
-function makeDependencies(
-	generatedConfig: GeneratedPlaywrightConfig,
+const makeDependencies = ({
 	exitCode = 0,
-): RunCommandDependencies {
+	generatedConfig,
+}: MakeDependenciesArgs): RunCommandDependencies => {
 	return {
 		buildInvocation: vi.fn(({ controls, generatedConfig: generated }) => ({
 			args: [
@@ -75,11 +80,13 @@ function makeDependencies(
 		})),
 		runChild: vi.fn(async () => exitCode),
 	};
-}
+};
 
-async function makeGeneratedConfig(
+const makeGeneratedConfig = async (
 	projectRoot: string,
-): Promise<GeneratedPlaywrightConfig & { cleanup: ReturnType<typeof vi.fn> }> {
+): Promise<
+	GeneratedPlaywrightConfig & { cleanup: ReturnType<typeof vi.fn> }
+> => {
 	const directoryPath = join(projectRoot, "temporary-config");
 	const configPath = join(directoryPath, "playwright.config.mjs");
 	await mkdir(directoryPath);
@@ -88,7 +95,7 @@ async function makeGeneratedConfig(
 		rm(directoryPath, { force: true, recursive: true }),
 	);
 	return { cleanup, configPath };
-}
+};
 
 afterEach(async () => {
 	await Promise.all(
@@ -102,13 +109,13 @@ describe("run command orchestration", () => {
 	it("completes preflight, reports selected paths, starts one child, and cleans up", async () => {
 		const consumer = await makeConsumer();
 		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies(generated);
+		const dependencies = makeDependencies({ generatedConfig: generated });
 
 		await expect(
-			orchestrateShopifyRun(
-				{ cwd: consumer.projectRoot, grep: "checkout with spaces" },
+			orchestrateShopifyRun({
 				dependencies,
-			),
+				options: { cwd: consumer.projectRoot, grep: "checkout with spaces" },
+			}),
 		).resolves.toBe(0);
 
 		expect(dependencies.reportSelection).toHaveBeenCalledWith({
@@ -128,13 +135,16 @@ describe("run command orchestration", () => {
 	it("passes through a valid no-match filter and the child no-tests exit", async () => {
 		const consumer = await makeConsumer();
 		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies(generated, 1);
+		const dependencies = makeDependencies({
+			exitCode: 1,
+			generatedConfig: generated,
+		});
 
 		await expect(
-			orchestrateShopifyRun(
-				{ cwd: consumer.projectRoot, grepInvert: ".*" },
+			orchestrateShopifyRun({
 				dependencies,
-			),
+				options: { cwd: consumer.projectRoot, grepInvert: ".*" },
+			}),
 		).resolves.toBe(1);
 		expect(dependencies.runChild).toHaveBeenCalledTimes(1);
 	});
@@ -147,10 +157,16 @@ describe("run command orchestration", () => {
 	])("preserves $label child exit $exitCode", async ({ exitCode }) => {
 		const consumer = await makeConsumer();
 		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies(generated, exitCode);
+		const dependencies = makeDependencies({
+			exitCode,
+			generatedConfig: generated,
+		});
 
 		await expect(
-			orchestrateShopifyRun({ cwd: consumer.projectRoot }, dependencies),
+			orchestrateShopifyRun({
+				dependencies,
+				options: { cwd: consumer.projectRoot },
+			}),
 		).resolves.toBe(exitCode);
 		expect(generated.cleanup).toHaveBeenCalledTimes(1);
 	});
@@ -159,10 +175,13 @@ describe("run command orchestration", () => {
 		const consumer = await makeConsumer();
 		await rm(consumer.configPath);
 		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies(generated);
+		const dependencies = makeDependencies({ generatedConfig: generated });
 
 		await expect(
-			orchestrateShopifyRun({ cwd: consumer.projectRoot }, dependencies),
+			orchestrateShopifyRun({
+				dependencies,
+				options: { cwd: consumer.projectRoot },
+			}),
 		).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
 		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
 		expect(dependencies.runChild).not.toHaveBeenCalled();
@@ -171,7 +190,7 @@ describe("run command orchestration", () => {
 	it("cleans temporary state when invocation construction rejects a filter", async () => {
 		const consumer = await makeConsumer();
 		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies(generated);
+		const dependencies = makeDependencies({ generatedConfig: generated });
 		vi.mocked(dependencies.buildInvocation).mockImplementationOnce(() => {
 			throw new ShopifyE2EPreflightError(
 				"--grep filter must be a non-empty string",
@@ -179,10 +198,10 @@ describe("run command orchestration", () => {
 		});
 
 		await expect(
-			orchestrateShopifyRun(
-				{ cwd: consumer.projectRoot, grep: "" },
+			orchestrateShopifyRun({
 				dependencies,
-			),
+				options: { cwd: consumer.projectRoot, grep: "" },
+			}),
 		).rejects.toThrow(/non-empty/i);
 		expect(dependencies.runChild).not.toHaveBeenCalled();
 		expect(generated.cleanup).toHaveBeenCalledTimes(1);
@@ -191,7 +210,7 @@ describe("run command orchestration", () => {
 	it("cleans temporary state after a spawn infrastructure failure", async () => {
 		const consumer = await makeConsumer();
 		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies(generated);
+		const dependencies = makeDependencies({ generatedConfig: generated });
 		vi.mocked(dependencies.runChild).mockRejectedValueOnce(
 			new ShopifyE2EInfrastructureError(
 				`Could not start Playwright with ${process.execPath}`,
@@ -199,7 +218,10 @@ describe("run command orchestration", () => {
 		);
 
 		await expect(
-			orchestrateShopifyRun({ cwd: consumer.projectRoot }, dependencies),
+			orchestrateShopifyRun({
+				dependencies,
+				options: { cwd: consumer.projectRoot },
+			}),
 		).rejects.toThrow(process.execPath);
 		expect(generated.cleanup).toHaveBeenCalledTimes(1);
 	});

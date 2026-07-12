@@ -6,10 +6,10 @@ import { describe, expect, it } from "vitest";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 
-async function readPackage(): Promise<Record<string, unknown>> {
+const readPackage = async (): Promise<Record<string, unknown>> => {
 	const contents = await readFile(resolve(projectRoot, "package.json"), "utf8");
 	return JSON.parse(contents) as Record<string, unknown>;
-}
+};
 
 describe("package metadata", () => {
 	it("publishes the intended CLI-only package shell", async () => {

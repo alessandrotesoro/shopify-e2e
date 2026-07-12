@@ -5,12 +5,12 @@ import { ShopifyE2EPreflightError } from "../errors.js";
 
 const playwrightDefaultSpecName = /\.(?:spec|test)\.(?:[cm]?[jt]sx?)$/;
 
-export async function discoverShopifySpecs(
+export const discoverShopifySpecs = async (
 	testDir: string,
-): Promise<readonly string[]> {
+): Promise<readonly string[]> => {
 	const candidates: string[] = [];
 
-	async function visit(directory: string): Promise<void> {
+	const visit = async (directory: string): Promise<void> => {
 		const entries = await readdir(directory, { withFileTypes: true }).catch(
 			(cause: unknown) => {
 				throw new ShopifyE2EPreflightError(
@@ -40,7 +40,7 @@ export async function discoverShopifySpecs(
 				candidates.push(entryPath);
 			}
 		}
-	}
+	};
 
 	await visit(testDir);
 	candidates.sort((left, right) => left.localeCompare(right));
@@ -50,4 +50,4 @@ export async function discoverShopifySpecs(
 		);
 	}
 	return candidates;
-}
+};
