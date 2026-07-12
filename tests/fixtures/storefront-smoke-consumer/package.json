@@ -1,0 +1,11 @@
+{
+	"name": "shopify-e2e-storefront-smoke-consumer",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"smoke": "shopify-e2e run"
+	},
+	"devDependencies": {
+		"@playwright/test": "1.61.1"
+	}
+}

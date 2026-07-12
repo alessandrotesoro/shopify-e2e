@@ -84,3 +84,9 @@ npm run verify
 ```
 
 `test:installed` packs the built package, installs it with the supported Playwright peer into a fixture consumer, and verifies the installed execution and isolation boundary. `verify` runs formatting and lint checks, type checking, fast tests, a clean build, package inspection, and the installed-package gate.
+
+## Manual real-store smoke
+
+The [real-store smoke consumer](tests/fixtures/storefront-smoke-consumer/README.md) provides one manual browser check for the current local CLI build. It owns Playwright and Chromium, uses the conventional dedicated configuration, and runs one read-only navigation against the public Shopify storefront supplied through `SHOPIFY_STORE_URL`.
+
+This smoke check is intentionally excluded from `npm run verify` because it depends on a local browser installation, network access, and an external store. The deterministic installed-package fixture remains the release verification boundary.
