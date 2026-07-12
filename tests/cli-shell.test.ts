@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -9,13 +10,39 @@ const projectRoot = resolve(import.meta.dirname, "..");
 const binPath = resolve(projectRoot, "bin/run.js");
 const unrelatedCommandPath = resolve(projectRoot, "dist/commands/unrelated.js");
 const importSentinelPath = resolve(projectRoot, "dist/unrelated-imported");
+const temporaryDirectories: string[] = [];
 
-function runCli(args: readonly string[]) {
+function runCli(args: readonly string[], cwd = projectRoot) {
 	return spawnSync(process.execPath, [binPath, ...args], {
-		cwd: projectRoot,
+		cwd,
 		encoding: "utf8",
 		env: { ...process.env, NO_COLOR: "1" },
 	});
+}
+
+async function makeRunnableConsumer(): Promise<string> {
+	const consumer = await mkdtemp(join(tmpdir(), "shopify-e2e-cli-"));
+	temporaryDirectories.push(consumer);
+	const testDir = join(consumer, "shopify-tests");
+	await mkdir(testDir);
+	await writeFile(join(consumer, "package.json"), '{"type":"module"}\n');
+	await writeFile(
+		join(consumer, "shopify-e2e.config.ts"),
+		'export default { testDir: "shopify-tests" };\n',
+	);
+	await writeFile(
+		join(testDir, "checkout.spec.ts"),
+		'import { test } from "@playwright/test";\ntest("shopify checkout", () => {});\n',
+	);
+	await mkdir(join(consumer, "node_modules", "@playwright"), {
+		recursive: true,
+	});
+	await symlink(
+		join(projectRoot, "node_modules", "@playwright", "test"),
+		join(consumer, "node_modules", "@playwright", "test"),
+		"dir",
+	);
+	return consumer;
 }
 
 describe.sequential("built CLI shell", () => {
@@ -23,6 +50,9 @@ describe.sequential("built CLI shell", () => {
 		await Promise.all([
 			rm(unrelatedCommandPath, { force: true }),
 			rm(importSentinelPath, { force: true }),
+			...temporaryDirectories
+				.splice(0)
+				.map((directory) => rm(directory, { force: true, recursive: true })),
 		]);
 	});
 
@@ -47,7 +77,60 @@ describe.sequential("built CLI shell", () => {
 		expect(result.stdout).toContain(
 			"arbitrary Playwright arguments are not accepted",
 		);
+		expect(result.stdout).toContain("--config");
+		expect(result.stdout).toContain("--grep");
+		expect(result.stdout).toContain("-g");
+		expect(result.stdout).toContain("--grep-invert");
+		expect(result.stdout).toMatch(/workers.*unavailable/i);
 		expect(result.stderr).toBe("");
+	});
+
+	it.each([
+		["run", "ordinary.spec.ts"],
+		["run", "--", "ordinary.spec.ts"],
+		["run", "--workers", "2"],
+		["run", "--project", "ordinary"],
+		["run", "--reporter", "html"],
+		["run", "--ui"],
+	])("rejects unsupported run input before preflight: %s", (...args) => {
+		const result = runCli(args);
+
+		expect(result.status).toBe(2);
+		expect(result.stderr).toMatch(
+			/unexpected argument|nonexistent flag|command .* not found/i,
+		);
+		expect(result.stderr).toMatch(/run|shopify-e2e/i);
+	});
+
+	it("runs a browserless Shopify spec and reports the selected boundary", async () => {
+		const consumer = await makeRunnableConsumer();
+		const result = runCli(["run"], consumer);
+
+		expect(result.status, result.stderr).toBe(0);
+		expect(result.stdout).toMatch(/1 passed/i);
+		expect(result.stderr).toContain("Shopify config:");
+		expect(result.stderr).toContain("shopify-e2e.config.ts");
+		expect(result.stderr).toContain("Shopify test directory:");
+		expect(result.stderr).toContain("shopify-tests");
+	});
+
+	it("preserves Playwright's exit when an allowed filter selects no tests", async () => {
+		const consumer = await makeRunnableConsumer();
+		const result = runCli(["run", "--grep", "does not match"], consumer);
+
+		expect(result.status).toBe(1);
+		expect(`${result.stdout}\n${result.stderr}`).toMatch(/no tests found/i);
+		expect(result.stderr).not.toMatch(/config.*invalid|preflight/i);
+	});
+
+	it("reports a missing dedicated config as preflight exit 2", async () => {
+		const consumer = await mkdtemp(join(tmpdir(), "shopify-e2e-cli-"));
+		temporaryDirectories.push(consumer);
+		const result = runCli(["run"], consumer);
+
+		expect(result.status).toBe(2);
+		expect(result.stderr).toMatch(/dedicated Shopify config.*does not exist/i);
+		expect(result.stderr.match(/Error:/g)).toHaveLength(1);
 	});
 
 	it("prints package version metadata", async () => {
