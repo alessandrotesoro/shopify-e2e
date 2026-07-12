@@ -1,0 +1,56 @@
+{
+	"name": "@sematico/shopify-e2e",
+	"version": "0.1.0",
+	"description": "CLI-first orchestration for isolated Shopify Playwright E2E tests.",
+	"license": "MIT",
+	"type": "module",
+	"bin": {
+		"shopify-e2e": "./bin/run.js"
+	},
+	"files": [
+		"bin",
+		"dist",
+		"LICENSE"
+	],
+	"scripts": {
+		"build": "npm run clean && tsc -p tsconfig.json",
+		"clean": "rm -rf dist",
+		"lint": "biome check bin src tests package.json tsconfig.json tsconfig.test.json vitest.config.ts biome.json",
+		"test": "npm run build && vitest run",
+		"typecheck": "tsc -p tsconfig.test.json",
+		"verify": "npm run lint && npm run typecheck && npm test && npm pack --dry-run"
+	},
+	"dependencies": {
+		"@oclif/core": "4.11.14",
+		"jiti": "^2.6.1",
+		"semver": "^7.7.4"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.2",
+		"@playwright/test": "1.61.1",
+		"@types/node": "^24.10.13",
+		"@types/semver": "^7.7.1",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.9"
+	},
+	"peerDependencies": {
+		"@playwright/test": ">=1.61.1 <1.62.0"
+	},
+	"peerDependenciesMeta": {
+		"@playwright/test": {
+			"optional": true
+		}
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"oclif": {
+		"bin": "shopify-e2e",
+		"commands": {
+			"strategy": "explicit",
+			"target": "./dist/commands.js"
+		},
+		"dirname": "shopify-e2e",
+		"topicSeparator": " "
+	}
+}
