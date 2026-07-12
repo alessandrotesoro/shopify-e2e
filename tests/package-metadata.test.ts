@@ -19,7 +19,7 @@ describe("package metadata", () => {
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.bin).toEqual({ "shopify-e2e": "./bin/run.js" });
 		expect(packageJson.files).toEqual(["bin", "dist", "LICENSE"]);
-		expect(packageJson.exports).toBeUndefined();
+		expect(packageJson.exports).toEqual({});
 	});
 
 	it("pins the shell dependencies and declares the supported Playwright peer", async () => {

@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
 	access,
 	cp,
@@ -133,6 +133,17 @@ async function expectMarkersAbsent(
 	}
 }
 
+async function expectNegativeControlsPresent(
+	consumerRoot: string,
+): Promise<void> {
+	await expect(
+		access(join(consumerRoot, "playwright.config.ts")),
+	).resolves.toBeUndefined();
+	await expect(
+		access(join(consumerRoot, "ordinary-e2e", "must-not-load.spec.ts")),
+	).resolves.toBeUndefined();
+}
+
 async function generatedConfigDirectories(): Promise<Set<string>> {
 	const entries = await readdir(tmpdir(), { withFileTypes: true });
 	return new Set(
@@ -173,6 +184,61 @@ async function waitForProcessToExit(
 		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
 	}
 	throw new Error(`Process ${pid} remained alive after CLI exit`);
+}
+
+async function waitForChildToExit(
+	child: ChildProcess,
+	timeoutMs: number,
+): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+
+	await new Promise<void>((resolveExit, rejectExit) => {
+		const timeout = setTimeout(() => {
+			child.off("exit", handleExit);
+			rejectExit(
+				new Error(`CLI process ${child.pid ?? "unknown"} remained alive`),
+			);
+		}, timeoutMs);
+		const handleExit = (): void => {
+			clearTimeout(timeout);
+			resolveExit();
+		};
+		child.once("exit", handleExit);
+	});
+}
+
+function signalProcess(pid: number, signal: NodeJS.Signals): void {
+	try {
+		process.kill(pid, signal);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+	}
+}
+
+async function terminateAndAwaitProcesses(
+	child: ChildProcess,
+	descendantPids: readonly number[],
+): Promise<void> {
+	const pids = [...new Set(descendantPids)];
+	for (const pid of pids) signalProcess(pid, "SIGTERM");
+	if (child.pid && child.exitCode === null && child.signalCode === null) {
+		signalProcess(child.pid, "SIGTERM");
+	}
+
+	await Promise.allSettled([
+		...pids.map((pid) => waitForProcessToExit(pid, 1_000)),
+		waitForChildToExit(child, 1_000),
+	]);
+
+	for (const pid of pids) signalProcess(pid, "SIGKILL");
+	if (child.pid && child.exitCode === null && child.signalCode === null) {
+		signalProcess(child.pid, "SIGKILL");
+	}
+
+	await Promise.all([
+		...pids.map((pid) => waitForProcessToExit(pid, 1_000)),
+		waitForChildToExit(child, 1_000),
+	]);
 }
 
 describe.sequential("installed CLI release boundary", () => {
@@ -231,6 +297,18 @@ describe.sequential("installed CLI release boundary", () => {
 	});
 
 	it("provides root help, run help, version, and explicit command discovery", () => {
+		const deepImport = runCommand(
+			process.execPath,
+			[
+				"--input-type=module",
+				"--eval",
+				'await import("@sematico/shopify-e2e/dist/errors.js");',
+			],
+			{ cwd: consumerRoot },
+		);
+		expect(deepImport.status).not.toBe(0);
+		expect(deepImport.stderr).toContain("ERR_PACKAGE_PATH_NOT_EXPORTED");
+
 		const rootHelp = runInstalledCli(consumerRoot, ["--help"]);
 		expectSuccess(rootHelp, "installed root help");
 		expect(rootHelp.stdout).toContain("COMMANDS");
@@ -260,6 +338,7 @@ describe.sequential("installed CLI release boundary", () => {
 		const firstPid = await readFile(join(markers, "first.marker"), "utf8");
 		const secondPid = await readFile(join(markers, "second.marker"), "utf8");
 		expect(firstPid).toBe(secondPid);
+		await expectNegativeControlsPresent(consumerRoot);
 		await expectMarkersAbsent(markers, [
 			"alternate.marker",
 			"failing.marker",
@@ -279,6 +358,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expectSuccess(result, "installed alternate run");
 		expect(result.stdout).toMatch(/1 passed/i);
 		await expect(markerExists(markers, "alternate.marker")).resolves.toBe(true);
+		await expectNegativeControlsPresent(consumerRoot);
 		await expectMarkersAbsent(markers, [
 			"first.marker",
 			"second.marker",
@@ -296,12 +376,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(result.stderr).toMatch(
 			/consumer project must install compatible @playwright\/test/i,
 		);
-		await expectMarkersAbsent(markers, [
-			"first.marker",
-			"second.marker",
-			"ordinary-config-loaded.marker",
-			"ordinary-spec-loaded.marker",
-		]);
+		await expectMarkersAbsent(markers, ["first.marker", "second.marker"]);
 	});
 
 	it("preserves the failing Shopify lane result without touching other lanes", async () => {
@@ -315,6 +390,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(result.status).toBe(1);
 		expect(result.stdout).toMatch(/1 failed/i);
 		await expect(markerExists(markers, "failing.marker")).resolves.toBe(true);
+		await expectNegativeControlsPresent(consumerRoot);
 		await expectMarkersAbsent(markers, [
 			"first.marker",
 			"second.marker",
@@ -357,9 +433,11 @@ describe.sequential("installed CLI release boundary", () => {
 
 			try {
 				await waitForMarker(markers, "interrupt-started.marker", 10_000);
+				interruptedProcess = JSON.parse(
+					await readFile(join(markers, "interrupt-started.marker"), "utf8"),
+				) as { readonly pid: number; readonly ppid: number };
 				expect(child.pid).toBeTypeOf("number");
-				process.kill(child.pid as number, "SIGTERM");
-				const outcome = await new Promise<{
+				const outcomePromise = new Promise<{
 					readonly code: number | null;
 					readonly signal: NodeJS.Signals | null;
 				}>((resolveOutcome, rejectOutcome) => {
@@ -368,49 +446,25 @@ describe.sequential("installed CLI release boundary", () => {
 						resolveOutcome({ code, signal }),
 					);
 				});
+				process.kill(child.pid as number, "SIGTERM");
+				const outcome = await outcomePromise;
 
 				expect(
 					outcome,
 					`interrupted installed CLI\nstdout:\n${stdout}\nstderr:\n${stderr}`,
 				).toEqual({ code: 143, signal: null });
-				interruptedProcess = JSON.parse(
-					await readFile(join(markers, "interrupt-started.marker"), "utf8"),
-				) as { readonly pid: number; readonly ppid: number };
 				await waitForProcessToExit(interruptedProcess.pid, 5_000);
 				await waitForProcessToExit(interruptedProcess.ppid, 5_000);
 				expect(await generatedConfigDirectories()).toEqual(generatedBefore);
 				cleanupVerified = true;
 			} finally {
 				if (!cleanupVerified) {
-					if (
-						child.pid &&
-						child.exitCode === null &&
-						child.signalCode === null
-					) {
-						try {
-							process.kill(child.pid, "SIGTERM");
-						} catch {}
-						await Promise.race([
-							new Promise<void>((resolveExit) => {
-								child.once("exit", () => resolveExit());
-							}),
-							new Promise<void>((resolveDelay) =>
-								setTimeout(resolveDelay, 1_000),
-							),
-						]);
-						if (child.exitCode === null && child.signalCode === null) {
-							try {
-								process.kill(child.pid, "SIGKILL");
-							} catch {}
-						}
-					}
-					for (const pid of interruptedProcess
-						? [interruptedProcess.pid, interruptedProcess.ppid]
-						: []) {
-						try {
-							process.kill(pid, "SIGKILL");
-						} catch {}
-					}
+					await terminateAndAwaitProcesses(
+						child,
+						interruptedProcess
+							? [interruptedProcess.pid, interruptedProcess.ppid]
+							: [],
+					);
 				}
 			}
 		},

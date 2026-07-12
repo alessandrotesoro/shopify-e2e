@@ -4,6 +4,7 @@
 	"description": "CLI-first orchestration for isolated Shopify Playwright E2E tests.",
 	"license": "MIT",
 	"type": "module",
+	"exports": {},
 	"bin": {
 		"shopify-e2e": "./bin/run.js"
 	},

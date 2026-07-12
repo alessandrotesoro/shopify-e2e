@@ -34,10 +34,10 @@ function makeRuntime(platform: NodeJS.Platform = "linux"): FakeRuntime {
 			signalListeners.add(listener);
 			listeners.set(signal, signalListeners);
 		},
-		forwardSignal(pid, signal) {
+		forwardSignal: vi.fn((pid, signal) => {
 			forwarded.push({ pid, signal });
 			return true;
-		},
+		}),
 		platform,
 		removeSignalListener(signal, listener) {
 			listeners.get(signal)?.delete(listener);
@@ -130,6 +130,93 @@ describe("Playwright child lifecycle", () => {
 		fake.child.emit("exit", null, "SIGINT");
 
 		await expect(resultPromise).resolves.toBe(130);
+	});
+
+	it("force-terminates the POSIX child group and retains a forwarding error when delivery throws", async () => {
+		const fake = makeRuntime();
+		vi.mocked(fake.runtime.forwardSignal).mockImplementationOnce(() => {
+			throw new Error("signal delivery failed");
+		});
+		const resultPromise = runChild(invocation, fake.runtime);
+		let settlements = 0;
+		void resultPromise.then(
+			() => {
+				settlements += 1;
+			},
+			() => {
+				settlements += 1;
+			},
+		);
+
+		emitSignal(fake, "SIGTERM");
+		await Promise.resolve();
+
+		expect(fake.forwarded).toEqual([
+			{ pid: -fake.child.pid, signal: "SIGKILL" },
+		]);
+		expect(fake.child.kill).not.toHaveBeenCalled();
+		expect(settlements).toBe(0);
+		fake.child.emit("exit", null, "SIGKILL");
+
+		await expect(resultPromise).rejects.toThrow(/Could not forward SIGTERM/);
+		expect(settlements).toBe(1);
+		for (const listeners of fake.listeners.values()) {
+			expect(listeners).toHaveLength(0);
+		}
+
+		fake.child.emit("exit", 0, null);
+		fake.child.emit("error", new Error("late error"));
+		await Promise.resolve();
+		expect(settlements).toBe(1);
+	});
+
+	it("force-terminates the direct child off POSIX when signal delivery returns false", async () => {
+		const fake = makeRuntime("win32");
+		fake.child.kill.mockReturnValueOnce(false).mockReturnValueOnce(true);
+		const resultPromise = runChild(invocation, fake.runtime);
+		let settlements = 0;
+		void resultPromise.then(
+			() => {
+				settlements += 1;
+			},
+			() => {
+				settlements += 1;
+			},
+		);
+
+		emitSignal(fake, "SIGINT");
+		await Promise.resolve();
+
+		expect(fake.forwarded).toEqual([]);
+		expect(fake.child.kill).toHaveBeenNthCalledWith(1, "SIGINT");
+		expect(fake.child.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+		expect(settlements).toBe(0);
+		fake.child.emit("exit", null, "SIGKILL");
+
+		await expect(resultPromise).rejects.toThrow(/Could not forward SIGINT/);
+		expect(settlements).toBe(1);
+		for (const listeners of fake.listeners.values()) {
+			expect(listeners).toHaveLength(0);
+		}
+	});
+
+	it("settles the retained forwarding error when recovery emits error without exit", async () => {
+		const fake = makeRuntime();
+		vi.mocked(fake.runtime.forwardSignal).mockImplementationOnce(() => {
+			throw new Error("signal delivery failed");
+		});
+		const resultPromise = runChild(invocation, fake.runtime);
+
+		emitSignal(fake, "SIGTERM");
+		expect(fake.forwarded).toEqual([
+			{ pid: -fake.child.pid, signal: "SIGKILL" },
+		]);
+		fake.child.emit("error", new Error("kill failed after delivery"));
+
+		await expect(resultPromise).rejects.toThrow(/Could not forward SIGTERM/);
+		for (const listeners of fake.listeners.values()) {
+			expect(listeners).toHaveLength(0);
+		}
 	});
 
 	it("turns a spawn error into a secret-safe infrastructure failure and settles once", async () => {

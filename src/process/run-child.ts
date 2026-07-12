@@ -6,6 +6,7 @@ import type { PlaywrightInvocation } from "../playwright/invocation.js";
 
 const forwardedSignals = ["SIGINT", "SIGTERM"] as const;
 type ForwardedSignal = (typeof forwardedSignals)[number];
+type ChildSignal = ForwardedSignal | "SIGKILL";
 type SignalListener = () => void;
 
 export interface ChildProcessRuntime {
@@ -13,7 +14,7 @@ export interface ChildProcessRuntime {
 		signal: ForwardedSignal,
 		listener: SignalListener,
 	) => void;
-	readonly forwardSignal: (pid: number, signal: ForwardedSignal) => boolean;
+	readonly forwardSignal: (pid: number, signal: ChildSignal) => boolean;
 	readonly platform: NodeJS.Platform;
 	readonly removeSignalListener: (
 		signal: ForwardedSignal,
@@ -58,6 +59,7 @@ export async function runChild(
 
 	return new Promise<number>((resolve, reject) => {
 		let settled = false;
+		let forwardingError: ShopifyE2EInfrastructureError | undefined;
 		const deliveredSignals = new Set<ForwardedSignal>();
 		const signalListeners = new Map<ForwardedSignal, SignalListener>();
 
@@ -76,23 +78,53 @@ export async function runChild(
 			else resolve(outcome.exitCode);
 		};
 
+		const recoverFromForwardingFailure = (
+			error: ShopifyE2EInfrastructureError,
+		): void => {
+			forwardingError = error;
+			removeSignalListeners();
+
+			let terminationInitiated = false;
+			if (posix && child.pid !== undefined) {
+				try {
+					terminationInitiated = runtime.forwardSignal(-child.pid, "SIGKILL");
+				} catch {}
+			}
+
+			if (!terminationInitiated) {
+				try {
+					terminationInitiated = child.kill("SIGKILL");
+				} catch {}
+			}
+
+			if (!terminationInitiated) settle({ error });
+		};
+
 		for (const signal of forwardedSignals) {
 			const listener = (): void => {
-				if (deliveredSignals.has(signal)) return;
+				if (forwardingError || deliveredSignals.has(signal)) return;
 				deliveredSignals.add(signal);
 				try {
+					let delivered: boolean;
 					if (posix && child.pid !== undefined) {
-						runtime.forwardSignal(-child.pid, signal);
+						delivered = runtime.forwardSignal(-child.pid, signal);
 					} else {
-						child.kill(signal);
+						delivered = child.kill(signal);
+					}
+					if (!delivered) {
+						recoverFromForwardingFailure(
+							new ShopifyE2EInfrastructureError(
+								`Could not forward ${signal} to the Playwright process`,
+							),
+						);
 					}
 				} catch (cause) {
-					settle({
-						error: new ShopifyE2EInfrastructureError(
+					recoverFromForwardingFailure(
+						new ShopifyE2EInfrastructureError(
 							`Could not forward ${signal} to the Playwright process`,
 							{ cause },
 						),
-					});
+					);
 				}
 			};
 			signalListeners.set(signal, listener);
@@ -100,6 +132,10 @@ export async function runChild(
 		}
 
 		child.once("error", (cause) => {
+			if (forwardingError) {
+				settle({ error: forwardingError });
+				return;
+			}
 			const peerExecutable = invocation.args[0] ?? "the selected peer";
 			settle({
 				error: new ShopifyE2EInfrastructureError(
@@ -110,6 +146,10 @@ export async function runChild(
 		});
 
 		child.once("exit", (code, signal) => {
+			if (forwardingError) {
+				settle({ error: forwardingError });
+				return;
+			}
 			if (code !== null) {
 				settle({ exitCode: code });
 				return;

@@ -138,19 +138,35 @@ describe("Playwright-compatible candidate discovery", () => {
 		await mkdir(join(testDir, "node_modules", "dependency"), {
 			recursive: true,
 		});
-		const candidates = [
-			join(testDir, "alpha.spec.ts"),
-			join(testDir, "nested", "beta.test.mjs"),
-			join(testDir, "ignored-by-rule.spec.jsx"),
-		];
-		await writeFile(join(testDir, ".gitignore"), "ignored-by-rule.spec.jsx\n");
+		const candidates = extensions.flatMap((extension, extensionIndex) =>
+			(["spec", "test"] as const).map((naming, namingIndex) => {
+				const directory = join(
+					testDir,
+					`level-${extensionIndex % 3}`,
+					namingIndex === 0 ? "shallow" : "deeply/nested",
+				);
+				return join(
+					directory,
+					`${extensionIndex === 0 && naming === "spec" ? "ignored-by-rule" : `candidate-${extensionIndex}`}.${naming}.${extension}`,
+				);
+			}),
+		);
+		const expectedRelative = candidates
+			.map((file) => relative(testDir, file))
+			.sort();
+		await writeFile(join(testDir, ".gitignore"), `${expectedRelative[0]}\n`);
 		for (const [index, file] of candidates.entries()) {
+			await mkdir(resolve(file, ".."), { recursive: true });
 			await writeFile(
 				file,
 				`import playwrightTest from ${JSON.stringify(playwrightTestApi)};\nconst { test } = playwrightTest;\ntest('candidate ${index}', () => {});\n`,
 			);
 		}
 		await writeFile(join(testDir, "helper.ts"), "// not a test\n");
+		await writeFile(join(testDir, "almost.spec.css"), "// not a test\n");
+		await writeFile(join(testDir, "bare-spec.ts"), "// not a test\n");
+		await writeFile(join(testDir, "plural.tests.ts"), "// not a test\n");
+		await writeFile(join(testDir, "source.spec.ts.map"), "// not a test\n");
 		await writeFile(
 			join(testDir, "node_modules", "dependency", "hidden.spec.ts"),
 			"throw new Error('must not load');\n",
@@ -169,10 +185,12 @@ describe("Playwright-compatible candidate discovery", () => {
 		]
 			.map((match) => match[1])
 			.filter((file): file is string => file !== undefined)
-			.map((file) => resolve(testDir, file));
+			.map((file) => relative(testDir, resolve(testDir, file)))
+			.sort();
 		expect(discovered.map((file) => relative(testDir, file))).toEqual(
-			playwrightFiles.map((file) => relative(testDir, file)).sort(),
+			expectedRelative,
 		);
+		expect(playwrightFiles).toEqual(expectedRelative);
 		await expect(
 			import("node:fs/promises").then(({ stat }) => stat(ordinarySentinel)),
 		).rejects.toThrow();
