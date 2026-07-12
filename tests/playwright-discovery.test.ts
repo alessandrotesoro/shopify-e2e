@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+	access,
 	mkdir,
 	mkdtemp,
 	realpath,
@@ -191,8 +192,6 @@ describe("Playwright-compatible candidate discovery", () => {
 			expectedRelative,
 		);
 		expect(playwrightFiles).toEqual(expectedRelative);
-		await expect(
-			import("node:fs/promises").then(({ stat }) => stat(ordinarySentinel)),
-		).rejects.toThrow();
+		await expect(access(ordinarySentinel)).rejects.toThrow();
 	});
 });

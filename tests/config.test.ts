@@ -84,9 +84,7 @@ describe("dedicated Shopify configuration", () => {
 
 		await loadShopifyConfig({ cwd: project });
 
-		await expect(
-			import("node:fs/promises").then(({ stat }) => stat(sentinel)),
-		).rejects.toThrow();
+		await expect(access(sentinel)).rejects.toThrow();
 	});
 
 	it("does not leave a transformed consumer config in jiti's filesystem cache", async () => {

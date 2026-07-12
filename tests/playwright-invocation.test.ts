@@ -78,12 +78,7 @@ describe("generated Playwright configuration", () => {
 		).rejects.toThrow(/absolute/i);
 	});
 
-	it.each([
-		"success",
-		"numeric failure",
-		"spawn failure",
-		"signal completion",
-	])("provides idempotent cleanup after %s", async () => {
+	it("provides idempotent cleanup", async () => {
 		const config = await createGeneratedPlaywrightConfig(await makeTestRoot());
 
 		await expectCleaned(config);

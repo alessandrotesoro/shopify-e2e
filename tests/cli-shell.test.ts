@@ -1,6 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -198,10 +205,7 @@ describe.sequential("built CLI shell", () => {
 
 	it("prints package version metadata", async () => {
 		const packageJson = JSON.parse(
-			await (await import("node:fs/promises")).readFile(
-				resolve(projectRoot, "package.json"),
-				"utf8",
-			),
+			await readFile(resolve(projectRoot, "package.json"), "utf8"),
 		) as { name: string; version: string };
 		const result = runCli(["--version"]);
 

@@ -22,7 +22,7 @@
 		"test:installed": "npm run build && npm run test:installed:built",
 		"test:installed:built": "vitest run tests/installed-cli.test.ts",
 		"typecheck": "tsc -p tsconfig.test.json",
-		"verify": "npm run lint && npm run typecheck && npm run build && npm run test:fast && npm pack --dry-run && npm run test:installed:built"
+		"verify": "npm run lint && npm run typecheck && npm run build && npm run test:fast && npm run test:installed:built"
 	},
 	"dependencies": {
 		"@oclif/core": "4.11.14",

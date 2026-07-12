@@ -139,7 +139,7 @@ async function expectMarkersAbsent(
 	}
 }
 
-async function expectNegativeControlsPresent(
+async function expectOrdinaryLaneFixturesPresent(
 	consumerRoot: string,
 ): Promise<void> {
 	await expect(
@@ -348,7 +348,7 @@ describe.sequential("installed CLI release boundary", () => {
 		const firstPid = await readFile(join(markers, "first.marker"), "utf8");
 		const secondPid = await readFile(join(markers, "second.marker"), "utf8");
 		expect(firstPid).toBe(secondPid);
-		await expectNegativeControlsPresent(consumerRoot);
+		await expectOrdinaryLaneFixturesPresent(consumerRoot);
 		await expectMarkersAbsent(markers, [
 			"alternate.marker",
 			"failing.marker",
@@ -368,7 +368,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expectSuccess(result, "installed alternate run");
 		expect(result.stdout).toMatch(/1 passed/i);
 		await expect(markerExists(markers, "alternate.marker")).resolves.toBe(true);
-		await expectNegativeControlsPresent(consumerRoot);
+		await expectOrdinaryLaneFixturesPresent(consumerRoot);
 		await expectMarkersAbsent(markers, [
 			"first.marker",
 			"second.marker",
@@ -415,7 +415,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(result.status).toBe(1);
 		expect(result.stdout).toMatch(/1 failed/i);
 		await expect(markerExists(markers, "failing.marker")).resolves.toBe(true);
-		await expectNegativeControlsPresent(consumerRoot);
+		await expectOrdinaryLaneFixturesPresent(consumerRoot);
 		await expectMarkersAbsent(markers, [
 			"first.marker",
 			"second.marker",
