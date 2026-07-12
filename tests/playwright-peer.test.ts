@@ -80,9 +80,6 @@ describe("consumer Playwright peer resolution", () => {
 
 		await expect(resolvePlaywrightPeer(consumer)).resolves.toEqual({
 			executablePath: fakePeer.binPath,
-			packageJsonPath: join(fakePeer.packageRoot, "package.json"),
-			packageRoot: fakePeer.packageRoot,
-			version: "1.61.1",
 		});
 	});
 

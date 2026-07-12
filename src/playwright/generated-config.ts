@@ -7,7 +7,6 @@ import { ShopifyE2EPreflightError } from "../errors.js";
 export interface GeneratedPlaywrightConfig {
 	readonly cleanup: () => Promise<void>;
 	readonly configPath: string;
-	readonly directoryPath: string;
 }
 
 export async function createGeneratedPlaywrightConfig(
@@ -36,13 +35,8 @@ export async function createGeneratedPlaywrightConfig(
 		throw error;
 	}
 
-	let cleanupPromise: Promise<void> | undefined;
 	return {
-		cleanup: () => {
-			cleanupPromise ??= rm(directoryPath, { force: true, recursive: true });
-			return cleanupPromise;
-		},
+		cleanup: () => rm(directoryPath, { force: true, recursive: true }),
 		configPath,
-		directoryPath,
 	};
 }

@@ -28,7 +28,6 @@ function validateConfigExport(
 	if (!isRecord(value)) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must default-export an object: ${configPath}`,
-			{ configPath },
 		);
 	}
 
@@ -36,7 +35,6 @@ function validateConfigExport(
 	if (keys.length !== 1 || keys[0] !== "testDir") {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must contain exactly one key, testDir: ${configPath}`,
-			{ configPath },
 		);
 	}
 
@@ -44,7 +42,6 @@ function validateConfigExport(
 	if (typeof testDir !== "string" || testDir.trim().length === 0) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config testDir must be a non-empty string: ${configPath}`,
-			{ configPath },
 		);
 	}
 	return { testDir };
@@ -54,17 +51,10 @@ function withConfigContext(
 	error: unknown,
 	configPath: string,
 ): ShopifyE2EPreflightError {
-	if (error instanceof ShopifyE2EPreflightError && error.configPath)
-		return error;
-	if (error instanceof ShopifyE2EPreflightError) {
-		return new ShopifyE2EPreflightError(error.message, {
-			cause: error,
-			configPath,
-		});
-	}
+	if (error instanceof ShopifyE2EPreflightError) return error;
 	return new ShopifyE2EPreflightError(
 		`Dedicated Shopify config could not load: ${configPath}`,
-		{ cause: error, configPath },
+		{ cause: error },
 	);
 }
 
@@ -88,14 +78,13 @@ export async function loadShopifyConfig(
 		if (!Object.hasOwn(moduleNamespace, "default")) {
 			throw new ShopifyE2EPreflightError(
 				`Dedicated Shopify config must have a default export: ${configPath}`,
-				{ configPath },
 			);
 		}
 
 		const config = validateConfigExport(moduleNamespace.default, configPath);
 		const testDir = await resolveShopifyTestDir(projectRoot, config.testDir);
-		const specFiles = await discoverShopifySpecs(testDir);
-		return { configPath, projectRoot, specFiles, testDir };
+		await discoverShopifySpecs(testDir);
+		return { configPath, projectRoot, testDir };
 	} catch (error) {
 		throw withConfigContext(error, configPath);
 	}

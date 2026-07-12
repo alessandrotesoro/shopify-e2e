@@ -52,7 +52,6 @@ describe("dedicated Shopify configuration", () => {
 		await expect(loadShopifyConfig({ cwd: project })).resolves.toEqual({
 			configPath: join(project, "shopify-e2e.config.ts"),
 			projectRoot: project,
-			specFiles: [join(project, "tests", "lane.spec.ts")],
 			testDir: join(project, "tests"),
 		});
 	});
@@ -131,10 +130,10 @@ describe("dedicated Shopify configuration", () => {
 		const project = await makeProject();
 		const configPath = await writeConfig(project, source);
 
-		await expect(loadShopifyConfig({ cwd: project })).rejects.toMatchObject({
-			configPath,
-			name: "ShopifyE2EPreflightError",
-		});
+		const promise = loadShopifyConfig({ cwd: project });
+
+		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
+		await expect(promise).rejects.toThrow(configPath);
 	});
 
 	it("wraps evaluation failures with selected-file context", async () => {
@@ -147,7 +146,7 @@ describe("dedicated Shopify configuration", () => {
 		const promise = loadShopifyConfig({ cwd: project });
 
 		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
-		await expect(promise).rejects.toMatchObject({ configPath });
+		await expect(promise).rejects.toThrow(configPath);
 		await expect(promise).rejects.toThrow(/could not load/i);
 		await expect(promise).rejects.not.toThrow(/consumer secret/i);
 	});

@@ -1,20 +1,16 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import semver from "semver";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
 import { isPathContained } from "../path-boundary.js";
 
-export const SUPPORTED_PLAYWRIGHT_RANGE = ">=1.61.1 <1.62.0";
+const SUPPORTED_PLAYWRIGHT_RANGE = ">=1.61.1 <1.62.0";
 
 export interface ResolvedPlaywrightPeer {
 	readonly executablePath: string;
-	readonly packageJsonPath: string;
-	readonly packageRoot: string;
-	readonly version: string;
 }
 
 interface PlaywrightPackageMetadata {
@@ -76,9 +72,7 @@ export async function resolvePlaywrightPeer(
 	cwd: string,
 ): Promise<ResolvedPlaywrightPeer> {
 	const consumerRoot = resolve(cwd);
-	const consumerRequire = createRequire(
-		pathToFileURL(join(consumerRoot, "package.json")),
-	);
+	const consumerRequire = createRequire(join(consumerRoot, "package.json"));
 
 	let resolvedPackageJson: string;
 	try {
@@ -154,10 +148,5 @@ export async function resolvePlaywrightPeer(
 		);
 	}
 
-	return {
-		executablePath,
-		packageJsonPath,
-		packageRoot,
-		version: metadata.version,
-	};
+	return { executablePath };
 }

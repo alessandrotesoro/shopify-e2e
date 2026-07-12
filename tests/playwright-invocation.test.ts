@@ -10,7 +10,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -45,7 +45,7 @@ async function makeTestRoot(): Promise<string> {
 async function expectCleaned(config: GeneratedPlaywrightConfig): Promise<void> {
 	await config.cleanup();
 	await config.cleanup();
-	await expect(access(config.directoryPath)).rejects.toThrow();
+	await expect(access(dirname(config.configPath))).rejects.toThrow();
 }
 
 afterEach(async () => {
@@ -65,7 +65,7 @@ describe("generated Playwright configuration", () => {
 			expect(await readFile(config.configPath, "utf8")).toBe(
 				`export default { testDir: ${JSON.stringify(testDir)}, workers: 1 };\n`,
 			);
-			expect((await stat(config.directoryPath)).mode & 0o777).toBe(0o700);
+			expect((await stat(dirname(config.configPath))).mode & 0o777).toBe(0o700);
 			expect((await stat(config.configPath)).mode & 0o777).toBe(0o600);
 		} finally {
 			await config.cleanup();

@@ -10,6 +10,5 @@ export interface LoadShopifyConfigOptions {
 export interface LoadedShopifyConfig {
 	readonly configPath: string;
 	readonly projectRoot: string;
-	readonly specFiles: readonly string[];
 	readonly testDir: string;
 }

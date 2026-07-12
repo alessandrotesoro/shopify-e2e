@@ -289,6 +289,7 @@ process.exit(code);
 		if (helperPid === undefined) {
 			throw new Error("signal-test helper did not start");
 		}
+		let helperExited = false;
 
 		try {
 			await expect
@@ -305,11 +306,12 @@ process.exit(code);
 			}>((resolveOutcome) => {
 				helper.once("exit", (code, signal) => resolveOutcome({ code, signal }));
 			});
+			helperExited = true;
 
 			expect(outcome).toEqual({ code: 143, signal: null });
 			expect(await readFile(signalLogPath, "utf8")).toBe("SIGTERM\n");
 		} finally {
-			if (helper.pid) {
+			if (!helperExited && helper.pid) {
 				try {
 					process.kill(-helper.pid, "SIGKILL");
 				} catch {}

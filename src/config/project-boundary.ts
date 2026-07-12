@@ -77,13 +77,11 @@ export async function resolveShopifyConfigPath(
 	if (!selectedPath.endsWith(".ts")) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must be a .ts file: ${selectedPath}`,
-			{ configPath: selectedPath },
 		);
 	}
 	if (!isStrictlyContained(projectRoot, selectedPath)) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must be inside the consuming project: ${selectedPath}`,
-			{ configPath: selectedPath },
 		);
 	}
 
@@ -95,7 +93,6 @@ export async function resolveShopifyConfigPath(
 	if (!selectedMetadata.isFile()) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must be a regular file: ${selectedPath}`,
-			{ configPath: selectedPath },
 		);
 	}
 
@@ -103,7 +100,6 @@ export async function resolveShopifyConfigPath(
 	if (!isStrictlyContained(projectRoot, physicalPath)) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must resolve inside the consuming project: ${selectedPath}`,
-			{ configPath: selectedPath },
 		);
 	}
 	return physicalPath;

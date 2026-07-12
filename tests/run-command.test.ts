@@ -8,7 +8,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -72,9 +72,6 @@ function makeDependencies(
 		reportSelection: vi.fn(),
 		resolvePeer: vi.fn(async () => ({
 			executablePath: "/consumer/playwright/cli.js",
-			packageJsonPath: "/consumer/playwright/package.json",
-			packageRoot: "/consumer/playwright",
-			version: "1.61.1",
 		})),
 		runChild: vi.fn(async () => exitCode),
 	};
@@ -90,7 +87,7 @@ async function makeGeneratedConfig(
 	const cleanup = vi.fn(async () =>
 		rm(directoryPath, { force: true, recursive: true }),
 	);
-	return { cleanup, configPath, directoryPath };
+	return { cleanup, configPath };
 }
 
 afterEach(async () => {
@@ -125,7 +122,7 @@ describe("run command orchestration", () => {
 			}),
 		);
 		expect(generated.cleanup).toHaveBeenCalledTimes(1);
-		await expect(access(generated.directoryPath)).rejects.toThrow();
+		await expect(access(dirname(generated.configPath))).rejects.toThrow();
 	});
 
 	it("passes through a valid no-match filter and the child no-tests exit", async () => {

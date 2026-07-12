@@ -144,8 +144,8 @@ async function expectNegativeControlsPresent(
 	).resolves.toBeUndefined();
 }
 
-async function generatedConfigDirectories(): Promise<Set<string>> {
-	const entries = await readdir(tmpdir(), { withFileTypes: true });
+async function generatedConfigDirectories(root: string): Promise<Set<string>> {
+	const entries = await readdir(root, { withFileTypes: true });
 	return new Set(
 		entries
 			.filter(
@@ -225,19 +225,28 @@ async function terminateAndAwaitProcesses(
 		signalProcess(child.pid, "SIGTERM");
 	}
 
-	await Promise.allSettled([
+	const exitResults = await Promise.allSettled([
 		...pids.map((pid) => waitForProcessToExit(pid, 1_000)),
 		waitForChildToExit(child, 1_000),
 	]);
+	const lingeringPids = pids.filter(
+		(_pid, index) => exitResults[index]?.status === "rejected",
+	);
+	const childDidNotExit = exitResults[pids.length]?.status === "rejected";
 
-	for (const pid of pids) signalProcess(pid, "SIGKILL");
-	if (child.pid && child.exitCode === null && child.signalCode === null) {
+	for (const pid of lingeringPids) signalProcess(pid, "SIGKILL");
+	if (
+		childDidNotExit &&
+		child.pid &&
+		child.exitCode === null &&
+		child.signalCode === null
+	) {
 		signalProcess(child.pid, "SIGKILL");
 	}
 
 	await Promise.all([
-		...pids.map((pid) => waitForProcessToExit(pid, 1_000)),
-		waitForChildToExit(child, 1_000),
+		...lingeringPids.map((pid) => waitForProcessToExit(pid, 1_000)),
+		...(childDidNotExit ? [waitForChildToExit(child, 1_000)] : []),
 	]);
 }
 
@@ -247,11 +256,6 @@ describe.sequential("installed CLI release boundary", () => {
 	let tarballPath = "";
 
 	beforeAll(async () => {
-		const buildResult = runCommand(npmExecutable, ["run", "build"], {
-			cwd: projectRoot,
-		});
-		expectSuccess(buildResult, "clean package build");
-
 		const packDirectory = await makeTemporaryDirectory("shopify-e2e-pack-");
 		const packResult = runCommand(
 			npmExecutable,
@@ -404,7 +408,8 @@ describe.sequential("installed CLI release boundary", () => {
 		"forwards a real SIGTERM, returns 143, and cleans the generated config and child tree",
 		async () => {
 			const markers = await makeTemporaryDirectory("shopify-e2e-markers-");
-			const generatedBefore = await generatedConfigDirectories();
+			const runtimeTemp = await makeTemporaryDirectory("shopify-e2e-runtime-");
+			const generatedBefore = await generatedConfigDirectories(runtimeTemp);
 			const child = spawn(installedBin(consumerRoot), ["run"], {
 				cwd: consumerRoot,
 				detached: true,
@@ -413,6 +418,9 @@ describe.sequential("installed CLI release boundary", () => {
 					NO_COLOR: "1",
 					SHOPIFY_E2E_INTERRUPT_ACTIVE: "1",
 					SHOPIFY_E2E_MARKER_DIR: markers,
+					TEMP: runtimeTemp,
+					TMP: runtimeTemp,
+					TMPDIR: runtimeTemp,
 				},
 				stdio: ["ignore", "pipe", "pipe"],
 			});
@@ -455,7 +463,9 @@ describe.sequential("installed CLI release boundary", () => {
 				).toEqual({ code: 143, signal: null });
 				await waitForProcessToExit(interruptedProcess.pid, 5_000);
 				await waitForProcessToExit(interruptedProcess.ppid, 5_000);
-				expect(await generatedConfigDirectories()).toEqual(generatedBefore);
+				expect(await generatedConfigDirectories(runtimeTemp)).toEqual(
+					generatedBefore,
+				);
 				cleanupVerified = true;
 			} finally {
 				if (!cleanupVerified) {
