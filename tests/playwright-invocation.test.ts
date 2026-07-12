@@ -167,6 +167,35 @@ describe("owned Playwright invocation", () => {
 		}
 	});
 
+	it("keeps a leading-dash filter value from becoming a Playwright option", async () => {
+		const testDir = await makeTestRoot();
+		const generatedConfig = await createGeneratedPlaywrightConfig(testDir);
+		const peer = await resolvePlaywrightPeer(process.cwd());
+
+		try {
+			const invocation = buildPlaywrightInvocation({
+				controls: { grepInvert: "--project=ordinary" },
+				generatedConfig,
+				peer,
+			});
+			const result = spawnSync(
+				invocation.executable,
+				[...invocation.args, "--list"],
+				{
+					cwd: dirname(testDir),
+					encoding: "utf8",
+					env: { ...process.env, NO_COLOR: "1" },
+				},
+			);
+
+			expect(result.status, result.stderr).toBe(0);
+			expect(result.stdout).toContain("baseline.spec.ts:2:");
+			expect(result.stderr).not.toMatch(/project.*ordinary/i);
+		} finally {
+			await generatedConfig.cleanup();
+		}
+	});
+
 	it.each([
 		{ controls: { grep: "" }, label: "empty grep" },
 		{ controls: { grepInvert: "   " }, label: "blank grep-invert" },

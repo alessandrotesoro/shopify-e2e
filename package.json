@@ -15,7 +15,7 @@
 	],
 	"scripts": {
 		"build": "npm run clean && tsc -p tsconfig.json",
-		"clean": "rm -rf dist",
+		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
 		"lint": "biome check bin src tests package.json tsconfig.json tsconfig.test.json vitest.config.ts biome.json",
 		"test": "npm run build && npm run test:fast",
 		"test:fast": "vitest run --exclude tests/installed-cli.test.ts",

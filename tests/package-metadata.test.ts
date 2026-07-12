@@ -46,7 +46,8 @@ describe("package metadata", () => {
 
 		expect(packageJson.scripts).toMatchObject({
 			build: "npm run clean && tsc -p tsconfig.json",
-			clean: "rm -rf dist",
+			clean:
+				"node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
 		});
 		expect(packageJson.oclif).toMatchObject({
 			bin: "shopify-e2e",

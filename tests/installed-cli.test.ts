@@ -20,6 +20,7 @@ const generatedConfigPrefix = "shopify-e2e-playwright-";
 const temporaryDirectories: string[] = [];
 
 interface CommandResult {
+	readonly error?: Error;
 	readonly status: number | null;
 	readonly stderr: string;
 	readonly stdout: string;
@@ -31,15 +32,19 @@ function runCommand(
 	options: {
 		readonly cwd: string;
 		readonly env?: NodeJS.ProcessEnv;
+		readonly timeoutMs?: number;
 	},
 ): CommandResult {
 	const result = spawnSync(command, args, {
 		cwd: options.cwd,
 		encoding: "utf8",
 		env: options.env ?? process.env,
+		killSignal: "SIGKILL",
 		maxBuffer: 10 * 1024 * 1024,
+		timeout: options.timeoutMs ?? 30_000,
 	});
 	return {
+		...(result.error === undefined ? {} : { error: result.error }),
 		status: result.status,
 		stderr: result.stderr,
 		stdout: result.stdout,
@@ -49,7 +54,7 @@ function runCommand(
 function expectSuccess(result: CommandResult, label: string): void {
 	expect(
 		result.status,
-		`${label} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+		`${label} failed\nerror: ${result.error?.message ?? "none"}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
 	).toBe(0);
 }
 
@@ -80,6 +85,7 @@ async function installPackage(
 			...process.env,
 			PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
 		},
+		timeoutMs: 90_000,
 	});
 	expectSuccess(result, `install package into ${consumerRoot}`);
 }
@@ -290,7 +296,7 @@ describe.sequential("installed CLI release boundary", () => {
 			{ recursive: true },
 		);
 		await installPackage(missingPeerConsumerRoot, tarballPath, false);
-	}, 120_000);
+	}, 240_000);
 
 	afterAll(async () => {
 		await Promise.all(
@@ -381,6 +387,21 @@ describe.sequential("installed CLI release boundary", () => {
 			/consumer project must install compatible @playwright\/test/i,
 		);
 		await expectMarkersAbsent(markers, ["first.marker", "second.marker"]);
+	});
+
+	it("force-stops a hung release-gate subprocess at its deadline", () => {
+		const startedAt = Date.now();
+		const result = runCommand(
+			process.execPath,
+			["--input-type=module", "--eval", "setInterval(() => {}, 1_000);"],
+			{ cwd: projectRoot, timeoutMs: 100 },
+		);
+
+		expect(result.status).toBeNull();
+		expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(
+			"ETIMEDOUT",
+		);
+		expect(Date.now() - startedAt).toBeLessThan(5_000);
 	});
 
 	it("preserves the failing Shopify lane result without touching other lanes", async () => {
