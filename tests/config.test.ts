@@ -149,6 +149,7 @@ describe("dedicated Shopify configuration", () => {
 		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
 		await expect(promise).rejects.toMatchObject({ configPath });
 		await expect(promise).rejects.toThrow(/could not load/i);
+		await expect(promise).rejects.not.toThrow(/consumer secret/i);
 	});
 
 	it.each([
