@@ -1,5 +1,10 @@
 {
 	"$schema": "https://biomejs.dev/schemas/2.5.2/schema.json",
+	"vcs": {
+		"clientKind": "git",
+		"enabled": true,
+		"useIgnoreFile": true
+	},
 	"formatter": {
 		"enabled": true,
 		"indentStyle": "tab"
