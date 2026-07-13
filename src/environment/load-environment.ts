@@ -10,11 +10,6 @@ export interface LoadEnvironmentOptions {
 	readonly environment: NodeJS.ProcessEnv;
 }
 
-const getErrorCode = (error: unknown): unknown => {
-	if (typeof error !== "object" || error === null) return undefined;
-	return Reflect.get(error, "code");
-};
-
 export const loadEnvironment = async ({
 	cwd,
 	environment,
@@ -26,8 +21,9 @@ export const loadEnvironment = async ({
 		processEnv: environment,
 		quiet: true,
 	});
+	const error = result.error as NodeJS.ErrnoException | undefined;
 
-	if (!result.error || getErrorCode(result.error) === "ENOENT") return;
+	if (!error || error.code === "ENOENT") return;
 
 	throw new ShopifyE2EPreflightError("Consumer .env could not be read");
 };
