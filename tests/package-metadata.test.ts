@@ -27,6 +27,7 @@ describe("package metadata", () => {
 
 		expect(packageJson.dependencies).toMatchObject({
 			"@oclif/core": "4.11.14",
+			dotenv: "17.4.2",
 			jiti: "^2.6.1",
 			semver: "^7.7.4",
 		});
