@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-import { configDotenv } from "dotenv";
+import { configDotenv, populate } from "dotenv";
 
 import { resolveProjectRoot } from "../config/project-boundary.js";
 import { ShopifyE2EPreflightError } from "../errors.js";
@@ -15,15 +15,23 @@ export const loadEnvironment = async ({
 	environment,
 }: LoadEnvironmentOptions): Promise<void> => {
 	const projectRoot = await resolveProjectRoot(cwd);
+	const stagingEnvironment: NodeJS.ProcessEnv = {
+		...environment,
+		DOTENV_CONFIG_DEBUG: "",
+		DOTENV_CONFIG_QUIET: "true",
+	};
 	const result = configDotenv({
 		override: false,
 		path: resolve(projectRoot, ".env"),
-		processEnv: environment,
+		processEnv: stagingEnvironment,
 		quiet: true,
 	});
 	const error = result.error as NodeJS.ErrnoException | undefined;
 
-	if (!error || error.code === "ENOENT") return;
+	if (error?.code === "ENOENT") return;
+	if (error) {
+		throw new ShopifyE2EPreflightError("Consumer .env could not be read");
+	}
 
-	throw new ShopifyE2EPreflightError("Consumer .env could not be read");
+	populate(environment, result.parsed ?? {}, { override: false });
 };
