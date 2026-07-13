@@ -3,7 +3,6 @@ import { createJiti } from "jiti";
 import { ShopifyE2EPreflightError } from "../errors.js";
 import { discoverShopifySpecs } from "./discover-specs.js";
 import {
-	resolveProjectRoot,
 	resolveShopifyConfigPath,
 	resolveShopifyTestDir,
 } from "./project-boundary.js";
@@ -14,7 +13,7 @@ export interface ShopifyE2EConfig {
 
 export interface LoadShopifyConfigOptions {
 	readonly configPath?: string;
-	readonly cwd: string;
+	readonly projectRoot: string;
 }
 
 export interface LoadedShopifyConfig {
@@ -81,10 +80,9 @@ const withConfigContext = ({
 export const loadShopifyConfig = async (
 	options: LoadShopifyConfigOptions,
 ): Promise<LoadedShopifyConfig> => {
-	const projectRoot = await resolveProjectRoot(options.cwd);
 	const configPath = await resolveShopifyConfigPath({
 		explicitConfigPath: options.configPath,
-		projectRoot,
+		projectRoot: options.projectRoot,
 	});
 
 	try {
@@ -107,10 +105,10 @@ export const loadShopifyConfig = async (
 		});
 		const testDir = await resolveShopifyTestDir({
 			configuredTestDir: config.testDir,
-			projectRoot,
+			projectRoot: options.projectRoot,
 		});
 		await discoverShopifySpecs(testDir);
-		return { configPath, projectRoot, testDir };
+		return { configPath, projectRoot: options.projectRoot, testDir };
 	} catch (error) {
 		throw withConfigContext({ configPath, error });
 	}

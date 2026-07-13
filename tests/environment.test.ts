@@ -114,7 +114,9 @@ describe("consumer environment loading", () => {
 		await writeFile(join(project, ".env"), "FROM_PHYSICAL_CWD=loaded\n");
 		const environment: NodeJS.ProcessEnv = {};
 
-		await loadEnvironment({ cwd: linkedCwd, environment });
+		await expect(
+			loadEnvironment({ cwd: linkedCwd, environment }),
+		).resolves.toBe(project);
 
 		expect(environment).toEqual({ FROM_PHYSICAL_CWD: "loaded" });
 	});
@@ -152,6 +154,27 @@ describe("consumer environment loading", () => {
 		expect(environment).toEqual({ DUPLICATE: "last", VALID: "kept" });
 	});
 
+	it("does not expand variables, execute substitutions, or activate vault loading", async () => {
+		const project = await makeProject();
+		const expansionReference = ["$", "{BASE}"].join("");
+		await writeFile(
+			join(project, ".env"),
+			`BASE=plain\nEXPANSION=${expansionReference}\nSUBSTITUTION=$(printf injected)\n`,
+		);
+		const environment: NodeJS.ProcessEnv = {
+			DOTENV_KEY: "dotenv://invalid-key@dotenvx.com/vault/.env.vault",
+		};
+
+		await loadEnvironment({ cwd: project, environment });
+
+		expect(environment).toEqual({
+			BASE: "plain",
+			DOTENV_KEY: "dotenv://invalid-key@dotenvx.com/vault/.env.vault",
+			EXPANSION: expansionReference,
+			SUBSTITUTION: "$(printf injected)",
+		});
+	});
+
 	it("treats a missing cwd .env as a silent no-op", async () => {
 		const project = await makeProject();
 		const environment: NodeJS.ProcessEnv = { EXISTING: "kept" };
@@ -160,9 +183,9 @@ describe("consumer environment loading", () => {
 			.spyOn(console, "error")
 			.mockImplementation(() => undefined);
 
-		await expect(
-			loadEnvironment({ cwd: project, environment }),
-		).resolves.toBeUndefined();
+		await expect(loadEnvironment({ cwd: project, environment })).resolves.toBe(
+			project,
+		);
 		expect(environment).toEqual({ EXISTING: "kept" });
 		expect(stdout).not.toHaveBeenCalled();
 		expect(stderr).not.toHaveBeenCalled();

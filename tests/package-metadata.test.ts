@@ -33,6 +33,8 @@ describe("package metadata", () => {
 		});
 		expect(packageJson.devDependencies).toMatchObject({
 			"@playwright/test": "1.61.1",
+			vite: "6.4.3",
+			vitest: "3.2.7",
 		});
 		expect(packageJson.peerDependencies).toEqual({
 			"@playwright/test": ">=1.61.1 <1.62.0",

@@ -58,7 +58,7 @@ describe("dedicated Shopify configuration", () => {
 			source: "export default { testDir: 'tests' };\n",
 		});
 
-		await expect(loadShopifyConfig({ cwd: project })).resolves.toEqual({
+		await expect(loadShopifyConfig({ projectRoot: project })).resolves.toEqual({
 			configPath: join(project, "shopify-e2e.config.ts"),
 			projectRoot: project,
 			testDir: join(project, "tests"),
@@ -75,7 +75,7 @@ describe("dedicated Shopify configuration", () => {
 
 		const result = await loadShopifyConfig({
 			configPath: "configs/alternate.ts",
-			cwd: project,
+			projectRoot: project,
 		});
 
 		expect(result.configPath).toBe(join(project, "configs", "alternate.ts"));
@@ -94,7 +94,7 @@ describe("dedicated Shopify configuration", () => {
 			`import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(sentinel)}, 'loaded');\nexport default {};\n`,
 		);
 
-		await loadShopifyConfig({ cwd: project });
+		await loadShopifyConfig({ projectRoot: project });
 
 		await expect(access(sentinel)).rejects.toThrow();
 	});
@@ -112,7 +112,7 @@ describe("dedicated Shopify configuration", () => {
 		vi.stubEnv("TMPDIR", temporaryRoot);
 
 		try {
-			await loadShopifyConfig({ cwd: project });
+			await loadShopifyConfig({ projectRoot: project });
 		} finally {
 			vi.unstubAllEnvs();
 		}
@@ -143,7 +143,7 @@ describe("dedicated Shopify configuration", () => {
 		const project = await makeProject();
 		const configPath = await writeConfig({ project, source });
 
-		const promise = loadShopifyConfig({ cwd: project });
+		const promise = loadShopifyConfig({ projectRoot: project });
 
 		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
 		await expect(promise).rejects.toThrow(configPath);
@@ -157,7 +157,7 @@ describe("dedicated Shopify configuration", () => {
 				"throw new Error('consumer secret');\nexport default { testDir: 'tests' };\n",
 		});
 
-		const promise = loadShopifyConfig({ cwd: project });
+		const promise = loadShopifyConfig({ projectRoot: project });
 
 		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
 		await expect(promise).rejects.toThrow(configPath);
@@ -173,7 +173,7 @@ describe("dedicated Shopify configuration", () => {
 		const project = await makeProject();
 
 		await expect(
-			loadShopifyConfig({ configPath, cwd: project }),
+			loadShopifyConfig({ configPath, projectRoot: project }),
 		).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
 	});
 
@@ -186,7 +186,7 @@ describe("dedicated Shopify configuration", () => {
 		});
 
 		await expect(
-			loadShopifyConfig({ configPath: outsideConfig, cwd: project }),
+			loadShopifyConfig({ configPath: outsideConfig, projectRoot: project }),
 		).rejects.toThrow(/inside.*project/i);
 	});
 
@@ -199,7 +199,7 @@ describe("dedicated Shopify configuration", () => {
 		});
 		await symlink(target, join(project, "shopify-e2e.config.ts"));
 
-		await expect(loadShopifyConfig({ cwd: project })).rejects.toThrow(
+		await expect(loadShopifyConfig({ projectRoot: project })).rejects.toThrow(
 			/symbolic link/i,
 		);
 	});

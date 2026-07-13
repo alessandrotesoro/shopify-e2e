@@ -13,10 +13,9 @@ export interface LoadEnvironmentOptions {
 export const loadEnvironment = async ({
 	cwd,
 	environment,
-}: LoadEnvironmentOptions): Promise<void> => {
+}: LoadEnvironmentOptions): Promise<string> => {
 	const projectRoot = await resolveProjectRoot(cwd);
 	const stagingEnvironment: NodeJS.ProcessEnv = {
-		...environment,
 		DOTENV_CONFIG_DEBUG: "",
 		DOTENV_CONFIG_QUIET: "true",
 	};
@@ -28,10 +27,11 @@ export const loadEnvironment = async ({
 	});
 	const error = result.error as NodeJS.ErrnoException | undefined;
 
-	if (error?.code === "ENOENT") return;
+	if (error?.code === "ENOENT") return projectRoot;
 	if (error) {
 		throw new ShopifyE2EPreflightError("Consumer .env could not be read");
 	}
 
 	populate(environment, result.parsed ?? {}, { override: false });
+	return projectRoot;
 };

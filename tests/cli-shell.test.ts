@@ -263,6 +263,8 @@ describe.sequential("built CLI shell", () => {
 		{ args: ["unknown"], status: 2 },
 		{ args: ["run", "ordinary.spec.ts"], status: 2 },
 		{ args: ["run", "--workers", "2"], status: 2 },
+		{ args: ["run", "--grep", ""], status: 2 },
+		{ args: ["run", "--grep-invert", "   "], status: 2 },
 	])("does not load .env for rejected or informational input: $args", async ({
 		args,
 		status,

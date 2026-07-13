@@ -1,4 +1,4 @@
-import { Command, Flags } from "@oclif/core";
+import { Command, Errors, Flags } from "@oclif/core";
 
 import { loadShopifyConfig } from "../config/load-config.js";
 import {
@@ -43,7 +43,9 @@ export interface RunCommandDependencies {
 	readonly createGeneratedConfig: (
 		testDir: string,
 	) => Promise<GeneratedPlaywrightConfig>;
-	readonly loadEnvironment: (options: LoadEnvironmentOptions) => Promise<void>;
+	readonly loadEnvironment: (
+		options: LoadEnvironmentOptions,
+	) => Promise<string>;
 	readonly reportSelection: (selection: SelectedShopifyBoundary) => void;
 	readonly resolvePeer: (cwd: string) => Promise<ResolvedPlaywrightPeer>;
 	readonly runChild: (invocation: PlaywrightInvocation) => Promise<number>;
@@ -61,6 +63,15 @@ const defaultDependencies: RunCommandDependencies = {
 	runChild: (invocation) => runChild({ invocation }),
 };
 
+const parseNonEmptyFilter = async (input: string): Promise<string> => {
+	if (input.trim().length === 0) {
+		throw new Errors.CLIError(
+			"Playwright title filters must be non-empty strings",
+		);
+	}
+	return input;
+};
+
 export interface OrchestrateShopifyRunArgs {
 	readonly dependencies?: RunCommandDependencies;
 	readonly options: RunCommandOptions;
@@ -70,13 +81,13 @@ export const orchestrateShopifyRun = async ({
 	dependencies = defaultDependencies,
 	options,
 }: OrchestrateShopifyRunArgs): Promise<number> => {
-	await dependencies.loadEnvironment({
+	const projectRoot = await dependencies.loadEnvironment({
 		cwd: options.cwd,
 		environment: process.env,
 	});
 	const loadedConfig = await loadShopifyConfig({
 		configPath: options.configPath,
-		cwd: options.cwd,
+		projectRoot,
 	});
 	const peer = await dependencies.resolvePeer(loadedConfig.projectRoot);
 	const generatedConfig = await dependencies.createGeneratedConfig(
@@ -116,9 +127,11 @@ export class Run extends Command {
 		grep: Flags.string({
 			char: "g",
 			description: "Run Shopify tests whose titles match this pattern",
+			parse: parseNonEmptyFilter,
 		}),
 		"grep-invert": Flags.string({
 			description: "Exclude Shopify tests whose titles match this pattern",
+			parse: parseNonEmptyFilter,
 		}),
 	};
 
