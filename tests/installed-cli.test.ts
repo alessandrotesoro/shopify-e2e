@@ -121,12 +121,14 @@ const installedBin = (consumerRoot: string): string => {
 interface RunInstalledCliArgs {
 	readonly args: readonly string[];
 	readonly consumerRoot: string;
+	readonly environmentOverrides?: NodeJS.ProcessEnv;
 	readonly markerDirectory?: string;
 }
 
 const runInstalledCli = ({
 	args,
 	consumerRoot,
+	environmentOverrides = {},
 	markerDirectory,
 }: RunInstalledCliArgs): CommandResult => {
 	return runCommand({
@@ -135,6 +137,7 @@ const runInstalledCli = ({
 		cwd: consumerRoot,
 		env: {
 			...process.env,
+			...environmentOverrides,
 			NO_COLOR: "1",
 			...(markerDirectory === undefined
 				? {}
@@ -433,6 +436,46 @@ describe.sequential("installed CLI release boundary", () => {
 				"ordinary-spec-loaded.marker",
 			],
 		});
+	});
+
+	it("loads consumer .env in the packed CLI and preserves shell precedence", async () => {
+		const dotenvPath = join(consumerRoot, ".env");
+		await writeFile(
+			dotenvPath,
+			"SHOPIFY_E2E_DOTENV_SENTINEL=from-installed-dotenv\n",
+		);
+
+		try {
+			const dotenvResult = runInstalledCli({
+				args: ["run", "--config", "dotenv-shopify-e2e.config.ts"],
+				consumerRoot,
+				environmentOverrides: {
+					SHOPIFY_E2E_DOTENV_EXPECTED: "from-installed-dotenv",
+					SHOPIFY_E2E_DOTENV_SENTINEL: undefined,
+				},
+			});
+			expectSuccess({ label: "installed dotenv run", result: dotenvResult });
+			expect(dotenvResult.stdout).toMatch(/1 passed/i);
+			expect(`${dotenvResult.stdout}\n${dotenvResult.stderr}`).not.toMatch(
+				/dotenv injecting/i,
+			);
+
+			const shellResult = runInstalledCli({
+				args: ["run", "--config", "dotenv-shopify-e2e.config.ts"],
+				consumerRoot,
+				environmentOverrides: {
+					SHOPIFY_E2E_DOTENV_EXPECTED: "",
+					SHOPIFY_E2E_DOTENV_SENTINEL: "",
+				},
+			});
+			expectSuccess({
+				label: "installed dotenv shell precedence run",
+				result: shellResult,
+			});
+			expect(shellResult.stdout).toMatch(/1 passed/i);
+		} finally {
+			await rm(dotenvPath, { force: true });
+		}
 	});
 
 	it("uses --config to run only the alternate Shopify lane", async () => {
