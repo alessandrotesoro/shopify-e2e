@@ -18,6 +18,8 @@ const binPath = resolve(projectRoot, "bin/run.js");
 const unrelatedCommandPath = resolve(projectRoot, "dist/commands/unrelated.js");
 const importSentinelPath = resolve(projectRoot, "dist/unrelated-imported");
 const temporaryDirectories: string[] = [];
+const dotenvOutputPattern =
+	/injected env|failed to load|no encoding is specified/i;
 
 interface RunCliArgs {
 	readonly args: readonly string[];
@@ -73,11 +75,11 @@ const makeDotenvAwareConsumer = async (): Promise<string> => {
 	const consumer = await makeRunnableConsumer();
 	await writeFile(
 		join(consumer, "shopify-e2e.config.ts"),
-		`export default { testDir: process.env.SHOPIFY_E2E_DOTENV_SENTINEL === process.env.SHOPIFY_E2E_DOTENV_EXPECTED ? "shopify-tests" : "missing-tests" };\n`,
+		`const isExpected = process.env.SHOPIFY_E2E_DOTENV_SENTINEL === process.env.SHOPIFY_E2E_DOTENV_EXPECTED && process.env.DOTENV_CONFIG_DEBUG === process.env.SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG && process.env.DOTENV_CONFIG_QUIET === process.env.SHOPIFY_E2E_DOTENV_EXPECTED_QUIET; export default { testDir: isExpected ? "shopify-tests" : "missing-tests" };\n`,
 	);
 	await writeFile(
 		join(consumer, "shopify-tests", "checkout.spec.ts"),
-		'import { expect, test } from "@playwright/test";\ntest("dotenv reaches Playwright", () => { expect(process.env.SHOPIFY_E2E_DOTENV_SENTINEL).toBe(process.env.SHOPIFY_E2E_DOTENV_EXPECTED); });\n',
+		'import { expect, test } from "@playwright/test";\ntest("dotenv reaches Playwright", () => { expect(process.env.SHOPIFY_E2E_DOTENV_SENTINEL).toBe(process.env.SHOPIFY_E2E_DOTENV_EXPECTED); expect(process.env.DOTENV_CONFIG_DEBUG).toBe(process.env.SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG); expect(process.env.DOTENV_CONFIG_QUIET).toBe(process.env.SHOPIFY_E2E_DOTENV_EXPECTED_QUIET); });\n',
 	);
 	return consumer;
 };
@@ -178,13 +180,17 @@ describe.sequential("built CLI shell", () => {
 		const consumer = await makeDotenvAwareConsumer();
 		await writeFile(
 			join(consumer, ".env"),
-			"SHOPIFY_E2E_DOTENV_SENTINEL=from-consumer-dotenv\n",
+			"SHOPIFY_E2E_DOTENV_SENTINEL=from-consumer-dotenv\nDOTENV_CONFIG_DEBUG=1\nDOTENV_CONFIG_QUIET=false\n",
 		);
 		const result = runCli({
 			args: ["run"],
 			cwd: consumer,
 			environmentOverrides: {
+				DOTENV_CONFIG_DEBUG: undefined,
+				DOTENV_CONFIG_QUIET: undefined,
 				SHOPIFY_E2E_DOTENV_EXPECTED: "from-consumer-dotenv",
+				SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG: "1",
+				SHOPIFY_E2E_DOTENV_EXPECTED_QUIET: "false",
 				SHOPIFY_E2E_DOTENV_SENTINEL: undefined,
 			},
 		});
@@ -192,7 +198,7 @@ describe.sequential("built CLI shell", () => {
 		expect(result.status, result.stderr).toBe(0);
 		expect(result.stdout).toMatch(/1 passed/i);
 		expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
-			/dotenv injecting/i,
+			dotenvOutputPattern,
 		);
 	});
 
@@ -203,13 +209,17 @@ describe.sequential("built CLI shell", () => {
 		const consumer = await makeDotenvAwareConsumer();
 		await writeFile(
 			join(consumer, ".env"),
-			"SHOPIFY_E2E_DOTENV_SENTINEL=from-consumer-dotenv\nSHOPIFY_E2E_DOTENV_EXPECTED=from-consumer-dotenv\n",
+			"SHOPIFY_E2E_DOTENV_SENTINEL=from-consumer-dotenv\n",
 		);
 		const result = runCli({
 			args: ["run"],
 			cwd: consumer,
 			environmentOverrides: {
+				DOTENV_CONFIG_DEBUG: undefined,
+				DOTENV_CONFIG_QUIET: undefined,
 				SHOPIFY_E2E_DOTENV_EXPECTED: value,
+				SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG: undefined,
+				SHOPIFY_E2E_DOTENV_EXPECTED_QUIET: undefined,
 				SHOPIFY_E2E_DOTENV_SENTINEL: value,
 			},
 		});
@@ -226,13 +236,23 @@ describe.sequential("built CLI shell", () => {
 			join(consumer, "shopify-e2e.config.ts"),
 			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(configMarker)}, "loaded"); export default { testDir: "shopify-tests" };\n`,
 		);
-		const result = runCli({ args: ["run"], cwd: consumer });
+		const result = runCli({
+			args: ["run"],
+			cwd: consumer,
+			environmentOverrides: {
+				DOTENV_CONFIG_DEBUG: "1",
+				DOTENV_CONFIG_QUIET: "false",
+			},
+		});
 
 		expect(result.status).toBe(2);
 		expect(result.stdout).toBe("");
 		expect(result.stderr).toMatch(/consumer \.env could not be read/i);
 		expect(result.stderr.match(/Error:/g)).toHaveLength(1);
 		expect(result.stderr).not.toContain(configMarker);
+		expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
+			dotenvOutputPattern,
+		);
 		expect(existsSync(configMarker)).toBe(false);
 	});
 

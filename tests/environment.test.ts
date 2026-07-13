@@ -60,6 +60,52 @@ describe("consumer environment loading", () => {
 		expect(stderr).not.toHaveBeenCalled();
 	});
 
+	it("keeps inherited dotenv controls inert while preserving them", async () => {
+		const project = await makeProject();
+		await writeFile(join(project, ".env"), "LOADED_VALUE=from-file\n");
+		const environment: NodeJS.ProcessEnv = {
+			DOTENV_CONFIG_DEBUG: "1",
+			DOTENV_CONFIG_QUIET: "false",
+		};
+		const stdout = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const stderr = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		await loadEnvironment({ cwd: project, environment });
+
+		expect(environment).toEqual({
+			DOTENV_CONFIG_DEBUG: "1",
+			DOTENV_CONFIG_QUIET: "false",
+			LOADED_VALUE: "from-file",
+		});
+		expect(stdout).not.toHaveBeenCalled();
+		expect(stderr).not.toHaveBeenCalled();
+	});
+
+	it("loads file-defined dotenv controls without activating them", async () => {
+		const project = await makeProject();
+		await writeFile(
+			join(project, ".env"),
+			"DOTENV_CONFIG_DEBUG=1\nDOTENV_CONFIG_QUIET=false\nLOADED_VALUE=from-file\n",
+		);
+		const environment: NodeJS.ProcessEnv = {};
+		const stdout = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const stderr = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		await loadEnvironment({ cwd: project, environment });
+
+		expect(environment).toEqual({
+			DOTENV_CONFIG_DEBUG: "1",
+			DOTENV_CONFIG_QUIET: "false",
+			LOADED_VALUE: "from-file",
+		});
+		expect(stdout).not.toHaveBeenCalled();
+		expect(stderr).not.toHaveBeenCalled();
+	});
+
 	it("resolves a symlinked cwd before selecting .env", async () => {
 		const project = await makeProject();
 		const links = await makeProject();
@@ -142,12 +188,24 @@ describe("consumer environment loading", () => {
 	it("turns non-ENOENT read failures into a sanitized preflight error", async () => {
 		const project = await makeProject();
 		await mkdir(join(project, ".env"));
+		const stdout = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const stderr = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 
-		const promise = loadEnvironment({ cwd: project, environment: {} });
+		const promise = loadEnvironment({
+			cwd: project,
+			environment: {
+				DOTENV_CONFIG_DEBUG: "1",
+				DOTENV_CONFIG_QUIET: "false",
+			},
+		});
 
 		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
 		await expect(promise).rejects.toThrow("Consumer .env could not be read");
 		await expect(promise).rejects.not.toThrow(project);
+		expect(stdout).not.toHaveBeenCalled();
+		expect(stderr).not.toHaveBeenCalled();
 	});
 
 	it("checks the ENOENT code instead of trusting an error message", async () => {

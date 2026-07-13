@@ -18,6 +18,8 @@ const fixtureRoot = resolve(import.meta.dirname, "fixtures/consumer");
 const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
 const generatedConfigPrefix = "shopify-e2e-playwright-";
 const temporaryDirectories: string[] = [];
+const dotenvOutputPattern =
+	/injected env|failed to load|no encoding is specified/i;
 
 interface CommandResult {
 	readonly error?: Error;
@@ -442,7 +444,7 @@ describe.sequential("installed CLI release boundary", () => {
 		const dotenvPath = join(consumerRoot, ".env");
 		await writeFile(
 			dotenvPath,
-			"SHOPIFY_E2E_DOTENV_SENTINEL=from-installed-dotenv\n",
+			"SHOPIFY_E2E_DOTENV_SENTINEL=from-installed-dotenv\nDOTENV_CONFIG_DEBUG=1\nDOTENV_CONFIG_QUIET=false\n",
 		);
 
 		try {
@@ -450,21 +452,29 @@ describe.sequential("installed CLI release boundary", () => {
 				args: ["run", "--config", "dotenv-shopify-e2e.config.ts"],
 				consumerRoot,
 				environmentOverrides: {
+					DOTENV_CONFIG_DEBUG: undefined,
+					DOTENV_CONFIG_QUIET: undefined,
 					SHOPIFY_E2E_DOTENV_EXPECTED: "from-installed-dotenv",
+					SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG: "1",
+					SHOPIFY_E2E_DOTENV_EXPECTED_QUIET: "false",
 					SHOPIFY_E2E_DOTENV_SENTINEL: undefined,
 				},
 			});
 			expectSuccess({ label: "installed dotenv run", result: dotenvResult });
 			expect(dotenvResult.stdout).toMatch(/1 passed/i);
 			expect(`${dotenvResult.stdout}\n${dotenvResult.stderr}`).not.toMatch(
-				/dotenv injecting/i,
+				dotenvOutputPattern,
 			);
 
 			const shellResult = runInstalledCli({
 				args: ["run", "--config", "dotenv-shopify-e2e.config.ts"],
 				consumerRoot,
 				environmentOverrides: {
+					DOTENV_CONFIG_DEBUG: "1",
+					DOTENV_CONFIG_QUIET: "false",
 					SHOPIFY_E2E_DOTENV_EXPECTED: "",
+					SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG: "1",
+					SHOPIFY_E2E_DOTENV_EXPECTED_QUIET: "false",
 					SHOPIFY_E2E_DOTENV_SENTINEL: "",
 				},
 			});
@@ -473,6 +483,9 @@ describe.sequential("installed CLI release boundary", () => {
 				result: shellResult,
 			});
 			expect(shellResult.stdout).toMatch(/1 passed/i);
+			expect(`${shellResult.stdout}\n${shellResult.stderr}`).not.toMatch(
+				dotenvOutputPattern,
+			);
 		} finally {
 			await rm(dotenvPath, { force: true });
 		}
