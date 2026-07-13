@@ -29,13 +29,19 @@ The consumer owns `@playwright/test@1.61.1` and the browser installation. The CL
 
 ## Run the smoke test
 
-Supply a publicly reachable Shopify storefront that needs no password, authentication, special headers, or challenge completion:
+Create the ignored local environment file from the committed example:
 
 ```sh
-SHOPIFY_STORE_URL=https://your-store.example npm run smoke
+cp .env.example .env
 ```
 
-Run the command from this directory so the CLI resolves this consumer's dedicated configuration and Playwright installation. Success reports one passed test and exits `0`.
+Edit `.env` and set `SHOPIFY_STORE_URL` to a publicly reachable Shopify storefront that needs no password, authentication, special headers, or challenge completion. Then run:
+
+```sh
+npm run smoke
+```
+
+Run these commands from this directory so the CLI loads this consumer's `.env` and resolves its dedicated configuration and Playwright installation. The CLI only loads the variable; the spec still validates that the URL is present and uses HTTP or HTTPS. Success reports one passed test and exits `0`.
 
 The spec performs one read-only navigation and checks only that the final document response succeeded. It does not inspect theme content or interact with products, accounts, carts, checkout, or store state.
 
@@ -46,4 +52,4 @@ The spec performs one read-only navigation and checks only that the final docume
 - DNS, TLS, timeout, challenge, password, or unsuccessful HTTP responses fail as ordinary Playwright navigation results.
 - A missing or incompatible consumer Playwright peer remains a CLI preflight failure.
 
-Do not commit a target URL, credentials, browser binaries, `node_modules`, or Playwright output.
+Do not commit `.env`, a target URL, credentials, browser binaries, `node_modules`, or Playwright output.
