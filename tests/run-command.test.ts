@@ -74,6 +74,7 @@ const makeDependencies = ({
 			executable: process.execPath,
 		})),
 		createGeneratedConfig: vi.fn(async () => generatedConfig),
+		loadEnvironment: vi.fn(async () => {}),
 		reportSelection: vi.fn(),
 		resolvePeer: vi.fn(async () => ({
 			executablePath: "/consumer/playwright/cli.js",
@@ -106,6 +107,69 @@ afterEach(async () => {
 });
 
 describe("run command orchestration", () => {
+	it("loads the invocation environment before evaluating trusted config", async () => {
+		const consumer = await makeConsumer();
+		const sentinel = "SHOPIFY_E2E_DOTENV_ORDER_SENTINEL";
+		await writeFile(
+			consumer.configPath,
+			`export default { testDir: process.env.${sentinel} === "loaded-before-config" ? "shopify-tests" : "missing-tests" };\n`,
+		);
+		const generated = await makeGeneratedConfig(consumer.projectRoot);
+		const dependencies = makeDependencies({ generatedConfig: generated });
+		vi.mocked(dependencies.loadEnvironment).mockImplementationOnce(
+			async ({ environment }) => {
+				environment[sentinel] = "loaded-before-config";
+			},
+		);
+
+		try {
+			await expect(
+				orchestrateShopifyRun({
+					dependencies,
+					options: { cwd: consumer.projectRoot },
+				}),
+			).resolves.toBe(0);
+
+			expect(dependencies.loadEnvironment).toHaveBeenCalledWith({
+				cwd: consumer.projectRoot,
+				environment: process.env,
+			});
+			expect(dependencies.createGeneratedConfig).toHaveBeenCalledWith(
+				consumer.testDir,
+			);
+		} finally {
+			delete process.env[sentinel];
+		}
+	});
+
+	it("stops before config and Playwright preflight when environment loading fails", async () => {
+		const consumer = await makeConsumer();
+		const configMarker = join(consumer.projectRoot, "config-loaded");
+		await writeFile(
+			consumer.configPath,
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(configMarker)}, "loaded"); export default { testDir: "shopify-tests" };\n`,
+		);
+		const generated = await makeGeneratedConfig(consumer.projectRoot);
+		const dependencies = makeDependencies({ generatedConfig: generated });
+		vi.mocked(dependencies.loadEnvironment).mockRejectedValueOnce(
+			new ShopifyE2EPreflightError("Consumer .env could not be read"),
+		);
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: { cwd: consumer.projectRoot },
+			}),
+		).rejects.toThrow("Consumer .env could not be read");
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+		expect(dependencies.createGeneratedConfig).not.toHaveBeenCalled();
+		expect(dependencies.buildInvocation).not.toHaveBeenCalled();
+		expect(dependencies.reportSelection).not.toHaveBeenCalled();
+		expect(dependencies.runChild).not.toHaveBeenCalled();
+		expect(generated.cleanup).not.toHaveBeenCalled();
+		await expect(access(configMarker)).rejects.toThrow();
+	});
+
 	it("completes preflight, reports selected paths, starts one child, and cleans up", async () => {
 		const consumer = await makeConsumer();
 		const generated = await makeGeneratedConfig(consumer.projectRoot);

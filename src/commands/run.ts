@@ -2,6 +2,10 @@ import { Command, Flags } from "@oclif/core";
 
 import { loadShopifyConfig } from "../config/load-config.js";
 import {
+	type LoadEnvironmentOptions,
+	loadEnvironment,
+} from "../environment/load-environment.js";
+import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../errors.js";
@@ -39,6 +43,7 @@ export interface RunCommandDependencies {
 	readonly createGeneratedConfig: (
 		testDir: string,
 	) => Promise<GeneratedPlaywrightConfig>;
+	readonly loadEnvironment: (options: LoadEnvironmentOptions) => Promise<void>;
 	readonly reportSelection: (selection: SelectedShopifyBoundary) => void;
 	readonly resolvePeer: (cwd: string) => Promise<ResolvedPlaywrightPeer>;
 	readonly runChild: (invocation: PlaywrightInvocation) => Promise<number>;
@@ -47,6 +52,7 @@ export interface RunCommandDependencies {
 const defaultDependencies: RunCommandDependencies = {
 	buildInvocation: buildPlaywrightInvocation,
 	createGeneratedConfig: createGeneratedPlaywrightConfig,
+	loadEnvironment,
 	reportSelection: (selection) => {
 		process.stderr.write(`Shopify config: ${selection.configPath}\n`);
 		process.stderr.write(`Shopify test directory: ${selection.testDir}\n`);
@@ -64,6 +70,10 @@ export const orchestrateShopifyRun = async ({
 	dependencies = defaultDependencies,
 	options,
 }: OrchestrateShopifyRunArgs): Promise<number> => {
+	await dependencies.loadEnvironment({
+		cwd: options.cwd,
+		environment: process.env,
+	});
 	const loadedConfig = await loadShopifyConfig({
 		configPath: options.configPath,
 		cwd: options.cwd,
