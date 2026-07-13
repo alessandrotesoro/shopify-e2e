@@ -4,3 +4,4 @@ test-results/
 *.tgz
 .DS_Store
 docs/
+.env

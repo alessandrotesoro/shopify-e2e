@@ -34,6 +34,16 @@ shopify-e2e run --config alternate-shopify-e2e.config.ts
 
 The selected configuration is trusted consumer code: loading it can run its imports and is not sandboxed. The isolation guarantee is that the package controls which configuration and validated test root it discovers; it is not protection from code intentionally imported by the dedicated configuration.
 
+## Environment variables
+
+For accepted `shopify-e2e run` invocations, the CLI automatically loads the optional `.env` file in the directory where the command was invoked. It does not search parent directories, use a file beside an explicit `--config`, or load `.env.local` or other `.env.*` variants. The consumer does not need its own dotenv dependency or dotenv setup in `shopify-e2e.config.ts`.
+
+Shell and CI environment values take precedence over assignments in `.env`, including values explicitly set to an empty string. A missing `.env` is a silent no-op. Parsing follows standard permissive dotenv behavior: recognized assignments load, later duplicate assignments in the same file win, and unrecognized or malformed lines are ignored.
+
+If `.env` exists but cannot be read, the CLI stops preflight with exit `2` before loading the dedicated configuration or starting Playwright. Its diagnostic does not include environment keys, values, file contents, or raw error details.
+
+Phase one has no environment-file flag or configuration field and does not provide parent search, multiple-file merging, environment-specific variants, variable expansion, command substitution, or encrypted vault behavior.
+
 ## Run
 
 Run every test in the configured Shopify directory:
@@ -89,4 +99,4 @@ npm run verify
 
 The [real-store smoke consumer](tests/fixtures/storefront-smoke-consumer/README.md) provides one manual browser check for the current local CLI build. It owns Playwright and Chromium, uses the conventional dedicated configuration, and runs one read-only navigation against the public Shopify storefront supplied through `SHOPIFY_STORE_URL`.
 
-This smoke check is intentionally excluded from `npm run verify` because it depends on a local browser installation, network access, and an external store. The deterministic installed-package fixture remains the release verification boundary.
+This smoke check is intentionally excluded from `npm run verify` because it depends on a local browser installation, network access, and an external store. The consumer keeps its storefront URL in an ignored `.env` and runs the check with plain `npm run smoke`. The deterministic installed-package fixture remains the release verification boundary.
