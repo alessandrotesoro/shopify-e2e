@@ -343,9 +343,35 @@ describe.sequential("installed CLI release boundary", () => {
 		expectSuccess({ label: "npm pack", result: packResult });
 		const packOutput = JSON.parse(packResult.stdout) as Array<{
 			readonly filename: string;
+			readonly files: ReadonlyArray<{
+				readonly mode: number;
+				readonly path: string;
+			}>;
 		}>;
-		tarballPath = join(packDirectory, packOutput[0]?.filename ?? "");
+		const packedArtifact = packOutput[0];
+		expect(packedArtifact).toBeDefined();
+		tarballPath = join(packDirectory, packedArtifact?.filename ?? "");
 		expect(basename(tarballPath)).toMatch(/^sematico-shopify-e2e-.*\.tgz$/);
+		const publishedPaths = packedArtifact?.files.map((file) => file.path) ?? [];
+		expect(publishedPaths).toEqual(
+			expect.arrayContaining([
+				"LICENSE",
+				"README.md",
+				"bin/run.js",
+				"dist/commands.js",
+				"dist/commands/run.js",
+				"package.json",
+			]),
+		);
+		expect(
+			publishedPaths.every((path) =>
+				/^(?:LICENSE|README\.md|package\.json|bin\/|dist\/)/.test(path),
+			),
+		).toBe(true);
+		const executable = packedArtifact?.files.find(
+			(file) => file.path === "bin/run.js",
+		);
+		expect((executable?.mode ?? 0) & 0o111).not.toBe(0);
 
 		consumerRoot = await makeTemporaryDirectory("shopify-e2e-consumer-");
 		await cp(fixtureRoot, consumerRoot, { recursive: true });

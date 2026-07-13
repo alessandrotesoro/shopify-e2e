@@ -74,7 +74,7 @@ const makeDependencies = ({
 			executable: process.execPath,
 		})),
 		createGeneratedConfig: vi.fn(async () => generatedConfig),
-		loadEnvironment: vi.fn(async () => {}),
+		loadEnvironment: vi.fn(async ({ cwd }) => realpath(cwd)),
 		reportSelection: vi.fn(),
 		resolvePeer: vi.fn(async () => ({
 			executablePath: "/consumer/playwright/cli.js",
@@ -117,8 +117,9 @@ describe("run command orchestration", () => {
 		const generated = await makeGeneratedConfig(consumer.projectRoot);
 		const dependencies = makeDependencies({ generatedConfig: generated });
 		vi.mocked(dependencies.loadEnvironment).mockImplementationOnce(
-			async ({ environment }) => {
+			async ({ cwd, environment }) => {
 				environment[sentinel] = "loaded-before-config";
+				return realpath(cwd);
 			},
 		);
 

@@ -125,6 +125,7 @@ describe("Playwright-compatible candidate discovery", () => {
 	it("produces the same candidates as Playwright 1.61.1 --list", async () => {
 		const testDir = await makeTestDir();
 		const root = resolve(testDir, "..");
+		await writeFile(join(root, "package.json"), '{"type":"module"}\n');
 		const configPath = join(root, "package-generated.playwright.config.mjs");
 		const ordinarySentinel = join(root, "ordinary-config-loaded");
 		await writeFile(
