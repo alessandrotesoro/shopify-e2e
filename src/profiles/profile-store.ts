@@ -124,6 +124,9 @@ const cleanupTemporary = async (path: string): Promise<unknown | undefined> => {
 	}
 };
 
+const unavailableRemovalError = (): ShopifyE2EPreflightError =>
+	new ShopifyE2EPreflightError("Saved profile is unknown or cannot be removed");
+
 const hasRegularDirectory = async (
 	path: string,
 	label: string,
@@ -609,26 +612,22 @@ export class ProfileStore {
 	#assertRemovableName(name: string): void {
 		assertProfileName(name);
 		if (this.#roles[name]?.authentication === "none") {
-			throw new ShopifyE2EPreflightError(
-				"Saved profile is unknown or cannot be removed",
-			);
+			throw unavailableRemovalError();
 		}
 	}
 
-	async #assertRemovableTarget(path: string): Promise<void> {
+	async #assertRemovableTarget(name: string): Promise<string> {
+		const path = join(this.#profilesDirectory, name);
 		let metadata: Stats;
 		try {
 			metadata = await lstat(path);
 		} catch {
-			throw new ShopifyE2EPreflightError(
-				"Saved profile is unknown or cannot be removed",
-			);
+			throw unavailableRemovalError();
 		}
 		if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-			throw new ShopifyE2EPreflightError(
-				"Saved profile is unknown or cannot be removed",
-			);
+			throw unavailableRemovalError();
 		}
+		return path;
 	}
 
 	public async removableProfiles(): Promise<readonly string[]> {
@@ -651,12 +650,9 @@ export class ProfileStore {
 	public async remove({ name, signal }: RemoveProfileArgs): Promise<void> {
 		this.#assertRemovableName(name);
 		if (!(await this.#hasOriginPartition())) {
-			throw new ShopifyE2EPreflightError(
-				"Saved profile is unknown or cannot be removed",
-			);
+			throw unavailableRemovalError();
 		}
-		const target = join(this.#profilesDirectory, name);
-		await this.#assertRemovableTarget(target);
+		const target = await this.#assertRemovableTarget(name);
 
 		let quarantine: string | undefined;
 		let committed = false;
@@ -665,7 +661,7 @@ export class ProfileStore {
 				join(this.#profilesDirectory, `.tmp-remove-${name}-`),
 			);
 			await chmod(quarantine, 0o700);
-			await this.#assertRemovableTarget(target);
+			await this.#assertRemovableTarget(name);
 			if (signal) throwIfCommandAborted(signal);
 			await rename(target, join(quarantine, "profile"));
 			committed = true;

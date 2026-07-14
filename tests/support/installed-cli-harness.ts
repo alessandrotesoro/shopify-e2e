@@ -261,14 +261,16 @@ export const prepareInstalledCliFixture = async ({
 	const profileDataRoot = await makeTemporaryDirectory(
 		"shopify-e2e-profile-data-",
 	);
-	for (const [name, role] of [
+	const currentOrigin = "https://shop.example";
+	const currentProfiles = [
 		["admin-primary", "admin"],
 		["customer-primary", "customer"],
-	] as const) {
+	] as const;
+	for (const [name, role] of currentProfiles) {
 		await seedProfile({
 			dataRoot: profileDataRoot,
 			name,
-			origin: "https://shop.example",
+			origin: currentOrigin,
 			role,
 			state: {
 				cookies: [
@@ -298,7 +300,6 @@ export const prepareInstalledCliFixture = async ({
 		});
 	}
 	const removalProfileName = "removal-disposable";
-	const currentOrigin = "https://shop.example";
 	const otherOrigin = "https://other-shop.example";
 	await seedProfile({
 		dataRoot: profileDataRoot,
@@ -329,10 +330,9 @@ export const prepareInstalledCliFixture = async ({
 			"profiles",
 			removalProfileName,
 		),
-		currentSiblingProfileDirectories: [
-			join(currentOriginDirectory, "profiles", "admin-primary"),
-			join(currentOriginDirectory, "profiles", "customer-primary"),
-		],
+		currentSiblingProfileDirectories: currentProfiles.map(([name]) =>
+			join(currentOriginDirectory, "profiles", name),
+		),
 		otherOriginDirectory,
 		otherOriginProfileDirectory: join(
 			otherOriginDirectory,
