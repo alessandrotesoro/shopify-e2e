@@ -250,21 +250,34 @@ const createGeneratedConfigWithSignal = async (
 		return await runWithCommandSignal(() => creation, signal);
 	} catch (error) {
 		if (error instanceof CommandSignalError) {
+			let generatedConfig: GeneratedPlaywrightConfig;
 			try {
-				const generatedConfig = await creation;
+				generatedConfig = await creation;
+			} catch {
+				// Creation failed after the signal won, so there is no config to clean.
+				throw error;
+			}
+			try {
 				await generatedConfig.cleanup();
 			} catch {
-				// The signal remains authoritative, but creation and cleanup must settle.
+				try {
+					await generatedConfig.cleanup();
+				} catch {
+					throw new CommandSignalError(
+						error.signal,
+						"Shopify test run interrupted; temporary Playwright cleanup could not complete.",
+					);
+				}
 			}
 		}
 		throw error;
 	}
 };
 
-const configuredOriginAfterTrustedConfig = (
+const assertConfiguredOriginUnchanged = (
 	environment: NodeJS.ProcessEnv,
 	expectedOrigin: string,
-): string => {
+): void => {
 	const configuredUrl = environment.SHOPIFY_STORE_URL;
 	if (!configuredUrl) {
 		throw new ShopifyE2EPreflightError(
@@ -277,7 +290,6 @@ const configuredOriginAfterTrustedConfig = (
 			"SHOPIFY_STORE_URL changed while trusted config was loading. Keep it stable in the consumer .env file or inherited environment.",
 		);
 	}
-	return currentOrigin;
 };
 
 export const orchestrateShopifyRun = async ({
@@ -310,7 +322,7 @@ export const orchestrateShopifyRun = async ({
 			}),
 		signal,
 	);
-	configuredOriginAfterTrustedConfig(environment, origin);
+	assertConfiguredOriginUnchanged(environment, origin);
 	throwIfCommandAborted(signal);
 	const selection = await runWithCommandSignal(
 		() =>
@@ -431,7 +443,7 @@ export class Run extends Command {
 			});
 		} catch (error) {
 			if (error instanceof CommandSignalError) {
-				this.error("Profile selection interrupted; no tests started.", {
+				this.error(error.message, {
 					exit: error.exitCode,
 				});
 			}

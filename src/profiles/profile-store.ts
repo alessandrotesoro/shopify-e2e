@@ -104,8 +104,18 @@ interface RefreshProfileArgs {
 	readonly state: unknown;
 }
 
-const safeRemove = async (path: string): Promise<void> => {
-	await rm(path, { force: true, recursive: true }).catch(() => undefined);
+const cleanupTemporary = async (path: string): Promise<unknown | undefined> => {
+	try {
+		await rm(path, { force: true, recursive: true });
+		return undefined;
+	} catch {
+		try {
+			await rm(path, { force: true, recursive: true });
+			return undefined;
+		} catch (error) {
+			return error;
+		}
+	}
 };
 
 const hasRegularDirectory = async (
@@ -365,7 +375,10 @@ export class ProfileStore {
 				committed = true;
 				if (signal) throwIfCommandAborted(signal);
 			} catch (error) {
-				if (temporaryOrigin !== undefined) await safeRemove(temporaryOrigin);
+				const cleanupError =
+					temporaryOrigin === undefined
+						? undefined
+						: await cleanupTemporary(temporaryOrigin);
 				if (committed && error instanceof CommandSignalError) {
 					try {
 						await rm(this.#originDirectory, { force: true, recursive: true });
@@ -375,6 +388,12 @@ export class ProfileStore {
 							{ cause: rollbackError },
 						);
 					}
+				}
+				if (cleanupError !== undefined) {
+					throw new ShopifyE2EInfrastructureError(
+						"Profile temporary cleanup could not complete safely",
+						{ cause: cleanupError },
+					);
 				}
 				if (
 					error instanceof ShopifyE2EPreflightError ||
@@ -406,7 +425,10 @@ export class ProfileStore {
 			committed = true;
 			if (signal) throwIfCommandAborted(signal);
 		} catch (error) {
-			if (temporaryProfile !== undefined) await safeRemove(temporaryProfile);
+			const cleanupError =
+				temporaryProfile === undefined
+					? undefined
+					: await cleanupTemporary(temporaryProfile);
 			if (committed && error instanceof CommandSignalError) {
 				try {
 					await rm(target, { force: true, recursive: true });
@@ -416,6 +438,12 @@ export class ProfileStore {
 						{ cause: rollbackError },
 					);
 				}
+			}
+			if (cleanupError !== undefined) {
+				throw new ShopifyE2EInfrastructureError(
+					"Profile temporary cleanup could not complete safely",
+					{ cause: cleanupError },
+				);
 			}
 			if (
 				error instanceof ShopifyE2EPreflightError ||
@@ -509,8 +537,8 @@ export class ProfileStore {
 				flag: "wx",
 				mode: 0o600,
 			});
-			await chmod(rollbackState, 0o600);
 			rollbackPrepared = true;
+			await chmod(rollbackState, 0o600);
 			await writeOwnerOnlyJson(temporaryState, validatedState, false);
 			if (signal) throwIfCommandAborted(signal);
 			await rename(temporaryState, statePath);
@@ -519,7 +547,7 @@ export class ProfileStore {
 			await rm(rollbackState, { force: true });
 			rollbackPrepared = false;
 		} catch (error) {
-			await safeRemove(temporaryState);
+			const cleanupError = await cleanupTemporary(temporaryState);
 			if (replacementCommitted && rollbackPrepared) {
 				try {
 					await rename(rollbackState, statePath);
@@ -541,6 +569,12 @@ export class ProfileStore {
 						{ cause: cleanupError },
 					);
 				}
+			}
+			if (cleanupError !== undefined) {
+				throw new ShopifyE2EInfrastructureError(
+					"Profile temporary cleanup could not complete safely",
+					{ cause: cleanupError },
+				);
 			}
 			if (signal?.aborted) throwIfCommandAborted(signal);
 			if (error instanceof CommandSignalError) throw error;

@@ -666,13 +666,19 @@ describe("auth command orchestration", () => {
 			defaultAuthDependencies(prompts, report),
 			captureProfile,
 		);
+		const list = vi.fn(store.list.bind(store));
+		const directStore = {
+			list,
+			refresh: store.refresh.bind(store),
+			resolve: store.resolve.bind(store),
+		} as unknown as ProfileStore;
 
 		await orchestrateAuth(
 			authOptions(fixture, {
 				action: "refresh",
 				profile: "admin-primary",
 			}),
-			dependencies,
+			{ ...dependencies, createStore: vi.fn(() => directStore) },
 		);
 
 		expect(await store.resolve("admin-primary")).toEqual({
@@ -683,6 +689,7 @@ describe("auth command orchestration", () => {
 		});
 		expect(await readFile(metadataPath)).toEqual(metadataBefore);
 		expect(prompts.select).not.toHaveBeenCalled();
+		expect(list).not.toHaveBeenCalled();
 		expect(report).toHaveBeenCalledWith(
 			"Refreshed profile admin-primary for role admin.",
 		);

@@ -675,6 +675,44 @@ describe("run command orchestration", () => {
 		expect(dependencies.runChild).not.toHaveBeenCalled();
 	});
 
+	it("retries interrupted generated-config cleanup and reports persistent failure", async () => {
+		const consumer = await makeConsumer();
+		const generated = await makeGeneratedConfig(consumer.projectRoot);
+		const dependencies = makeDependencies({ generatedConfig: generated });
+		const controller = new AbortController();
+		let resolveCreation:
+			| ((value: GeneratedPlaywrightConfig) => void)
+			| undefined;
+		const creation = new Promise<GeneratedPlaywrightConfig>((resolveValue) => {
+			resolveCreation = resolveValue;
+		});
+		vi.mocked(dependencies.createGeneratedConfig).mockReturnValueOnce(creation);
+		generated.cleanup.mockRejectedValue(new Error("private cleanup cause"));
+
+		const outcome = orchestrateShopifyRun({
+			dependencies,
+			options: {
+				cwd: consumer.projectRoot,
+				profile: "guest",
+				signal: controller.signal,
+			},
+		}).catch((error: unknown) => error);
+		await vi.waitFor(() =>
+			expect(dependencies.createGeneratedConfig).toHaveBeenCalledOnce(),
+		);
+		controller.abort("SIGTERM");
+		resolveCreation?.(generated);
+
+		await expect(outcome).resolves.toMatchObject({
+			exitCode: 143,
+			message:
+				"Shopify test run interrupted; temporary Playwright cleanup could not complete.",
+			signal: "SIGTERM",
+		});
+		expect(generated.cleanup).toHaveBeenCalledTimes(2);
+		expect(dependencies.runChild).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		{ abortDuring: "child", expectedExitCode: 143, reason: "SIGTERM" },
 		{ abortDuring: "cleanup", expectedExitCode: 130, reason: "SIGINT" },

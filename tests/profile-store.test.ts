@@ -478,7 +478,9 @@ describe("profile store", () => {
 			| "origin-write"
 			| "profile-rename"
 			| "profile-write"
+			| "refresh-cleanup"
 			| "refresh-rename"
+			| "refresh-rollback-chmod"
 			| "refresh-write"
 			| undefined;
 		const rawCause =
@@ -486,12 +488,23 @@ describe("profile store", () => {
 
 		vi.doMock("node:fs/promises", () => ({
 			...actual,
+			chmod: async (
+				...args: Parameters<FileSystemPromises["chmod"]>
+			): ReturnType<FileSystemPromises["chmod"]> => {
+				if (
+					failure === "refresh-rollback-chmod" &&
+					String(args[0]).includes("storage-state.json.rollback-")
+				) {
+					throw new Error(rawCause);
+				}
+				return actual.chmod(args[0], args[1]);
+			},
 			rename: async (
 				...args: Parameters<FileSystemPromises["rename"]>
 			): ReturnType<FileSystemPromises["rename"]> => {
 				const source = String(args[0]);
 				if (
-					(failure === "refresh-rename" &&
+					((failure === "refresh-rename" || failure === "refresh-cleanup") &&
 						source.includes("storage-state.json.tmp-")) ||
 					(failure === "profile-rename" &&
 						source.includes(".tmp-admin-secondary-")) ||
@@ -500,6 +513,17 @@ describe("profile store", () => {
 					throw new Error(rawCause);
 				}
 				return actual.rename(args[0], args[1]);
+			},
+			rm: async (
+				...args: Parameters<FileSystemPromises["rm"]>
+			): ReturnType<FileSystemPromises["rm"]> => {
+				if (
+					failure === "refresh-cleanup" &&
+					String(args[0]).includes("storage-state.json.tmp-")
+				) {
+					throw new Error(rawCause);
+				}
+				return actual.rm(args[0], args[1]);
 			},
 			writeFile: async (
 				...args: Parameters<FileSystemPromises["writeFile"]>
@@ -540,6 +564,7 @@ describe("profile store", () => {
 			const priorBytes = await readFile(paths.state);
 
 			for (const injectedFailure of [
+				"refresh-rollback-chmod",
 				"refresh-write",
 				"refresh-rename",
 			] as const) {
@@ -555,11 +580,24 @@ describe("profile store", () => {
 				expect(String(error)).not.toContain("storage-state.json");
 				expect(await readFile(paths.state)).toEqual(priorBytes);
 				expect(
-					(await readdir(paths.profileDirectory)).some((entry) =>
-						entry.includes("storage-state.json.tmp-"),
+					(await readdir(paths.profileDirectory)).filter((entry) =>
+						entry.startsWith("storage-state.json."),
 					),
-				).toBe(false);
+				).toEqual([]);
 			}
+
+			failure = "refresh-cleanup";
+			const cleanupError = await store
+				.refresh({
+					name: "admin-primary",
+					state: stateWithCookie("replacement"),
+				})
+				.catch((cause: unknown) => cause);
+			expect(String(cleanupError)).toContain(
+				"temporary cleanup could not complete safely",
+			);
+			expect(String(cleanupError)).not.toContain("bearer-secret");
+			expect(await readFile(paths.state)).toEqual(priorBytes);
 
 			for (const injectedFailure of [
 				"profile-write",
