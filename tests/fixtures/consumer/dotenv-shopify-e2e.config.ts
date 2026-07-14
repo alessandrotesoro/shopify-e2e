@@ -8,4 +8,5 @@ export default {
 			process.env.SHOPIFY_E2E_DOTENV_EXPECTED_QUIET
 			? "shopify-dotenv"
 			: "missing-shopify-dotenv",
+	roles: { guest: { authentication: "none" } },
 };

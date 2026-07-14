@@ -1,55 +1,70 @@
-# Real-store smoke consumer
+# Levelogy password-protected acceptance consumer
 
-This private consumer verifies one boundary: the current local `@sematico/shopify-e2e` build can launch consumer-owned Playwright and load a real public Shopify storefront in Chromium.
+This private consumer manually proves the phase-two CLI against `https://levelogy-development.myshopify.com/`. It is excluded from `npm run verify`: it needs network access, consumer-owned Chromium, the storefront password, and a human authentication step.
 
-It is intentionally manual. The repository's automated verification does not run this network- and browser-dependent spec.
+## Prepare the CLI and consumer
 
-## Prepare the CLI
-
-From the package repository root, build and register the current package with npm:
+From the package repository root:
 
 ```sh
 npm run build
 npm link
-```
-
-Rebuild before rerunning the smoke test after changing CLI source because the executable loads compiled files from `dist`.
-
-## Prepare the consumer
-
-From this directory, install its exact Playwright dependency, link the package without saving a machine-specific path, and install consumer-owned Chromium:
-
-```sh
+consumer="$(mktemp -d)/storefront-smoke-consumer"
+mkdir "$consumer"
+rsync -a \
+	--exclude '.env' \
+	--exclude 'node_modules' \
+	--exclude 'test-results' \
+	tests/fixtures/storefront-smoke-consumer/ "$consumer/"
+cd "$consumer"
 npm install
 npm link @sematico/shopify-e2e --no-save
 npx playwright install chromium
-```
-
-The consumer owns `@playwright/test@1.61.1` and the browser installation. The CLI does not install or manage browsers.
-
-## Run the smoke test
-
-Create the ignored local environment file from the committed example:
-
-```sh
 cp .env.example .env
 ```
 
-Edit `.env` and set `SHOPIFY_STORE_URL` to a publicly reachable Shopify storefront that needs no password, authentication, special headers, or challenge completion. Then run:
+The temporary copy keeps the consumer install and manual output outside the package repository. Keep every later command in that copied consumer directory. Rebuild the package before retesting source changes because the linked executable reads compiled files from `dist`.
+
+Keep `.env`, passwords, browser state, screenshots, traces, `test-results`, and `node_modules` uncommitted. The URL is already set in `.env.example`; the storefront password is entered only in Chromium.
+
+## 1. Capture the customer profile
 
 ```sh
-npm run smoke
+shopify-e2e auth capture --role customer --profile customer-primary
 ```
 
-Run these commands from this directory so the CLI loads this consumer's `.env` and resolves its dedicated configuration and Playwright installation. The CLI only loads the variable; the spec still validates that the URL is present and uses HTTP or HTTPS. Success reports one passed test and exits `0`.
+In the dedicated headed browser, enter the Levelogy storefront password and wait for the storefront to appear. Return to the terminal and confirm the save. The CLI does not detect completion and must never receive the password in a terminal prompt.
 
-The spec performs one read-only navigation and checks only that the final document response succeeded. It does not inspect theme content or interact with products, accounts, carts, checkout, or store state.
+## 2. Prove the saved customer lane
 
-## Expected failures
+```sh
+shopify-e2e run --profile customer-primary
+```
 
-- Missing, relative, malformed, or non-HTTP(S) `SHOPIFY_STORE_URL` values fail the spec with exit `1`.
-- Missing Chromium reports Playwright's browser-install guidance and exits non-zero.
-- DNS, TLS, timeout, challenge, password, or unsuccessful HTTP responses fail as ordinary Playwright navigation results.
-- A missing or incompatible consumer Playwright peer remains a CLI preflight failure.
+Expected: one customer-tagged test passes, the storefront is visible, and no password challenge is present.
 
-Do not commit `.env`, a target URL, credentials, browser binaries, `node_modules`, or Playwright output.
+## 3. Prove explicit empty guest state
+
+```sh
+shopify-e2e run --profile guest
+```
+
+Expected: one guest-tagged test passes and the password challenge is visible. No guest profile file is created.
+
+## 4. Refresh and prove the customer lane again
+
+```sh
+shopify-e2e auth refresh --profile customer-primary
+shopify-e2e run --profile customer-primary
+```
+
+Authenticate in the new dedicated browser if needed, explicitly confirm replacement, and expect the customer test to bypass the challenge again. A declined or failed refresh must leave the previous saved state usable.
+
+## Troubleshooting
+
+- Missing Chromium: run `npx playwright install chromium` from this consumer.
+- Expired customer session: run the explicit refresh command; the CLI does not auto-refresh.
+- Wrong origin partition: confirm `.env` contains the exact Levelogy `.myshopify.com` origin used during capture.
+- Suspected state compromise: revoke the Shopify session first, then manually remove the relevant CLI application-data profile or data root.
+
+Do not convert this checklist into CI or store credentials/profile state in repository files.

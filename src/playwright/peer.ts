@@ -1,17 +1,39 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import semver from "semver";
 
+import type { CaptureBrowser } from "../auth/capture-profile.js";
 import { ShopifyE2EPreflightError } from "../errors.js";
+import { PACKAGE_ROOT } from "../package-root.js";
 import { isPathContained } from "../path-boundary.utils.js";
 
 const SUPPORTED_PLAYWRIGHT_RANGE = ">=1.61.1 <1.62.0";
-
 export interface ResolvedPlaywrightPeer {
 	readonly executablePath: string;
+	readonly modulePath: string;
 }
+
+export interface ConsumerChromiumLauncher {
+	readonly executablePath?: () => string;
+	launch(options: { readonly headless: boolean }): Promise<CaptureBrowser>;
+}
+
+const isModuleApi = (value: unknown): value is Record<string, unknown> =>
+	value !== null && (typeof value === "object" || typeof value === "function");
+
+const resolvePublicApi = (
+	moduleNamespace: unknown,
+): Record<string, unknown> | undefined => {
+	if (!isModuleApi(moduleNamespace)) return undefined;
+	if ("chromium" in moduleNamespace) return moduleNamespace;
+	if ("default" in moduleNamespace && isModuleApi(moduleNamespace.default)) {
+		return moduleNamespace.default;
+	}
+	return undefined;
+};
 
 interface PlaywrightPackageMetadata {
 	readonly bin: unknown;
@@ -89,7 +111,15 @@ const readMetadata = async ({
 export const resolvePlaywrightPeer = async (
 	cwd: string,
 ): Promise<ResolvedPlaywrightPeer> => {
-	const consumerRoot = resolve(cwd);
+	let consumerRoot: string;
+	try {
+		consumerRoot = await realpath(resolve(cwd));
+	} catch (error) {
+		throw preflight({
+			cause: error,
+			message: "Consumer project root could not be resolved",
+		});
+	}
 	const consumerRequire = createRequire(join(consumerRoot, "package.json"));
 
 	let resolvedPackageJson: string;
@@ -114,6 +144,26 @@ export const resolvePlaywrightPeer = async (
 		});
 	}
 	const packageRoot = dirname(packageJsonPath);
+	let packageInstallationRoot: string;
+	try {
+		packageInstallationRoot = await realpath(PACKAGE_ROOT);
+	} catch (error) {
+		throw preflight({
+			cause: error,
+			message: "shopify-e2e package installation could not be resolved",
+		});
+	}
+	if (
+		consumerRoot !== packageInstallationRoot &&
+		isPathContained({
+			candidate: packageRoot,
+			parent: packageInstallationRoot,
+		})
+	) {
+		throw preflight({
+			message: `Consumer project must install its own compatible @playwright/test (${SUPPORTED_PLAYWRIGHT_RANGE}): ${consumerRoot}`,
+		});
+	}
 	const metadata = await readMetadata({ consumerRoot, packageJsonPath });
 	if (metadata.name !== "@playwright/test") {
 		throw preflight({
@@ -166,5 +216,81 @@ export const resolvePlaywrightPeer = async (
 		});
 	}
 
-	return { executablePath };
+	let modulePath: string;
+	try {
+		modulePath = await realpath(consumerRequire.resolve("@playwright/test"));
+	} catch (error) {
+		throw preflight({
+			cause: error,
+			message: `Consumer @playwright/test public module entry is missing: ${consumerRoot}`,
+		});
+	}
+	if (!isPathContained({ candidate: modulePath, parent: packageRoot })) {
+		throw preflight({
+			message: `Consumer @playwright/test public module resolved outside its package: ${consumerRoot}`,
+		});
+	}
+	let isModuleFile: boolean;
+	try {
+		isModuleFile = (await stat(modulePath)).isFile();
+	} catch (error) {
+		throw preflight({
+			cause: error,
+			message: `Consumer @playwright/test public module is unreadable: ${consumerRoot}`,
+		});
+	}
+	if (!isModuleFile) {
+		throw preflight({
+			message: `Consumer @playwright/test public module must be a regular file: ${consumerRoot}`,
+		});
+	}
+
+	return { executablePath, modulePath };
+};
+
+export const loadConsumerChromium = async (
+	peer: ResolvedPlaywrightPeer,
+): Promise<ConsumerChromiumLauncher> => {
+	let moduleNamespace: unknown;
+	try {
+		moduleNamespace = await import(pathToFileURL(peer.modulePath).href);
+	} catch (error) {
+		throw preflight({
+			cause: error,
+			message: "Consumer @playwright/test browser API could not be loaded",
+		});
+	}
+	const publicApi = resolvePublicApi(moduleNamespace);
+	if (
+		!publicApi ||
+		!("chromium" in publicApi) ||
+		typeof publicApi.chromium !== "object" ||
+		publicApi.chromium === null ||
+		!("launch" in publicApi.chromium) ||
+		typeof publicApi.chromium.launch !== "function" ||
+		!("executablePath" in publicApi.chromium) ||
+		typeof publicApi.chromium.executablePath !== "function"
+	) {
+		throw preflight({
+			message:
+				"Consumer @playwright/test does not expose the supported Chromium API",
+		});
+	}
+	const chromium = publicApi.chromium as ConsumerChromiumLauncher & {
+		executablePath: () => string;
+	};
+	let chromiumPath: string;
+	try {
+		chromiumPath = chromium.executablePath();
+		if (chromiumPath.trim().length === 0) throw new Error("empty path");
+		const executable = await stat(chromiumPath);
+		if (!executable.isFile()) throw new Error("not a regular file");
+	} catch (error) {
+		throw preflight({
+			cause: error,
+			message:
+				"Consumer Chromium is unavailable. Install it from the consumer with `npx playwright install chromium` and retry.",
+		});
+	}
+	return chromium;
 };
