@@ -187,6 +187,10 @@ describe.sequential("built CLI shell", () => {
 			args: ["auth", "refresh", "--help"],
 			flags: ["--config", "--profile"],
 		},
+		{
+			args: ["auth", "remove", "--help"],
+			flags: ["--config", "--profile", "--yes"],
+		},
 		{ args: ["auth", "list", "--help"], flags: ["--config"] },
 	])("prints auth help for $args", ({ args, flags }) => {
 		const result = runCli({ args });
@@ -197,6 +201,26 @@ describe.sequential("built CLI shell", () => {
 		expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
 			/password.*prompt/i,
 		);
+	});
+
+	it("documents the exact removal flags and automation contract", () => {
+		const result = runCli({ args: ["auth", "remove", "--help"] });
+
+		expect(result.status).toBe(0);
+		const flagNames = result.stdout
+			.split("\n")
+			.filter((line) => /^ {2}--/.test(line))
+			.map((line) => line.trim().split(/\s+/)[0]);
+		expect(flagNames).toEqual([
+			"--config=<value>",
+			"--profile=<value>",
+			"--yes",
+		]);
+		expect(result.stdout).toMatch(/--yes.*skip confirmation/is);
+		expect(result.stdout).toMatch(
+			/non-interactive removal requires\s+--profile and --yes/i,
+		);
+		expect(result.stdout).not.toContain("--role");
 	});
 
 	it("documents capture role and profile naming constraints", () => {
@@ -217,11 +241,12 @@ describe.sequential("built CLI shell", () => {
 		expect(result.status).toBe(0);
 		const commandLines = result.stdout
 			.split("\n")
-			.filter((line) => /^ {2}auth (capture|list|refresh)\b/.test(line));
-		expect(commandLines).toHaveLength(3);
+			.filter((line) => /^ {2}auth (capture|list|refresh|remove)\b/.test(line));
+		expect(commandLines).toHaveLength(4);
 		expect(commandLines.join("\n")).toMatch(/auth capture/);
 		expect(commandLines.join("\n")).toMatch(/auth list/);
 		expect(commandLines.join("\n")).toMatch(/auth refresh/);
+		expect(commandLines.join("\n")).toMatch(/auth remove/);
 	});
 
 	it.each([
@@ -254,6 +279,44 @@ describe.sequential("built CLI shell", () => {
 		expect(result.status).toBe(2);
 		expect(result.stderr).toMatch(/command .* not found|unexpected argument/i);
 		expect(result.stderr).not.toMatch(/consumer \.env could not be read/i);
+	});
+
+	it.each([
+		["auth", "remove", "unexpected"],
+		["auth", "remove", "--unknown"],
+		["auth", "remove", "--yes=false"],
+		["auth", "remove", "--yes", "false"],
+		["auth", "remove", "--no-yes"],
+	])("rejects removal syntax before orchestration: %s", async (...args) => {
+		const consumer = await makeConsumerFixture();
+		await mkdir(join(consumer, ".env"));
+
+		const result = runCli({ args, cwd: consumer });
+
+		expect(result.status).toBe(2);
+		expect(result.stderr).toMatch(
+			/unexpected argument|nonexistent flag|command .* not found/i,
+		);
+		expect(result.stderr).not.toMatch(/consumer \.env could not be read/i);
+	});
+
+	it.each([
+		[],
+		["--profile", "admin-primary"],
+		["--yes"],
+	])("requires the non-interactive removal flag pair for %s", async (...flags) => {
+		const consumer = await makeConsumerFixture();
+
+		const result = runCli({
+			args: ["auth", "remove", ...flags],
+			cwd: consumer,
+		});
+
+		expect(result.status).toBe(2);
+		expect(result.stderr).toMatch(/--profile.*--yes/i);
+		expect(result.stderr).not.toMatch(
+			/inquirer|exitprompterror|abortprompterror/i,
+		);
 	});
 
 	it("passes oclif's external data-directory override to auth orchestration", async () => {

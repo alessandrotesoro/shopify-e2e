@@ -23,6 +23,7 @@ interface ExecuteAuthCommandArgs {
 	readonly configPath?: string;
 	readonly profile?: string;
 	readonly role?: string;
+	readonly yes?: boolean;
 }
 
 export interface AuthCommandFailure {
@@ -69,6 +70,7 @@ export const executeAuthCommand = async ({
 	configPath,
 	profile,
 	role,
+	yes,
 }: ExecuteAuthCommandArgs): Promise<void> => {
 	const signals = createCommandSignalScope();
 	try {
@@ -86,6 +88,7 @@ export const executeAuthCommand = async ({
 				profile,
 				role,
 				signal: signals.signal,
+				yes,
 			},
 			defaultAuthDependencies(inquirerPrompts, (message) =>
 				command.log(message),
@@ -101,7 +104,7 @@ export const executeAuthCommand = async ({
 
 export class Auth extends Command {
 	static override description =
-		"Capture, refresh, or inspect browser authentication profiles. Credentials are entered only in the dedicated browser window.";
+		"Capture, refresh, remove, or inspect browser authentication profiles. Credentials are entered only in the dedicated browser window.";
 
 	static override examples = [
 		"<%= config.bin %> <%= command.id %>",
