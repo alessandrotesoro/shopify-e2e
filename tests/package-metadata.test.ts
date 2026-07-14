@@ -110,7 +110,7 @@ describe("package metadata", () => {
 		});
 	});
 
-	it("exports only the explicit phase-two command surface from source and generated maps", async () => {
+	it("exports only the explicit phase-three command surface from source and generated maps", async () => {
 		const sourceMap = await import(
 			`${pathToFileURL(resolve(projectRoot, "src/commands.ts")).href}?source-map`
 		);
@@ -123,6 +123,7 @@ describe("package metadata", () => {
 			"auth:capture",
 			"auth:list",
 			"auth:refresh",
+			"auth:remove",
 			"run",
 		];
 		expect(Object.keys(sourceMap.default)).toEqual(expectedCommands);
