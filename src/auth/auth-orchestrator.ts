@@ -29,7 +29,7 @@ import {
 import type { PromptFunctions } from "../prompts/inquirer.js";
 import { captureBrowserProfile } from "./capture-profile.js";
 
-export type AuthAction = "capture" | "list" | "menu" | "refresh";
+export type AuthAction = "capture" | "list" | "menu" | "refresh" | "remove";
 
 export interface AuthOrchestratorOptions {
 	readonly action: AuthAction;
@@ -44,6 +44,7 @@ export interface AuthOrchestratorOptions {
 	readonly profile?: string;
 	readonly role?: string;
 	readonly signal: AbortSignal;
+	readonly yes?: boolean;
 }
 
 export interface AuthOrchestratorDependencies {
@@ -315,6 +316,76 @@ const runRefresh = async (
 	);
 };
 
+const unavailableRemovalError = (): ShopifyE2EPreflightError =>
+	new ShopifyE2EPreflightError("Saved profile is unknown or cannot be removed");
+
+const removableProfiles = async (
+	store: ProfileStore,
+	options: AuthOrchestratorOptions,
+): Promise<readonly string[]> =>
+	runWithCommandSignal(() => store.removableProfiles(), options.signal);
+
+const runRemove = async (
+	store: ProfileStore,
+	options: AuthOrchestratorOptions,
+	dependencies: AuthOrchestratorDependencies,
+	cachedCandidates?: readonly string[],
+): Promise<void> => {
+	const confirmed = options.yes === true;
+	if (!options.interactive && (options.profile === undefined || !confirmed)) {
+		throw new ShopifyE2EPreflightError(
+			"Non-interactive profile removal requires both --profile and --yes",
+		);
+	}
+
+	let selectedName = options.profile;
+	if (selectedName === undefined) {
+		requireInteractive(options);
+		const candidates =
+			cachedCandidates ?? (await removableProfiles(store, options));
+		if (candidates.length === 0) {
+			throw new ShopifyE2EPreflightError(
+				"No removable saved profile is available for the configured store",
+			);
+		}
+		selectedName = await runWithCommandSignal(
+			() =>
+				dependencies.prompts.select({
+					...createPromptContext(options),
+					choices: candidates.map((name) => ({ name, value: name })),
+					message: "Which profile should be removed?",
+				}),
+			options.signal,
+		);
+		if (!candidates.includes(selectedName)) throw unavailableRemovalError();
+	} else if (!confirmed) {
+		const candidates =
+			cachedCandidates ?? (await removableProfiles(store, options));
+		if (!candidates.includes(selectedName)) throw unavailableRemovalError();
+	}
+
+	if (!confirmed) {
+		const shouldRemove = await runWithCommandSignal(
+			() =>
+				dependencies.prompts.confirm({
+					...createPromptContext(options),
+					default: false,
+					message: `Remove ${selectedName}? Locally saved browser authentication will be removed.`,
+				}),
+			options.signal,
+		);
+		if (!shouldRemove) {
+			dependencies.report(
+				"Authentication profile removal cancelled; no profile changed.",
+			);
+			return;
+		}
+	}
+
+	await store.remove({ name: selectedName, signal: options.signal });
+	dependencies.report(`Removed saved profile ${selectedName}.`);
+};
+
 export const orchestrateAuth = async (
 	options: AuthOrchestratorOptions,
 	dependencies: AuthOrchestratorDependencies,
@@ -361,15 +432,18 @@ export const orchestrateAuth = async (
 
 	let action = options.action;
 	let summaries: readonly ProfileSummary[] | undefined;
+	let removalCandidates: readonly string[] | undefined;
 	if (action === "menu") {
 		requireInteractive(options);
 		summaries = await runWithCommandSignal(() => store.list(), options.signal);
+		removalCandidates = await removableProfiles(store, options);
 		const hasCapture = Object.values(config.roles).some(
 			(role) => role.authentication === "required",
 		);
 		const hasRefresh = summaries.some(
 			(summary) => summary.status === "runnable",
 		);
+		const hasRemoval = removalCandidates.length > 0;
 		const selectedAction = await runWithCommandSignal(
 			() =>
 				dependencies.prompts.select({
@@ -386,6 +460,13 @@ export const orchestrateAuth = async (
 							disabled: hasRefresh ? false : "No runnable saved profile exists",
 							name: "Refresh a profile",
 							value: "refresh" as const,
+						},
+						{
+							disabled: hasRemoval
+								? false
+								: "No removable saved profile exists",
+							name: "Remove a profile",
+							value: "remove" as const,
 						},
 						{ name: "List profiles", value: "list" as const },
 						{ name: "Cancel", value: "cancel" as const },
@@ -420,7 +501,11 @@ export const orchestrateAuth = async (
 		await runCapture(config, store, origin, options, dependencies);
 		return;
 	}
-	await runRefresh(store, origin, config, options, dependencies, summaries);
+	if (action === "refresh") {
+		await runRefresh(store, origin, config, options, dependencies, summaries);
+		return;
+	}
+	await runRemove(store, options, dependencies, removalCandidates);
 };
 
 export const defaultAuthDependencies = (
