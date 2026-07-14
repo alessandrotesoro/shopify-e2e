@@ -12,7 +12,10 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ShopifyE2EPreflightError } from "../src/errors.js";
-import { resolvePlaywrightPeer } from "../src/playwright/peer.js";
+import {
+	loadConsumerChromium,
+	resolvePlaywrightPeer,
+} from "../src/playwright/peer.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -26,6 +29,9 @@ const makeConsumer = async (): Promise<string> => {
 interface FakePeerOptions {
 	readonly bin?: unknown;
 	readonly binKind?: "directory" | "file";
+	readonly moduleKind?: "directory" | "file";
+	readonly moduleSource?: string;
+	readonly moduleType?: "commonjs" | "module";
 	readonly version?: string;
 }
 
@@ -49,11 +55,27 @@ const installFakePeer = async ({
 		join(packageRoot, "package.json"),
 		JSON.stringify({
 			bin,
-			exports: { "./package.json": "./package.json" },
+			exports: {
+				".": "./index.js",
+				"./package.json": "./package.json",
+			},
 			name: "@playwright/test",
+			type: options.moduleType ?? "module",
 			version: options.version ?? "1.61.1",
 		}),
 	);
+	const modulePath = join(packageRoot, "index.js");
+	const chromiumPath = join(packageRoot, "chromium");
+	await writeFile(chromiumPath, "fake chromium binary\n");
+	if (options.moduleKind === "directory") {
+		await mkdir(modulePath);
+	} else {
+		await writeFile(
+			modulePath,
+			options.moduleSource ??
+				`export const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { return { marker: "consumer-browser" }; } };\n`,
+		);
+	}
 
 	const declaredBin =
 		typeof bin === "object" && bin !== null && "playwright" in bin
@@ -87,6 +109,7 @@ describe("consumer Playwright peer resolution", () => {
 
 		await expect(resolvePlaywrightPeer(consumer)).resolves.toEqual({
 			executablePath: fakePeer.binPath,
+			modulePath: join(fakePeer.packageRoot, "index.js"),
 		});
 	});
 
@@ -95,6 +118,14 @@ describe("consumer Playwright peer resolution", () => {
 
 		await expect(resolvePlaywrightPeer(consumer)).rejects.toThrow(
 			/consumer.*@playwright\/test|@playwright\/test.*consumer/i,
+		);
+	});
+
+	it("rejects upward resolution to the package's development peer", async () => {
+		const nestedConsumer = join(process.cwd(), "tests", "fixtures", "consumer");
+
+		await expect(resolvePlaywrightPeer(nestedConsumer)).rejects.toThrow(
+			/must install its own compatible @playwright\/test/i,
 		);
 	});
 
@@ -171,6 +202,84 @@ describe("consumer Playwright peer resolution", () => {
 
 		await expect(resolvePlaywrightPeer(consumer)).rejects.toThrow(
 			/regular file/i,
+		);
+	});
+
+	it("rejects a public module symlink whose target escapes the package", async () => {
+		const consumer = await makeConsumer();
+		const { packageRoot } = await installFakePeer({ consumer });
+		const modulePath = join(packageRoot, "index.js");
+		const outside = join(consumer, "outside-module.js");
+		await rm(modulePath);
+		await writeFile(outside, "export const chromium = {};\n");
+		await symlink(outside, modulePath);
+
+		await expect(resolvePlaywrightPeer(consumer)).rejects.toThrow(
+			/public module resolved outside its package/i,
+		);
+	});
+
+	it("rejects a public module entry that is not a regular file", async () => {
+		const consumer = await makeConsumer();
+		await installFakePeer({ consumer, moduleKind: "directory" });
+
+		await expect(resolvePlaywrightPeer(consumer)).rejects.toThrow(
+			/public module.*(?:regular file|entry is missing)/i,
+		);
+	});
+
+	it("loads Chromium only from the verified consumer public module", async () => {
+		const consumer = await makeConsumer();
+		await installFakePeer({ consumer });
+		const peer = await resolvePlaywrightPeer(consumer);
+		const chromium = await loadConsumerChromium(peer);
+
+		await expect(chromium.launch({ headless: false })).resolves.toMatchObject({
+			marker: "consumer-browser",
+		});
+	});
+
+	it("loads Chromium from the verified consumer CommonJS public module", async () => {
+		const consumer = await makeConsumer();
+		const packageRoot = join(consumer, "node_modules", "@playwright", "test");
+		const chromiumPath = join(packageRoot, "chromium");
+		await installFakePeer({
+			consumer,
+			moduleSource: `function test() {}; test.chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { return { marker: "consumer-commonjs-browser" }; } }; module.exports = test;\n`,
+			moduleType: "commonjs",
+		});
+		const peer = await resolvePlaywrightPeer(consumer);
+		const chromium = await loadConsumerChromium(peer);
+
+		await expect(chromium.launch({ headless: false })).resolves.toMatchObject({
+			marker: "consumer-commonjs-browser",
+		});
+	});
+
+	it("rejects a consumer public module without the supported Chromium API", async () => {
+		const consumer = await makeConsumer();
+		await installFakePeer({
+			consumer,
+			moduleSource: "export const firefox = {};\n",
+		});
+		const peer = await resolvePlaywrightPeer(consumer);
+
+		await expect(loadConsumerChromium(peer)).rejects.toThrow(
+			/supported Chromium API/i,
+		);
+	});
+
+	it("reports install guidance when the consumer Chromium executable is missing", async () => {
+		const consumer = await makeConsumer();
+		const missingChromium = join(consumer, "missing-chromium");
+		await installFakePeer({
+			consumer,
+			moduleSource: `export const chromium = { executablePath() { return ${JSON.stringify(missingChromium)}; }, async launch() {} };\n`,
+		});
+		const peer = await resolvePlaywrightPeer(consumer);
+
+		await expect(loadConsumerChromium(peer)).rejects.toThrow(
+			/consumer Chromium is unavailable.*playwright install chromium/i,
 		);
 	});
 });

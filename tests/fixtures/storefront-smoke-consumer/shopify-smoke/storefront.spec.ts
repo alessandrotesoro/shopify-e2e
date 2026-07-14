@@ -1,31 +1,39 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
-test("loads a real Shopify storefront", async ({ page }) => {
+const configuredStoreOrigin = (): string => {
 	const configuredStoreUrl = process.env.SHOPIFY_STORE_URL;
-	if (!configuredStoreUrl) {
-		throw new Error("SHOPIFY_STORE_URL is required");
+	if (!configuredStoreUrl) throw new Error("SHOPIFY_STORE_URL is required");
+	const url = new URL(configuredStoreUrl);
+	if (url.protocol !== "https:") {
+		throw new Error("SHOPIFY_STORE_URL must be an absolute HTTPS URL");
 	}
+	return url.origin;
+};
 
-	let storeUrl: URL;
-	try {
-		storeUrl = new URL(configuredStoreUrl);
-	} catch {
-		throw new Error("SHOPIFY_STORE_URL must be an absolute HTTP(S) URL");
-	}
-	if (storeUrl.protocol !== "http:" && storeUrl.protocol !== "https:") {
-		throw new Error("SHOPIFY_STORE_URL must be an absolute HTTP(S) URL");
-	}
+const passwordChallenge = (page: Page) =>
+	page.locator(
+		'form[action="/password"] input[type="password"], input#Password',
+	);
 
-	const response = await page.goto(storeUrl.href, {
+test("saved customer profile bypasses the storefront password challenge", {
+	tag: "@shopify-e2e-role-customer",
+}, async ({ page }) => {
+	const response = await page.goto(configuredStoreOrigin(), {
 		waitUntil: "domcontentloaded",
 	});
+	expect(response).not.toBeNull();
+	expect(response?.ok()).toBe(true);
+	await expect(passwordChallenge(page)).toHaveCount(0);
+	await expect(page.locator("body")).toBeVisible();
+});
 
-	expect(
-		response,
-		"storefront navigation must return a document response",
-	).not.toBeNull();
-	expect(
-		response?.ok(),
-		`storefront navigation returned HTTP ${response?.status() ?? "unknown"}`,
-	).toBe(true);
+test("guest profile reaches the storefront password challenge", {
+	tag: "@shopify-e2e-role-guest",
+}, async ({ page }) => {
+	const response = await page.goto(configuredStoreOrigin(), {
+		waitUntil: "domcontentloaded",
+	});
+	expect(response).not.toBeNull();
+	expect(response?.ok()).toBe(true);
+	await expect(passwordChallenge(page).first()).toBeVisible();
 });
