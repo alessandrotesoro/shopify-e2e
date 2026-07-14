@@ -6,7 +6,10 @@ import {
 	type LoadEnvironmentOptions,
 	loadEnvironment,
 } from "../environment/load-environment.js";
-import { ShopifyE2EPreflightError } from "../errors.js";
+import {
+	ShopifyE2EInfrastructureError,
+	ShopifyE2EPreflightError,
+} from "../errors.js";
 import {
 	loadConsumerChromium,
 	resolvePlaywrightPeer,
@@ -430,10 +433,10 @@ export const orchestrateAuth = async (
 		roles: config.roles,
 	});
 
-	let action = options.action;
+	let action: Exclude<AuthAction, "menu">;
 	let summaries: readonly ProfileSummary[] | undefined;
 	let removalCandidates: readonly string[] | undefined;
-	if (action === "menu") {
+	if (options.action === "menu") {
 		requireInteractive(options);
 		summaries = await runWithCommandSignal(() => store.list(), options.signal);
 		removalCandidates = await removableProfiles(store, options);
@@ -480,32 +483,43 @@ export const orchestrateAuth = async (
 			return;
 		}
 		action = selectedAction;
+	} else {
+		action = options.action;
 	}
 
-	if (action === "list") {
-		const profiles =
-			summaries ??
-			(await runWithCommandSignal(() => store.list(), options.signal));
-		if (profiles.length === 0) {
-			dependencies.report("No saved profiles for the configured store.");
+	switch (action) {
+		case "list": {
+			const profiles =
+				summaries ??
+				(await runWithCommandSignal(() => store.list(), options.signal));
+			if (profiles.length === 0) {
+				dependencies.report("No saved profiles for the configured store.");
+				return;
+			}
+			for (const profile of profiles) {
+				dependencies.report(
+					`${profile.name}\t${profile.role}\t${profile.status}`,
+				);
+			}
 			return;
 		}
-		for (const profile of profiles) {
-			dependencies.report(
-				`${profile.name}\t${profile.role}\t${profile.status}`,
+		case "capture":
+			await runCapture(config, store, origin, options, dependencies);
+			return;
+		case "refresh":
+			await runRefresh(store, origin, config, options, dependencies, summaries);
+			return;
+		case "remove":
+			await runRemove(store, options, dependencies, removalCandidates);
+			return;
+		default: {
+			const unsupportedAction: never = action;
+			throw new ShopifyE2EInfrastructureError(
+				"Authentication action could not be resolved",
+				{ cause: unsupportedAction },
 			);
 		}
-		return;
 	}
-	if (action === "capture") {
-		await runCapture(config, store, origin, options, dependencies);
-		return;
-	}
-	if (action === "refresh") {
-		await runRefresh(store, origin, config, options, dependencies, summaries);
-		return;
-	}
-	await runRemove(store, options, dependencies, removalCandidates);
 };
 
 export const defaultAuthDependencies = (
