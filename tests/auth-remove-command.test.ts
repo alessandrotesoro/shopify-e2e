@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+	type AuthAction,
 	defaultAuthDependencies,
 	orchestrateAuth,
 } from "../src/auth/auth-orchestrator.js";
@@ -391,5 +392,28 @@ describe("auth remove command orchestration", () => {
 		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
 		expect(dependencies.loadChromium).not.toHaveBeenCalled();
 		expect(dependencies.captureProfile).not.toHaveBeenCalled();
+	});
+
+	it("never routes an unknown runtime action into profile removal", async () => {
+		const fixture = await makeFixture();
+		const prompts = makePrompts();
+		const remove = vi.fn(async () => undefined);
+		const dependencies = withStubbedBrowser(
+			defaultAuthDependencies(prompts, vi.fn()),
+		);
+
+		const error = await orchestrateAuth(
+			authOptions(fixture, {
+				action: "future-action" as AuthAction,
+			}),
+			{
+				...dependencies,
+				createStore: vi.fn(() => ({ remove }) as unknown as ProfileStore),
+			},
+		).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(ShopifyE2EInfrastructureError);
+		expect(String(error)).toContain("could not be resolved");
+		expect(remove).not.toHaveBeenCalled();
 	});
 });
