@@ -2,7 +2,7 @@
 
 A CLI-first, isolated Playwright lane for Shopify end-to-end tests.
 
-Version 0.2 adds local browser profiles and role-scoped runs. The consuming application owns `@playwright/test`, Chromium, its Shopify tests, and its trusted configuration. The CLI owns profile capture, isolated test discovery, one-worker execution, and the allowed run controls.
+Version 0.3 adds safe local removal of saved browser profiles. The consuming application owns `@playwright/test`, Chromium, its Shopify tests, and its trusted configuration. The CLI owns profile capture and removal, isolated test discovery, one-worker execution, and the allowed run controls.
 
 ## Install
 
@@ -44,6 +44,8 @@ This is a breaking change from 0.1: `{ testDir }` alone is invalid and must be m
 - Tag every Shopify spec with its configured `@shopify-e2e-role-<role>` lane.
 - For each role, either capture a profile for `authentication: "required"` or configure it as `authentication: "none"`.
 - Pass `--profile <name>` to every non-interactive `run` invocation.
+
+Upgrading from 0.2 to 0.3 requires no config or test changes. The only new public surface is `auth remove`.
 
 The CLI discovers `./shopify-e2e.config.ts` by convention. `--config` may select another contained TypeScript config. Config is trusted consumer code and is not sandboxed.
 
@@ -90,7 +92,7 @@ test(
 
 The reserved `@shopify-e2e-role-<role>` text must appear only as a tag—not in spec paths, suite titles, or test titles. Playwright matches one combined path/title/tag string, so this convention is an orchestration boundary for trusted tests, not a sandbox against deliberately overriding spec code. Files inside `testDir` can be imported during Playwright discovery even when their test bodies belong to another role; files outside `testDir` are never loaded.
 
-## Capture and inspect profiles
+## Capture, refresh, remove, and inspect profiles
 
 Run the interactive auth menu:
 
@@ -98,23 +100,37 @@ Run the interactive auth menu:
 shopify-e2e auth
 ```
 
-It offers capture, refresh, list, and cancel. Direct equivalents are:
+It offers capture, refresh, remove, list, and cancel. Direct equivalents are:
 
 ```sh
 shopify-e2e auth capture
 shopify-e2e auth capture --role customer --profile customer-primary
 shopify-e2e auth refresh
 shopify-e2e auth refresh --profile customer-primary
+shopify-e2e auth remove
+shopify-e2e auth remove --profile customer-primary
+shopify-e2e auth remove --profile customer-primary --yes
 shopify-e2e auth list
 ```
 
-The complete auth surface is `auth [--config <path>]`, `auth capture [--config <path>] [--role <role>] [--profile <name>]`, `auth refresh [--config <path>] [--profile <name>]`, and `auth list [--config <path>]`. These commands accept no positional arguments.
+The complete auth surface is `auth [--config <path>]`, `auth capture [--config <path>] [--role <role>] [--profile <name>]`, `auth refresh [--config <path>] [--profile <name>]`, `auth remove [--config <path>] [--profile <name>] [--yes]`, and `auth list [--config <path>]`. These commands accept no positional arguments.
 
 Capture and refresh require an interactive terminal. Missing role/profile values are prompted; supplied values are validated without prompting. `auth list` works non-interactively and never loads Playwright.
 
 Capture opens a fresh, headed, non-persistent consumer-owned Chromium context. Enter storefront passwords, Shopify credentials, and one-time codes only in that browser window. The CLI never asks for credentials and never tries to detect when login is complete. Return to the terminal and explicitly confirm when the browser state should be saved.
 
 Refresh starts another fresh context using only the selected profile's prior state and atomically replaces that state after confirmation. Declining, closing the browser, or cancelling leaves the previous profile unchanged.
+
+Removal is scoped to the normalized `SHOPIFY_STORE_URL` origin currently configured. It never searches or changes another origin partition and does not require Playwright or a browser. The prompt/flag behavior is:
+
+| Invocation | Interactive terminal | Non-interactive terminal |
+|---|---|---|
+| `auth remove` | Select a profile, then confirm; confirmation defaults to no | Exit `2`; no change |
+| `auth remove --profile <name>` | Confirm the named profile; confirmation defaults to no | Exit `2`; no change |
+| `auth remove --yes` | Select a profile, then remove it without confirmation | Exit `2`; no change |
+| `auth remove --profile <name> --yes` | Remove without prompts | Remove without prompts |
+
+Removal candidates are real, path-safe profile directories in the current origin, including profiles whose metadata or state is corrupt. Unknown names, unsafe names, symlinks, non-directories, hidden temporary entries, and synthetic unauthenticated role names are refused with exit `2`. A physical directory whose name collides with a synthetic role is intentionally not CLI-removable; inspect and clean that collision manually.
 
 Profile names must be ASCII lower-kebab strings no longer than 64 UTF-8 bytes. Choose pseudonymous names such as `customer-primary`; do not put names, email addresses, credentials, or other personal data in a profile name.
 
@@ -152,17 +168,23 @@ Saved state lives outside the consuming repository under oclif's platform applic
 
 Storage state is a bearer secret. It can contain cookies, localStorage, and captured IndexedDB for every origin visited in the dedicated capture context. It does not include sessionStorage, passkeys, or browser cache, does not guarantee origin exclusivity, and does not guarantee that Shopify authentication remains valid.
 
-Do not commit or log profile state, `.env`, screenshots, traces, or browser output. If a profile may be compromised, revoke the Shopify session first, then manually remove that profile or the CLI application-data root. A deletion command and automatic stale temporary-artifact cleanup are deferred. Crash or `SIGKILL` remnants remain owner-only but may need manual removal.
+Do not commit or log profile state, `.env`, screenshots, traces, or browser output. If a profile may be compromised, revoke or rotate the represented access where possible as well as removing the local copy.
+
+Removal first renames the active profile into a hidden same-partition `.tmp-remove-*` quarantine, then recursively deletes that quarantine. Before the rename commits, failure leaves the active profile unchanged. After the rename, the profile remains unavailable even if cleanup fails; the CLI exits `1` and reports that local secret cleanup is incomplete. Successful removal keeps the origin partition and all sibling profiles in place.
+
+Automatic stale-quarantine cleanup is not provided. For manual cleanup, locate the profile data root as the exact absolute `SHOPIFY_E2E_DATA_DIR` value when that override is set; otherwise use oclif's platform application-data directory for dirname `shopify-e2e` (the operating system's application-data location, never the consuming repository). Under that root, inspect only the affected `origins/<origin-hash>/profiles/.tmp-remove-*` entries. Stop CLI processes first, preserve the origin and sibling directories, and remove only quarantines you have identified. Using a known absolute `SHOPIFY_E2E_DATA_DIR` before capture makes this recovery location unambiguous across platforms.
+
+Filesystem deletion is not secure erasure or crash-durable sanitization. Data or access can survive in snapshots, backups, open file handles, storage media, a retained or partially deleted quarantine, or a still-live remote Shopify session. Revoke or rotate the represented access where possible when cleanup is incomplete or compromise is suspected.
 
 The boundary protects against accidental commits, cross-origin/profile mixups, partial replacement, and unrelated out-of-root test loading. It does not protect against malicious consumer config/spec code, a compromised Playwright/browser dependency, concurrent writers, or another process running as the same OS user.
 
 ## Exit behavior
 
-- `0`: success, menu cancellation, declined save, or browser closure before save.
-- `1`: package/browser/filesystem infrastructure failure, or Playwright's own test/no-test failure.
-- `2`: usage, config, URL, profile, TTY, boundary, or peer preflight failure.
-- `130`: terminal Ctrl+C or `SIGINT` after cleanup.
-- `143`: `SIGTERM` after cleanup.
+- `0`: success or a user cancellation with no mutation. For removal, this includes declining the default-no confirmation; a signal after the removal rename also exits `0` if quarantine cleanup completes.
+- `1`: package/browser/filesystem infrastructure failure, or Playwright's own test/no-test failure. A removal failure before rename leaves the active profile unchanged; a cleanup failure after rename leaves it unavailable and means local secret cleanup is incomplete.
+- `2`: usage, config, URL, profile, TTY, boundary, or peer preflight refusal. Removal refusals do not mutate the registry.
+- `130`: terminal Ctrl+C or `SIGINT` before a removal commits, after cleanup of temporary work.
+- `143`: `SIGTERM` before a removal commits, after cleanup of temporary work.
 - Other numeric Playwright child exits pass through unchanged.
 
 ## Verification
