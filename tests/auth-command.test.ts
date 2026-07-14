@@ -1,19 +1,9 @@
-import {
-	mkdir,
-	mkdtemp,
-	readFile,
-	realpath,
-	rm,
-	writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-	type AuthOrchestratorDependencies,
-	type AuthOrchestratorOptions,
 	defaultAuthDependencies,
 	orchestrateAuth,
 } from "../src/auth/auth-orchestrator.js";
@@ -30,61 +20,17 @@ import {
 	EMPTY_STORAGE_STATE,
 	type ProfileStore,
 } from "../src/profiles/profile-store.js";
-import type { PromptFunctions } from "../src/prompts/inquirer.js";
+import {
+	authOptions,
+	createAuthFixtureScope,
+	DEFAULT_ROLES,
+	makePrompts,
+	seedProfile,
+	withStubbedBrowser,
+} from "./support/auth-command-fixture.js";
 
-const temporaryDirectories: string[] = [];
 const packageRoot = resolve(import.meta.dirname, "..");
-
-const DEFAULT_ROLES = {
-	admin: { authentication: "required" as const },
-	guest: { authentication: "none" as const },
-};
-
-const makeFixture = async (
-	roles: Readonly<
-		Record<string, { readonly authentication: "none" | "required" }>
-	> = DEFAULT_ROLES,
-): Promise<{
-	readonly dataDir: string;
-	readonly projectRoot: string;
-}> => {
-	const projectRoot = await mkdtemp(
-		join(tmpdir(), "shopify-e2e-auth-project-"),
-	);
-	const dataParent = await realpath(
-		await mkdtemp(join(tmpdir(), "shopify-e2e-auth-data-")),
-	);
-	temporaryDirectories.push(projectRoot, dataParent);
-	await mkdir(join(projectRoot, "shopify-tests"));
-	await writeFile(
-		join(projectRoot, "shopify-e2e.config.ts"),
-		`export default ${JSON.stringify({ roles, testDir: "shopify-tests" })};\n`,
-	);
-	await writeFile(
-		join(projectRoot, ".env"),
-		"SHOPIFY_STORE_URL=https://shop.example/path?ignored=yes\n",
-	);
-	return {
-		dataDir: join(dataParent, "application-data"),
-		projectRoot: await realpath(projectRoot),
-	};
-};
-
-interface MakePromptsOptions {
-	readonly confirmValue?: boolean;
-	readonly inputValue?: string;
-	readonly selectValues?: unknown[];
-}
-
-const makePrompts = ({
-	confirmValue = true,
-	inputValue = "admin-primary",
-	selectValues = [],
-}: MakePromptsOptions = {}): PromptFunctions => ({
-	confirm: vi.fn(async () => confirmValue),
-	input: vi.fn(async () => inputValue),
-	select: vi.fn(async () => selectValues.shift()) as PromptFunctions["select"],
-});
+const { cleanup: cleanupFixtures, makeFixture } = createAuthFixtureScope();
 
 const stateWithMarker = (marker: string): PlaywrightStorageState => ({
 	cookies: [],
@@ -96,62 +42,9 @@ const stateWithMarker = (marker: string): PlaywrightStorageState => ({
 	],
 });
 
-const seedProfile = async (
-	fixture: Awaited<ReturnType<typeof makeFixture>>,
-	name = "admin-primary",
-	state: PlaywrightStorageState = EMPTY_STORAGE_STATE,
-): Promise<ProfileStore> => {
-	const store = createProfileStore({
-		dataRoot: fixture.dataDir,
-		origin: "https://shop.example",
-		roles: DEFAULT_ROLES,
-	});
-	await store.capture({ name, role: "admin", state });
-	return store;
-};
-
-const withStubbedBrowser = (
-	dependencies: ReturnType<typeof defaultAuthDependencies>,
-	captureProfile: AuthOrchestratorDependencies["captureProfile"] = vi.fn(
-		async () => ({
-			state: EMPTY_STORAGE_STATE,
-			status: "captured" as const,
-		}),
-	),
-) => ({
-	...dependencies,
-	captureProfile,
-	loadChromium: vi.fn(async () => ({
-		executablePath: vi.fn(() => "/consumer/chromium"),
-		launch: vi.fn(),
-	})),
-	resolvePeer: vi.fn(async () => ({
-		executablePath: "/consumer/cli.js",
-		modulePath: "/consumer/index.js",
-	})),
-});
-
-const authOptions = (
-	fixture: Awaited<ReturnType<typeof makeFixture>>,
-	overrides: Partial<AuthOrchestratorOptions> = {},
-): AuthOrchestratorOptions => ({
-	action: "menu",
-	cwd: fixture.projectRoot,
-	dataDir: fixture.dataDir,
-	environment: {},
-	interactive: true,
-	packageRoot,
-	signal: new AbortController().signal,
-	...overrides,
-});
-
 afterEach(async () => {
 	vi.unstubAllEnvs();
-	await Promise.all(
-		temporaryDirectories
-			.splice(0)
-			.map((directory) => rm(directory, { force: true, recursive: true })),
-	);
+	await cleanupFixtures();
 });
 
 describe("auth command orchestration", () => {
@@ -355,7 +248,7 @@ describe("auth command orchestration", () => {
 		expect(resolvePeer).not.toHaveBeenCalled();
 	});
 
-	it("bare auth offers exactly capture, refresh, list, and cancel", async () => {
+	it("bare auth offers exactly capture, refresh, remove, list, and cancel", async () => {
 		const fixture = await makeFixture();
 		const prompts = makePrompts({ selectValues: ["cancel"] });
 		const report = vi.fn();
@@ -379,6 +272,7 @@ describe("auth command orchestration", () => {
 				choices: expect.arrayContaining([
 					expect.objectContaining({ value: "capture" }),
 					expect.objectContaining({ value: "refresh" }),
+					expect.objectContaining({ value: "remove" }),
 					expect.objectContaining({ value: "list" }),
 					expect.objectContaining({ value: "cancel" }),
 				]),
@@ -412,6 +306,10 @@ describe("auth command orchestration", () => {
 				disabled: "No runnable saved profile exists",
 				value: "refresh",
 			}),
+			expect.objectContaining({
+				disabled: "No removable saved profile exists",
+				value: "remove",
+			}),
 			{ name: "List profiles", value: "list" },
 			{ name: "Cancel", value: "cancel" },
 		]);
@@ -425,7 +323,8 @@ describe("auth command orchestration", () => {
 		const list = vi.fn(async () => [
 			{ name: "admin-primary", role: "admin", status: "runnable" as const },
 		]);
-		const store = { list } as unknown as ProfileStore;
+		const removableProfiles = vi.fn(async () => ["admin-primary"]);
+		const store = { list, removableProfiles } as unknown as ProfileStore;
 		const dependencies = defaultAuthDependencies(prompts, report);
 		const resolvePeer = vi.fn(dependencies.resolvePeer);
 
@@ -436,6 +335,7 @@ describe("auth command orchestration", () => {
 		});
 
 		expect(list).toHaveBeenCalledTimes(1);
+		expect(removableProfiles).toHaveBeenCalledTimes(1);
 		expect(report).toHaveBeenCalledWith("admin-primary\tadmin\trunnable");
 		expect(resolvePeer).not.toHaveBeenCalled();
 	});
@@ -458,8 +358,10 @@ describe("auth command orchestration", () => {
 			state: selectedState,
 		}));
 		const refresh = vi.fn(async () => undefined);
+		const removableProfiles = vi.fn(async () => ["admin-primary", "orphaned"]);
 		const store = {
 			list,
+			removableProfiles,
 			refresh,
 			resolve: resolveProfile,
 		} as unknown as ProfileStore;
@@ -478,6 +380,7 @@ describe("auth command orchestration", () => {
 		});
 
 		expect(list).toHaveBeenCalledTimes(1);
+		expect(removableProfiles).toHaveBeenCalledTimes(1);
 		expect(resolveProfile).toHaveBeenCalledTimes(1);
 		expect(resolveProfile).toHaveBeenCalledWith("admin-primary");
 		expect(captureProfile).toHaveBeenCalledWith(

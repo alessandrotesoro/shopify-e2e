@@ -28,6 +28,16 @@ export interface InstalledCliFixture {
 	readonly consumerRoot: string;
 	readonly missingPeerConsumerRoot: string;
 	readonly profileDataRoot: string;
+	readonly removal: InstalledRemovalFixture;
+}
+
+export interface InstalledRemovalFixture {
+	readonly currentOriginDirectory: string;
+	readonly currentProfileDirectory: string;
+	readonly currentSiblingProfileDirectories: readonly string[];
+	readonly otherOriginDirectory: string;
+	readonly otherOriginProfileDirectory: string;
+	readonly profileName: string;
 }
 
 interface PrepareInstalledCliFixtureOptions {
@@ -222,6 +232,7 @@ export const prepareInstalledCliFixture = async ({
 			"bin/run.js",
 			"dist/commands.js",
 			"dist/commands/auth.js",
+			"dist/commands/auth/remove.js",
 			"dist/commands/run.js",
 			"package.json",
 		]),
@@ -250,14 +261,16 @@ export const prepareInstalledCliFixture = async ({
 	const profileDataRoot = await makeTemporaryDirectory(
 		"shopify-e2e-profile-data-",
 	);
-	for (const [name, role] of [
+	const currentOrigin = "https://shop.example";
+	const currentProfiles = [
 		["admin-primary", "admin"],
 		["customer-primary", "customer"],
-	] as const) {
+	] as const;
+	for (const [name, role] of currentProfiles) {
 		await seedProfile({
 			dataRoot: profileDataRoot,
 			name,
-			origin: "https://shop.example",
+			origin: currentOrigin,
 			role,
 			state: {
 				cookies: [
@@ -286,6 +299,48 @@ export const prepareInstalledCliFixture = async ({
 			},
 		});
 	}
+	const removalProfileName = "removal-disposable";
+	const otherOrigin = "https://other-shop.example";
+	await seedProfile({
+		dataRoot: profileDataRoot,
+		name: removalProfileName,
+		origin: currentOrigin,
+		role: "customer",
+	});
+	await seedProfile({
+		dataRoot: profileDataRoot,
+		name: removalProfileName,
+		origin: otherOrigin,
+		role: "customer",
+	});
+	const currentOriginDirectory = join(
+		profileDataRoot,
+		"origins",
+		configuredOriginKey(currentOrigin),
+	);
+	const otherOriginDirectory = join(
+		profileDataRoot,
+		"origins",
+		configuredOriginKey(otherOrigin),
+	);
+	const removal: InstalledRemovalFixture = {
+		currentOriginDirectory,
+		currentProfileDirectory: join(
+			currentOriginDirectory,
+			"profiles",
+			removalProfileName,
+		),
+		currentSiblingProfileDirectories: currentProfiles.map(([name]) =>
+			join(currentOriginDirectory, "profiles", name),
+		),
+		otherOriginDirectory,
+		otherOriginProfileDirectory: join(
+			otherOriginDirectory,
+			"profiles",
+			removalProfileName,
+		),
+		profileName: removalProfileName,
+	};
 
 	const missingPeerConsumerRoot = await makeTemporaryDirectory(
 		"shopify-e2e-missing-peer-",
@@ -309,7 +364,7 @@ export const prepareInstalledCliFixture = async ({
 		tarballPath,
 	});
 
-	return { consumerRoot, missingPeerConsumerRoot, profileDataRoot };
+	return { consumerRoot, missingPeerConsumerRoot, profileDataRoot, removal };
 };
 
 export const cleanupInstalledCliFixture = async (): Promise<void> => {

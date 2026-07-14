@@ -1,5 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+	access,
+	mkdir,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -8,6 +17,7 @@ import {
 	expectMarkersAbsent,
 	expectOrdinaryLaneFixturesPresent,
 	generatedConfigDirectories,
+	type InstalledRemovalFixture,
 	makeTemporaryDirectory,
 	markerExists,
 	prepareInstalledCliFixture,
@@ -20,6 +30,7 @@ import { installedCliPath } from "./support/installed-consumer.js";
 const projectRoot = resolve(import.meta.dirname, "..");
 const fixtureRoot = resolve(import.meta.dirname, "fixtures/consumer");
 let installedProfileDataRoot = "";
+let installedRemovalFixture: InstalledRemovalFixture;
 const dotenvOutputPattern =
 	/injected env|failed to load|no encoding is specified/i;
 
@@ -29,6 +40,22 @@ interface CommandResult {
 	readonly stderr: string;
 	readonly stdout: string;
 }
+
+const digestFiles = async (
+	files: readonly string[],
+): Promise<readonly string[]> =>
+	Promise.all(
+		files.map(async (file) =>
+			createHash("sha256")
+				.update(await readFile(file))
+				.digest("hex"),
+		),
+	);
+
+const profileFiles = (directory: string): readonly string[] => [
+	join(directory, "profile.json"),
+	join(directory, "storage-state.json"),
+];
 
 interface RunCommandArgs {
 	readonly args: readonly string[];
@@ -156,6 +183,7 @@ describe.sequential("installed CLI release boundary", () => {
 		consumerRoot = fixture.consumerRoot;
 		missingPeerConsumerRoot = fixture.missingPeerConsumerRoot;
 		installedProfileDataRoot = fixture.profileDataRoot;
+		installedRemovalFixture = fixture.removal;
 	}, 240_000);
 
 	afterAll(cleanupInstalledCliFixture);
@@ -198,6 +226,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(rootHelp.stdout).toContain("COMMANDS");
 		expect(rootHelp.stdout).toMatch(/\brun\b/);
 		expect(rootHelp.stdout).toMatch(/\bauth\b/);
+		expect(rootHelp.stdout).toContain("auth remove");
 		expect(rootHelp.stdout).not.toMatch(/\bsetup\b|\btest\b/);
 
 		const runHelp = runInstalledCli({ args: ["run", "--help"], consumerRoot });
@@ -213,6 +242,7 @@ describe.sequential("installed CLI release boundary", () => {
 			["auth", "capture", "--help"],
 			["auth", "refresh", "--help"],
 			["auth", "list", "--help"],
+			["auth", "remove", "--help"],
 		]) {
 			const authHelp = runInstalledCli({ args, consumerRoot });
 			expectSuccess({
@@ -223,7 +253,135 @@ describe.sequential("installed CLI release boundary", () => {
 
 		const version = runInstalledCli({ args: ["--version"], consumerRoot });
 		expectSuccess({ label: "installed version", result: version });
-		expect(version.stdout).toMatch(/@sematico\/shopify-e2e\/0\.2\.0/);
+		expect(version.stdout).toMatch(/@sematico\/shopify-e2e\/0\.3\.0/);
+	});
+
+	it("refuses unsafe packed removal without Playwright or registry mutation", async () => {
+		const pathsThatMustRemain = [
+			installedRemovalFixture.currentOriginDirectory,
+			installedRemovalFixture.currentProfileDirectory,
+			...installedRemovalFixture.currentSiblingProfileDirectories,
+			installedRemovalFixture.otherOriginDirectory,
+			installedRemovalFixture.otherOriginProfileDirectory,
+		];
+		const registryFiles = [
+			join(installedRemovalFixture.currentOriginDirectory, "origin.json"),
+			...profileFiles(installedRemovalFixture.currentProfileDirectory),
+			...installedRemovalFixture.currentSiblingProfileDirectories.flatMap(
+				profileFiles,
+			),
+			join(installedRemovalFixture.otherOriginDirectory, "origin.json"),
+			...profileFiles(installedRemovalFixture.otherOriginProfileDirectory),
+		];
+		const registryBefore = await digestFiles(registryFiles);
+		for (const args of [
+			["auth", "remove", "--profile", "guest", "--yes"],
+			["auth", "remove", "--profile", "unknown-profile", "--yes"],
+			["auth", "remove", "--profile", installedRemovalFixture.profileName],
+		] as const) {
+			const result = runInstalledCli({
+				args,
+				consumerRoot: missingPeerConsumerRoot,
+			});
+			expect(result.status, `${args.join(" ")}\n${result.stderr}`).toBe(2);
+			expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/playwright/i);
+			for (const path of pathsThatMustRemain) {
+				await expect(access(path), path).resolves.toBeUndefined();
+			}
+			await expect(digestFiles(registryFiles)).resolves.toEqual(registryBefore);
+		}
+	});
+
+	it("lists and removes only the disposable current-origin profile from the packed no-peer consumer", async () => {
+		await expect(
+			access(
+				join(missingPeerConsumerRoot, "node_modules", "@playwright", "test"),
+			),
+		).rejects.toMatchObject({ code: "ENOENT" });
+
+		const before = runInstalledCli({
+			args: ["auth", "list"],
+			consumerRoot: missingPeerConsumerRoot,
+		});
+		expectSuccess({
+			label: "installed auth list before removal",
+			result: before,
+		});
+		expect(before.stdout).toMatch(
+			new RegExp(
+				`${installedRemovalFixture.profileName}\\s+customer\\s+runnable`,
+			),
+		);
+		const preservedRegistryFiles = [
+			join(installedRemovalFixture.currentOriginDirectory, "origin.json"),
+			...installedRemovalFixture.currentSiblingProfileDirectories.flatMap(
+				profileFiles,
+			),
+			join(installedRemovalFixture.otherOriginDirectory, "origin.json"),
+			...profileFiles(installedRemovalFixture.otherOriginProfileDirectory),
+		];
+		const preservedRegistryBefore = await digestFiles(preservedRegistryFiles);
+
+		const remove = runInstalledCli({
+			args: [
+				"auth",
+				"remove",
+				"--profile",
+				installedRemovalFixture.profileName,
+				"--yes",
+			],
+			consumerRoot: missingPeerConsumerRoot,
+		});
+		expectSuccess({
+			label: "installed auth remove without peer",
+			result: remove,
+		});
+		expect(remove.stdout).toContain(
+			`Removed saved profile ${installedRemovalFixture.profileName}.`,
+		);
+		expect(`${remove.stdout}\n${remove.stderr}`).not.toMatch(
+			/which profile|remove .*\?|playwright/i,
+		);
+
+		const after = runInstalledCli({
+			args: ["auth", "list"],
+			consumerRoot: missingPeerConsumerRoot,
+		});
+		expectSuccess({
+			label: "installed auth list after removal",
+			result: after,
+		});
+		expect(after.stdout).not.toContain(installedRemovalFixture.profileName);
+		expect(after.stdout).toMatch(/admin-primary\s+admin\s+runnable/i);
+		expect(after.stdout).toMatch(/customer-primary\s+customer\s+runnable/i);
+
+		await expect(
+			access(installedRemovalFixture.currentProfileDirectory),
+		).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(
+			access(installedRemovalFixture.currentOriginDirectory),
+		).resolves.toBeUndefined();
+		for (const path of installedRemovalFixture.currentSiblingProfileDirectories) {
+			await expect(access(path), path).resolves.toBeUndefined();
+		}
+		await expect(
+			access(installedRemovalFixture.otherOriginDirectory),
+		).resolves.toBeUndefined();
+		await expect(
+			access(installedRemovalFixture.otherOriginProfileDirectory),
+		).resolves.toBeUndefined();
+		await expect(digestFiles(preservedRegistryFiles)).resolves.toEqual(
+			preservedRegistryBefore,
+		);
+		const currentProfileEntries = await readdir(
+			join(installedRemovalFixture.currentOriginDirectory, "profiles"),
+		);
+		expect(currentProfileEntries).not.toContain(
+			installedRemovalFixture.profileName,
+		);
+		expect(currentProfileEntries).not.toEqual(
+			expect.arrayContaining([expect.stringMatching(/^\.tmp-remove-/)]),
+		);
 	});
 
 	it.each([
