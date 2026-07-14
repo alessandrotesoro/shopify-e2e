@@ -1,4 +1,4 @@
-import { Command, Flags } from "@oclif/core";
+import { Command } from "@oclif/core";
 
 import {
 	type AuthAction,
@@ -9,17 +9,13 @@ import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../errors.js";
+import { configFlag } from "../flags.js";
 import { PACKAGE_ROOT } from "../package-root.js";
 import {
 	CommandSignalError,
 	createCommandSignalScope,
 } from "../process/command-signals.js";
 import { inquirerPrompts } from "../prompts/inquirer.js";
-
-export const configFlag = Flags.string({
-	description:
-		"Path to a dedicated Shopify configuration inside the consuming project",
-});
 
 interface ExecuteAuthCommandArgs {
 	readonly action: AuthAction;

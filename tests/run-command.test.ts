@@ -675,6 +675,39 @@ describe("run command orchestration", () => {
 		expect(dependencies.runChild).not.toHaveBeenCalled();
 	});
 
+	it("keeps the signal authoritative when pending config creation later rejects", async () => {
+		const consumer = await makeConsumer();
+		const generated = await makeGeneratedConfig(consumer.projectRoot);
+		const dependencies = makeDependencies({ generatedConfig: generated });
+		const controller = new AbortController();
+		let rejectCreation: ((error: Error) => void) | undefined;
+		const creation = new Promise<GeneratedPlaywrightConfig>((_, reject) => {
+			rejectCreation = reject;
+		});
+		vi.mocked(dependencies.createGeneratedConfig).mockReturnValueOnce(creation);
+
+		const outcome = orchestrateShopifyRun({
+			dependencies,
+			options: {
+				cwd: consumer.projectRoot,
+				profile: "guest",
+				signal: controller.signal,
+			},
+		}).catch((error: unknown) => error);
+		await vi.waitFor(() =>
+			expect(dependencies.createGeneratedConfig).toHaveBeenCalledOnce(),
+		);
+		controller.abort("SIGTERM");
+		rejectCreation?.(new Error("private config creation cause"));
+
+		await expect(outcome).resolves.toMatchObject({
+			exitCode: 143,
+			signal: "SIGTERM",
+		});
+		expect(generated.cleanup).not.toHaveBeenCalled();
+		expect(dependencies.runChild).not.toHaveBeenCalled();
+	});
+
 	it("retries interrupted generated-config cleanup and reports persistent failure", async () => {
 		const consumer = await makeConsumer();
 		const generated = await makeGeneratedConfig(consumer.projectRoot);
@@ -711,6 +744,46 @@ describe("run command orchestration", () => {
 		});
 		expect(generated.cleanup).toHaveBeenCalledTimes(2);
 		expect(dependencies.runChild).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ persistent: false, expectedMessage: undefined },
+		{
+			persistent: true,
+			expectedMessage:
+				"Shopify test run interrupted; temporary Playwright cleanup could not complete.",
+		},
+	] as const)("retries $persistent post-child cleanup failure without losing the signal", async ({
+		expectedMessage,
+		persistent,
+	}) => {
+		const consumer = await makeConsumer();
+		const generated = await makeGeneratedConfig(consumer.projectRoot);
+		const dependencies = makeDependencies({ generatedConfig: generated });
+		const controller = new AbortController();
+		generated.cleanup.mockImplementation(async () => {
+			controller.abort("SIGTERM");
+			if (persistent || generated.cleanup.mock.calls.length === 1) {
+				throw new Error("private cleanup cause");
+			}
+		});
+
+		const error = await orchestrateShopifyRun({
+			dependencies,
+			options: {
+				cwd: consumer.projectRoot,
+				profile: "guest",
+				signal: controller.signal,
+			},
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toMatchObject({
+			exitCode: 143,
+			signal: "SIGTERM",
+			...(expectedMessage === undefined ? {} : { message: expectedMessage }),
+		});
+		expect(String(error)).not.toContain("private cleanup cause");
+		expect(generated.cleanup).toHaveBeenCalledTimes(2);
 	});
 
 	it.each([

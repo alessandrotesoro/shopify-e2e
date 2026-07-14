@@ -5,6 +5,7 @@ import {
 	lstat,
 	mkdir,
 	mkdtemp,
+	open,
 	readdir,
 	readFile,
 	rename,
@@ -533,11 +534,13 @@ export class ProfileStore {
 		let rollbackPrepared = false;
 		try {
 			const previousBytes = await readFile(statePath);
-			await writeFile(rollbackState, previousBytes, {
-				flag: "wx",
-				mode: 0o600,
-			});
+			const rollbackFile = await open(rollbackState, "wx", 0o600);
 			rollbackPrepared = true;
+			try {
+				await rollbackFile.writeFile(previousBytes);
+			} finally {
+				await rollbackFile.close();
+			}
 			await chmod(rollbackState, 0o600);
 			await writeOwnerOnlyJson(temporaryState, validatedState, false);
 			if (signal) throwIfCommandAborted(signal);
