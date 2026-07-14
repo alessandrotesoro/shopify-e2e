@@ -102,24 +102,6 @@ const selectSavedProfile = async (
 			"No runnable saved profile is available. Capture one first.",
 		);
 	}
-	if (options.profile !== undefined) {
-		const selected = saved.find((profile) => profile.name === options.profile);
-		if (!selected) {
-			throw new ShopifyE2EPreflightError(
-				"Requested saved profile is unknown or invalid",
-			);
-		}
-		const resolved = await runWithCommandSignal(
-			() => store.resolve(selected.name),
-			options.signal,
-		);
-		if (resolved.kind !== "saved") {
-			throw new ShopifyE2EPreflightError(
-				"Requested saved profile is unknown or invalid",
-			);
-		}
-		return resolved;
-	}
 	requireInteractive(options);
 	const name = await runWithCommandSignal(
 		() =>
@@ -288,13 +270,28 @@ const runRefresh = async (
 	summaries?: readonly ProfileSummary[],
 ): Promise<void> => {
 	requireInteractive(options);
-	const selected = await selectSavedProfile(
-		summaries ??
-			(await runWithCommandSignal(() => store.list(), options.signal)),
-		store,
-		options,
-		dependencies,
-	);
+	let selected: Extract<ProfileSelection, { kind: "saved" }>;
+	const requestedProfile = options.profile;
+	if (requestedProfile !== undefined) {
+		const resolved = await runWithCommandSignal(
+			() => store.resolve(requestedProfile),
+			options.signal,
+		);
+		if (resolved.kind !== "saved") {
+			throw new ShopifyE2EPreflightError(
+				"Requested saved profile is unknown or invalid",
+			);
+		}
+		selected = resolved;
+	} else {
+		selected = await selectSavedProfile(
+			summaries ??
+				(await runWithCommandSignal(() => store.list(), options.signal)),
+			store,
+			options,
+			dependencies,
+		);
+	}
 	const state = await captureState({
 		cancellationMessage:
 			"Authentication refresh cancelled; no profile changed.",

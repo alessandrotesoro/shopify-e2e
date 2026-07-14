@@ -97,6 +97,19 @@ describe("package metadata", () => {
 		});
 	});
 
+	it("keeps browser execution outside deterministic verification", async () => {
+		const packageJson = await readPackage();
+
+		expect(packageJson.scripts).toMatchObject({
+			"test:browser:profiles":
+				"npm run build && vitest run tests/browser-profile-isolation.test.ts",
+			"test:fast":
+				"vitest run --exclude tests/installed-cli.test.ts --exclude tests/browser-profile-isolation.test.ts",
+			verify:
+				"npm run lint && npm run typecheck && npm run build && npm run test:fast && npm run test:installed:built",
+		});
+	});
+
 	it("exports only the explicit phase-two command surface from source and generated maps", async () => {
 		const sourceMap = await import(
 			`${pathToFileURL(resolve(projectRoot, "src/commands.ts")).href}?source-map`

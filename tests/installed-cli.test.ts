@@ -782,6 +782,8 @@ describe.sequential("installed CLI release boundary", () => {
 					outcome,
 					`interrupted installed CLI\nstdout:\n${stdout}\nstderr:\n${stderr}`,
 				).toEqual({ code: 143, signal: null });
+				expect(stderr).toContain("Command interrupted by SIGTERM");
+				expect(stderr).not.toContain("no tests started");
 				await waitForProcessToExit({
 					pid: interruptedProcess.pid,
 					timeoutMs: 5_000,
