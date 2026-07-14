@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { test } from "@playwright/test";
 
-test("first Shopify fixture", async () => {
+test("first Shopify fixture", { tag: "@shopify-e2e-role-guest" }, async () => {
 	const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
 	if (!markerDirectory) throw new Error("SHOPIFY_E2E_MARKER_DIR is required");
 	writeFileSync(join(markerDirectory, "first.marker"), String(process.pid));

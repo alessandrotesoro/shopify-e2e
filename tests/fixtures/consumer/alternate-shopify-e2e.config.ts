@@ -1,1 +1,4 @@
-export default { testDir: "shopify-alternate" };
+export default {
+	testDir: "shopify-alternate",
+	roles: { guest: { authentication: "none" } },
+};

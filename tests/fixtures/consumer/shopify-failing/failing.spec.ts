@@ -3,7 +3,9 @@ import { join } from "node:path";
 
 import { expect, test } from "@playwright/test";
 
-test("intentionally failing Shopify fixture", () => {
+test("intentionally failing Shopify fixture", {
+	tag: "@shopify-e2e-role-guest",
+}, () => {
 	const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
 	if (!markerDirectory) throw new Error("SHOPIFY_E2E_MARKER_DIR is required");
 	writeFileSync(join(markerDirectory, "failing.marker"), String(process.pid));

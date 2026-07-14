@@ -11,11 +11,31 @@ const readPackage = async (): Promise<Record<string, unknown>> => {
 	return JSON.parse(contents) as Record<string, unknown>;
 };
 
+const readPackageLock = async (): Promise<{
+	readonly packages: Record<
+		string,
+		{
+			readonly dependencies?: Record<string, string>;
+			readonly engines?: Record<string, string>;
+			readonly version?: string;
+		}
+	>;
+	readonly version: string;
+}> => {
+	const contents = await readFile(
+		resolve(projectRoot, "package-lock.json"),
+		"utf8",
+	);
+	return JSON.parse(contents) as Awaited<ReturnType<typeof readPackageLock>>;
+};
+
 describe("package metadata", () => {
 	it("publishes the intended CLI-only package shell", async () => {
 		const packageJson = await readPackage();
 
 		expect(packageJson.name).toBe("@sematico/shopify-e2e");
+		expect(packageJson.version).toBe("0.2.0");
+		expect(packageJson.engines).toEqual({ node: ">=20" });
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.bin).toEqual({ "shopify-e2e": "./bin/run.js" });
 		expect(packageJson.files).toEqual(["bin", "dist", "LICENSE"]);
@@ -26,6 +46,7 @@ describe("package metadata", () => {
 		const packageJson = await readPackage();
 
 		expect(packageJson.dependencies).toMatchObject({
+			"@inquirer/prompts": "7.10.1",
 			"@oclif/core": "4.11.14",
 			dotenv: "17.4.2",
 			jiti: "^2.6.1",
@@ -42,6 +63,20 @@ describe("package metadata", () => {
 		expect(packageJson.peerDependenciesMeta).toEqual({
 			"@playwright/test": { optional: true },
 		});
+	});
+
+	it("coordinates the 0.2.0 release and prompt pin in the lockfile", async () => {
+		const lockfile = await readPackageLock();
+
+		expect(lockfile.version).toBe("0.2.0");
+		expect(lockfile.packages[""]).toMatchObject({
+			dependencies: { "@inquirer/prompts": "7.10.1" },
+			engines: { node: ">=20" },
+			version: "0.2.0",
+		});
+		expect(lockfile.packages["node_modules/@inquirer/prompts"]?.version).toBe(
+			"7.10.1",
+		);
 	});
 
 	it("uses clean builds and explicit space-separated oclif discovery", async () => {
@@ -62,7 +97,20 @@ describe("package metadata", () => {
 		});
 	});
 
-	it("exports only the run command from source and generated maps", async () => {
+	it("keeps browser execution outside deterministic verification", async () => {
+		const packageJson = await readPackage();
+
+		expect(packageJson.scripts).toMatchObject({
+			"test:browser:profiles":
+				"npm run build && vitest run tests/browser-profile-isolation.test.ts",
+			"test:fast":
+				"vitest run --exclude tests/installed-cli.test.ts --exclude tests/browser-profile-isolation.test.ts",
+			verify:
+				"npm run lint && npm run typecheck && npm run build && npm run test:fast && npm run test:installed:built",
+		});
+	});
+
+	it("exports only the explicit phase-two command surface from source and generated maps", async () => {
 		const sourceMap = await import(
 			`${pathToFileURL(resolve(projectRoot, "src/commands.ts")).href}?source-map`
 		);
@@ -70,7 +118,14 @@ describe("package metadata", () => {
 			`${pathToFileURL(resolve(projectRoot, "dist/commands.js")).href}?generated-map`
 		);
 
-		expect(Object.keys(sourceMap.default)).toEqual(["run"]);
-		expect(Object.keys(generatedMap.default)).toEqual(["run"]);
+		const expectedCommands = [
+			"auth",
+			"auth:capture",
+			"auth:list",
+			"auth:refresh",
+			"run",
+		];
+		expect(Object.keys(sourceMap.default)).toEqual(expectedCommands);
+		expect(Object.keys(generatedMap.default)).toEqual(expectedCommands);
 	});
 });

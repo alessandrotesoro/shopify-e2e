@@ -1,6 +1,7 @@
 import { createJiti } from "jiti";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
+import { isValidProfileName } from "../profiles/profile-name.js";
 import { discoverShopifySpecs } from "./discover-specs.js";
 import {
 	resolveShopifyConfigPath,
@@ -8,7 +9,12 @@ import {
 } from "./project-boundary.js";
 
 export interface ShopifyE2EConfig {
+	readonly roles: Readonly<Record<string, ShopifyRoleConfig>>;
 	readonly testDir: string;
+}
+
+export interface ShopifyRoleConfig {
+	readonly authentication: "none" | "required";
 }
 
 export interface LoadShopifyConfigOptions {
@@ -19,6 +25,7 @@ export interface LoadShopifyConfigOptions {
 export interface LoadedShopifyConfig {
 	readonly configPath: string;
 	readonly projectRoot: string;
+	readonly roles: Readonly<Record<string, ShopifyRoleConfig>>;
 	readonly testDir: string;
 }
 
@@ -28,6 +35,76 @@ const isRecord = (value: unknown): value is Record<PropertyKey, unknown> => {
 	}
 	const prototype = Object.getPrototypeOf(value) as unknown;
 	return prototype === Object.prototype || prototype === null;
+};
+
+const hasExactKeys = (
+	value: Record<PropertyKey, unknown>,
+	expected: readonly string[],
+): boolean => {
+	const keys = Reflect.ownKeys(value);
+	return (
+		keys.length === expected.length &&
+		expected.every((key) => keys.includes(key)) &&
+		keys.every((key) => typeof key === "string" && expected.includes(key))
+	);
+};
+
+const readDataProperty = (
+	value: Record<PropertyKey, unknown>,
+	key: string,
+	configPath: string,
+): unknown => {
+	const descriptor = Object.getOwnPropertyDescriptor(value, key);
+	if (!descriptor || !("value" in descriptor)) {
+		throw new ShopifyE2EPreflightError(
+			`Dedicated Shopify config ${key} must be a plain data property: ${configPath}`,
+		);
+	}
+	return descriptor.value;
+};
+
+const validateRoles = (
+	configPath: string,
+	value: unknown,
+): Readonly<Record<string, ShopifyRoleConfig>> => {
+	if (!isRecord(value) || Reflect.ownKeys(value).length === 0) {
+		throw new ShopifyE2EPreflightError(
+			`Dedicated Shopify config roles must be a non-empty plain object: ${configPath}`,
+		);
+	}
+
+	const roles: Record<string, ShopifyRoleConfig> = {};
+	for (const key of Reflect.ownKeys(value)) {
+		if (typeof key !== "string") {
+			throw new ShopifyE2EPreflightError(
+				`Dedicated Shopify config role names must be strings: ${configPath}`,
+			);
+		}
+		if (!isValidProfileName(key)) {
+			throw new ShopifyE2EPreflightError(
+				`Role name must be an ASCII lower-kebab name no longer than 64 bytes: ${configPath}`,
+			);
+		}
+		const role = key;
+		const roleValue = readDataProperty(value, key, configPath);
+		if (!isRecord(roleValue) || !hasExactKeys(roleValue, ["authentication"])) {
+			throw new ShopifyE2EPreflightError(
+				`Role ${role} must contain exactly authentication: ${configPath}`,
+			);
+		}
+		const authentication = readDataProperty(
+			roleValue,
+			"authentication",
+			configPath,
+		);
+		if (authentication !== "required" && authentication !== "none") {
+			throw new ShopifyE2EPreflightError(
+				`Role ${role} authentication must be required or none: ${configPath}`,
+			);
+		}
+		roles[role] = { authentication };
+	}
+	return Object.freeze(roles);
 };
 
 interface ValidateConfigExportArgs {
@@ -45,20 +122,23 @@ const validateConfigExport = ({
 		);
 	}
 
-	const keys = Reflect.ownKeys(value);
-	if (keys.length !== 1 || keys[0] !== "testDir") {
+	if (!hasExactKeys(value, ["testDir", "roles"])) {
 		throw new ShopifyE2EPreflightError(
-			`Dedicated Shopify config must contain exactly one key, testDir: ${configPath}`,
+			`Dedicated Shopify config must contain exactly testDir and roles. Add an explicit roles map when migrating from 0.1.x: ${configPath}`,
 		);
 	}
 
-	const testDir = value.testDir;
+	const testDir = readDataProperty(value, "testDir", configPath);
 	if (typeof testDir !== "string" || testDir.trim().length === 0) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config testDir must be a non-empty string: ${configPath}`,
 		);
 	}
-	return { testDir };
+	const roles = validateRoles(
+		configPath,
+		readDataProperty(value, "roles", configPath),
+	);
+	return { roles, testDir };
 };
 
 interface WithConfigContextArgs {
@@ -107,9 +187,21 @@ export const loadShopifyConfig = async (
 			configuredTestDir: config.testDir,
 			projectRoot: options.projectRoot,
 		});
-		await discoverShopifySpecs(testDir);
-		return { configPath, projectRoot: options.projectRoot, testDir };
+		return {
+			configPath,
+			projectRoot: options.projectRoot,
+			roles: config.roles,
+			testDir,
+		};
 	} catch (error) {
 		throw withConfigContext({ configPath, error });
 	}
+};
+
+export const loadRunnableShopifyConfig = async (
+	options: LoadShopifyConfigOptions,
+): Promise<LoadedShopifyConfig> => {
+	const config = await loadShopifyConfig(options);
+	await discoverShopifySpecs(config.testDir);
+	return config;
 };
