@@ -105,6 +105,11 @@ interface RefreshProfileArgs {
 	readonly state: unknown;
 }
 
+interface RemoveProfileArgs {
+	readonly name: string;
+	readonly signal?: AbortSignal;
+}
+
 const cleanupTemporary = async (path: string): Promise<unknown | undefined> => {
 	try {
 		await rm(path, { force: true, recursive: true });
@@ -599,6 +604,105 @@ export class ProfileStore {
 			};
 		}
 		return this.#readSaved(name);
+	}
+
+	#assertRemovableName(name: string): void {
+		assertProfileName(name);
+		if (this.#roles[name]?.authentication === "none") {
+			throw new ShopifyE2EPreflightError(
+				"Saved profile is unknown or cannot be removed",
+			);
+		}
+	}
+
+	async #assertRemovableTarget(path: string): Promise<void> {
+		let metadata: Stats;
+		try {
+			metadata = await lstat(path);
+		} catch {
+			throw new ShopifyE2EPreflightError(
+				"Saved profile is unknown or cannot be removed",
+			);
+		}
+		if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+			throw new ShopifyE2EPreflightError(
+				"Saved profile is unknown or cannot be removed",
+			);
+		}
+	}
+
+	public async removableProfiles(): Promise<readonly string[]> {
+		if (!(await this.#hasOriginPartition())) return [];
+		const entries = await readdir(this.#profilesDirectory, {
+			withFileTypes: true,
+		});
+		return entries
+			.filter(
+				(entry) =>
+					!entry.name.startsWith(".tmp-") &&
+					isValidProfileName(entry.name) &&
+					entry.isDirectory() &&
+					this.#roles[entry.name]?.authentication !== "none",
+			)
+			.map((entry) => entry.name)
+			.sort((left, right) => left.localeCompare(right));
+	}
+
+	public async remove({ name, signal }: RemoveProfileArgs): Promise<void> {
+		this.#assertRemovableName(name);
+		if (!(await this.#hasOriginPartition())) {
+			throw new ShopifyE2EPreflightError(
+				"Saved profile is unknown or cannot be removed",
+			);
+		}
+		const target = join(this.#profilesDirectory, name);
+		await this.#assertRemovableTarget(target);
+
+		let quarantine: string | undefined;
+		let committed = false;
+		try {
+			quarantine = await mkdtemp(
+				join(this.#profilesDirectory, `.tmp-remove-${name}-`),
+			);
+			await chmod(quarantine, 0o700);
+			await this.#assertRemovableTarget(target);
+			if (signal) throwIfCommandAborted(signal);
+			await rename(target, join(quarantine, "profile"));
+			committed = true;
+			await rm(quarantine, {
+				force: true,
+				maxRetries: 2,
+				recursive: true,
+				retryDelay: 100,
+			});
+		} catch (error) {
+			if (committed) {
+				throw new ShopifyE2EInfrastructureError(
+					"Saved profile is unavailable, but local secret cleanup is incomplete",
+					{ cause: error },
+				);
+			}
+			if (quarantine !== undefined) {
+				try {
+					await rm(quarantine, { force: true, recursive: true });
+				} catch (cleanupError) {
+					throw new ShopifyE2EInfrastructureError(
+						"Profile removal preparation could not be cleaned; no saved profile changed",
+						{ cause: cleanupError },
+					);
+				}
+			}
+			if (
+				error instanceof ShopifyE2EPreflightError ||
+				error instanceof CommandSignalError
+			) {
+				throw error;
+			}
+			throw new ShopifyE2EInfrastructureError(
+				"Profile could not be removed; no saved profile changed",
+				{ cause: error },
+			);
+		}
 	}
 
 	async #scanSavedProfiles(): Promise<readonly ProfileSummary[]> {

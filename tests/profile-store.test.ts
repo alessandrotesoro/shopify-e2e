@@ -1251,4 +1251,353 @@ describe("profile store", () => {
 			),
 		);
 	});
+
+	it("discovers and removes only real path-safe saved profile directories", async () => {
+		const dataRoot = join(await makeRoot(), "data");
+		const store = createProfileStore({
+			dataRoot,
+			origin: configuredOrigin,
+			roles,
+		});
+		await store.capture({
+			name: "admin-primary",
+			role: "admin",
+			state: EMPTY_STORAGE_STATE,
+		});
+		const { profilesDirectory } = profilePaths(dataRoot);
+		await mkdir(join(profilesDirectory, "corrupt-profile"));
+		await writeFile(
+			join(profilesDirectory, "corrupt-profile", "profile.json"),
+			"not-json bearer-secret",
+		);
+		await mkdir(join(profilesDirectory, "guest"));
+		await mkdir(join(profilesDirectory, ".tmp-remove-hidden"));
+		await mkdir(join(profilesDirectory, "unsafe name"));
+		await writeFile(join(profilesDirectory, "file-profile"), "bearer-secret");
+		const outside = join(await makeRoot(), "outside-profile");
+		await mkdir(outside);
+		await symlink(outside, join(profilesDirectory, "linked-profile"));
+
+		expect(await store.removableProfiles()).toEqual([
+			"admin-primary",
+			"corrupt-profile",
+		]);
+		for (const name of ["file-profile", "linked-profile"]) {
+			await expect(store.remove({ name })).rejects.toMatchObject({
+				exitCode: 2,
+			});
+		}
+
+		const outsideSecret = join(outside, "outside-secret");
+		await writeFile(outsideSecret, "keep-me");
+		await symlink(outside, join(profilesDirectory, "corrupt-profile", "child"));
+		await store.remove({ name: "corrupt-profile" });
+
+		expect(await store.removableProfiles()).toEqual(["admin-primary"]);
+		expect(await readFile(outsideSecret, "utf8")).toBe("keep-me");
+		expect(await readdir(profilesDirectory)).not.toContain("corrupt-profile");
+		expect(
+			(await readdir(profilesDirectory)).every(
+				(entry) => !entry.startsWith(".tmp-remove-corrupt-profile-"),
+			),
+		).toBe(true);
+	});
+
+	it("removes only the current-origin profile and rejects unsafe targets", async () => {
+		const dataRoot = join(await makeRoot(), "data");
+		const otherOrigin = "https://other-shop.example";
+		const currentStore = createProfileStore({
+			dataRoot,
+			origin: configuredOrigin,
+			roles,
+		});
+		const otherStore = createProfileStore({
+			dataRoot,
+			origin: otherOrigin,
+			roles,
+		});
+		for (const store of [currentStore, otherStore]) {
+			await store.capture({
+				name: "admin-primary",
+				role: "admin",
+				state: EMPTY_STORAGE_STATE,
+			});
+		}
+		await currentStore.capture({
+			name: "admin-sibling",
+			role: "admin",
+			state: EMPTY_STORAGE_STATE,
+		});
+
+		for (const name of ["../escape", "<invalid-name>", "guest", "unknown"]) {
+			const error = await currentStore
+				.remove({ name })
+				.catch((cause: unknown) => cause);
+			expect(error).toMatchObject({ exitCode: 2 });
+			expect(String(error)).not.toContain(dataRoot);
+		}
+
+		await currentStore.remove({ name: "admin-primary" });
+
+		expect(await currentStore.removableProfiles()).toEqual(["admin-sibling"]);
+		expect(await otherStore.removableProfiles()).toEqual(["admin-primary"]);
+		expect(
+			await readdir(profilePaths(dataRoot, "admin-primary").profilesDirectory),
+		).toContain("admin-sibling");
+		await currentStore.remove({ name: "admin-sibling" });
+		expect(
+			await stat(profilePaths(dataRoot, "admin-sibling").profilesDirectory),
+		).toMatchObject({});
+	});
+
+	it("keeps removal truthful across preparation, signal, and cleanup boundaries", async () => {
+		type FileSystemPromises = typeof import("node:fs/promises");
+		const actual =
+			await vi.importActual<FileSystemPromises>("node:fs/promises");
+		const rawCause =
+			"raw removal cause bearer-secret /private/storage-state.json";
+		let abortController: AbortController | undefined;
+		let failure:
+			| "cleanup"
+			| "mkdtemp"
+			| "precommit-cleanup"
+			| "rename"
+			| "stale-target"
+			| undefined;
+		let abortBeforeRename = false;
+		let abortDuringCleanup = false;
+		let cleanupRelease: (() => void) | undefined;
+		let removalCalls = 0;
+		let removalOptions: Parameters<FileSystemPromises["rm"]>[1] | undefined;
+
+		vi.doMock("node:fs/promises", () => ({
+			...actual,
+			chmod: async (
+				...args: Parameters<FileSystemPromises["chmod"]>
+			): ReturnType<FileSystemPromises["chmod"]> => {
+				await actual.chmod(args[0], args[1]);
+				if (
+					abortBeforeRename &&
+					String(args[0]).includes(".tmp-remove-admin-primary-")
+				) {
+					abortController?.abort("SIGINT");
+				}
+			},
+			mkdtemp: async (
+				...args: Parameters<FileSystemPromises["mkdtemp"]>
+			): ReturnType<FileSystemPromises["mkdtemp"]> => {
+				if (
+					failure === "mkdtemp" &&
+					String(args[0]).includes(".tmp-remove-admin-primary-")
+				) {
+					throw new Error(rawCause);
+				}
+				const temporary = await actual.mkdtemp(...args);
+				if (
+					failure === "stale-target" &&
+					String(args[0]).includes(".tmp-remove-admin-primary-")
+				) {
+					const target = String(args[0]).replace(
+						/\.tmp-remove-admin-primary-$/,
+						"admin-primary",
+					);
+					await actual.rm(target, { force: true, recursive: true });
+					await actual.writeFile(target, "stale replacement");
+				}
+				return temporary;
+			},
+			rename: async (
+				...args: Parameters<FileSystemPromises["rename"]>
+			): ReturnType<FileSystemPromises["rename"]> => {
+				if (
+					(failure === "rename" || failure === "precommit-cleanup") &&
+					String(args[1]).endsWith("/profile") &&
+					String(args[1]).includes(".tmp-remove-admin-primary-")
+				) {
+					throw new Error(rawCause);
+				}
+				return actual.rename(args[0], args[1]);
+			},
+			rm: async (
+				...args: Parameters<FileSystemPromises["rm"]>
+			): ReturnType<FileSystemPromises["rm"]> => {
+				const target = String(args[0]);
+				if (target.includes(".tmp-remove-admin-primary-")) {
+					if (String(target).endsWith("/profile")) {
+						return actual.rm(args[0], args[1]);
+					}
+					if (failure === "precommit-cleanup") throw new Error(rawCause);
+					if (args[1] && "maxRetries" in args[1]) {
+						removalCalls += 1;
+						removalOptions = args[1];
+						if (abortDuringCleanup) {
+							abortController?.abort("SIGTERM");
+							await new Promise<void>((resolve) => {
+								cleanupRelease = resolve;
+							});
+						}
+						if (failure === "cleanup") {
+							const entries = await actual.readdir(args[0]);
+							if (entries.length > 0) {
+								await actual.writeFile(
+									join(String(args[0]), "partial-marker"),
+									"partial",
+								);
+							}
+							throw new Error(rawCause);
+						}
+					}
+				}
+				return actual.rm(args[0], args[1]);
+			},
+		}));
+		vi.resetModules();
+
+		try {
+			const { createProfileStore: createStoreWithMockedFileSystem } =
+				await import("../src/profiles/profile-store.js");
+			const newStore = async () => {
+				const dataRoot = join(await makeRoot(), "data");
+				const store = createStoreWithMockedFileSystem({
+					dataRoot,
+					origin: configuredOrigin,
+					roles,
+				});
+				await store.capture({
+					name: "admin-primary",
+					role: "admin",
+					state: stateWithCookie("bearer-secret"),
+				});
+				return { dataRoot, store };
+			};
+
+			for (const injectedFailure of ["mkdtemp", "rename"] as const) {
+				failure = injectedFailure;
+				const { dataRoot, store } = await newStore();
+				const error = await store
+					.remove({ name: "admin-primary" })
+					.catch((cause: unknown) => cause);
+				expect(error).toMatchObject({ exitCode: 1 });
+				expect(String(error)).toContain("no saved profile changed");
+				expect(String(error)).not.toContain("bearer-secret");
+				expect(String(error)).not.toContain("storage-state.json");
+				expect(await store.removableProfiles()).toEqual(["admin-primary"]);
+				expect(
+					(await readdir(profilePaths(dataRoot).profilesDirectory)).filter(
+						(entry) => entry.startsWith(".tmp-remove-"),
+					),
+				).toEqual([]);
+			}
+
+			failure = "precommit-cleanup";
+			{
+				const { dataRoot, store } = await newStore();
+				const error = await store
+					.remove({ name: "admin-primary" })
+					.catch((cause: unknown) => cause);
+				expect(String(error)).toContain("preparation could not be cleaned");
+				expect(String(error)).not.toContain("bearer-secret");
+				expect(await store.removableProfiles()).toEqual(["admin-primary"]);
+				expect(
+					(await readdir(profilePaths(dataRoot).profilesDirectory)).some(
+						(entry) => entry.startsWith(".tmp-remove-admin-primary-"),
+					),
+				).toBe(true);
+			}
+
+			failure = "stale-target";
+			{
+				const { dataRoot, store } = await newStore();
+				await expect(
+					store.remove({ name: "admin-primary" }),
+				).rejects.toMatchObject({ exitCode: 2 });
+				expect(
+					(await lstat(profilePaths(dataRoot).profileDirectory)).isFile(),
+				).toBe(true);
+				expect(
+					(await readdir(profilePaths(dataRoot).profilesDirectory)).filter(
+						(entry) => entry.startsWith(".tmp-remove-"),
+					),
+				).toEqual([]);
+			}
+
+			failure = undefined;
+			abortBeforeRename = true;
+			abortController = new AbortController();
+			{
+				const { dataRoot, store } = await newStore();
+				await expect(
+					store.remove({
+						name: "admin-primary",
+						signal: abortController.signal,
+					}),
+				).rejects.toMatchObject({ exitCode: 130, signal: "SIGINT" });
+				expect(await store.removableProfiles()).toEqual(["admin-primary"]);
+				expect(
+					(await readdir(profilePaths(dataRoot).profilesDirectory)).filter(
+						(entry) => entry.startsWith(".tmp-remove-"),
+					),
+				).toEqual([]);
+			}
+
+			abortBeforeRename = false;
+			failure = "cleanup";
+			{
+				const { dataRoot, store } = await newStore();
+				const error = await store
+					.remove({ name: "admin-primary" })
+					.catch((cause: unknown) => cause);
+				expect(error).toMatchObject({ exitCode: 1 });
+				expect(String(error)).toContain(
+					"unavailable, but local secret cleanup is incomplete",
+				);
+				expect(String(error)).not.toContain("bearer-secret");
+				expect(await store.removableProfiles()).toEqual([]);
+				const quarantine = (
+					await readdir(profilePaths(dataRoot).profilesDirectory)
+				).find((entry) => entry.startsWith(".tmp-remove-admin-primary-"));
+				expect(quarantine).toBeDefined();
+				if (process.platform !== "win32" && quarantine) {
+					expect(
+						(
+							await stat(
+								join(profilePaths(dataRoot).profilesDirectory, quarantine),
+							)
+						).mode & 0o777,
+					).toBe(0o700);
+				}
+				expect(removalOptions).toMatchObject({
+					force: true,
+					maxRetries: 2,
+					recursive: true,
+					retryDelay: 100,
+				});
+				expect(removalCalls).toBe(1);
+			}
+
+			failure = undefined;
+			abortDuringCleanup = true;
+			abortController = new AbortController();
+			{
+				const { store } = await newStore();
+				let settled = false;
+				const removal = store
+					.remove({ name: "admin-primary", signal: abortController.signal })
+					.then(() => {
+						settled = true;
+					});
+				await vi.waitFor(() =>
+					expect(abortController?.signal.aborted).toBe(true),
+				);
+				expect(settled).toBe(false);
+				cleanupRelease?.();
+				await removal;
+				expect(settled).toBe(true);
+				expect(await store.removableProfiles()).toEqual([]);
+			}
+		} finally {
+			vi.doUnmock("node:fs/promises");
+			vi.resetModules();
+		}
+	});
 });
