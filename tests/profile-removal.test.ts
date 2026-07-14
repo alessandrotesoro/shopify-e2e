@@ -15,6 +15,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { configuredOriginKey } from "../src/profiles/configured-origin.js";
+import { MAX_METADATA_BYTES } from "../src/profiles/profile-schema.js";
 import {
 	createProfileStore,
 	EMPTY_STORAGE_STATE,
@@ -98,6 +99,13 @@ describe("profile removal", () => {
 			join(profilesDirectory, "corrupt-profile", "profile.json"),
 			"not-json bearer-secret",
 		);
+		await mkdir(join(profilesDirectory, "oversized-profile"));
+		await writeFile(
+			join(profilesDirectory, "oversized-profile", "profile.json"),
+			"x".repeat(MAX_METADATA_BYTES + 1),
+		);
+		await mkdir(join(profilesDirectory, "nonregular-profile"));
+		await mkdir(join(profilesDirectory, "nonregular-profile", "profile.json"));
 		const guestDirectory = join(profilesDirectory, "guest");
 		await mkdir(guestDirectory);
 		await writeFile(join(guestDirectory, "keep.txt"), "keep-me");
@@ -111,6 +119,8 @@ describe("profile removal", () => {
 		expect(await store.removableProfiles()).toEqual([
 			"admin-primary",
 			"corrupt-profile",
+			"nonregular-profile",
+			"oversized-profile",
 		]);
 		for (const name of ["file-profile", "guest", "linked-profile"]) {
 			await expect(store.remove({ name })).rejects.toMatchObject({
@@ -123,15 +133,31 @@ describe("profile removal", () => {
 
 		const outsideSecret = join(outside, "outside-secret");
 		await writeFile(outsideSecret, "keep-me");
-		await symlink(outside, join(profilesDirectory, "corrupt-profile", "child"));
-		await store.remove({ name: "corrupt-profile" });
+		await symlink(
+			outside,
+			join(profilesDirectory, "corrupt-profile", "storage-state.json"),
+		);
+		const removedNames = [
+			"corrupt-profile",
+			"nonregular-profile",
+			"oversized-profile",
+		] as const;
+		for (const name of removedNames) {
+			await store.remove({ name });
+		}
 
 		expect(await store.removableProfiles()).toEqual(["admin-primary"]);
 		expect(await readFile(outsideSecret, "utf8")).toBe("keep-me");
-		expect(await readdir(profilesDirectory)).not.toContain("corrupt-profile");
+		const remainingEntries = await readdir(profilesDirectory);
+		expect(remainingEntries).not.toContain("corrupt-profile");
+		expect(remainingEntries).not.toContain("nonregular-profile");
+		expect(remainingEntries).not.toContain("oversized-profile");
 		expect(
-			(await readdir(profilesDirectory)).every(
-				(entry) => !entry.startsWith(".tmp-remove-corrupt-profile-"),
+			removedNames.every(
+				(name) =>
+					!remainingEntries.some((entry) =>
+						entry.startsWith(`.tmp-remove-${name}-`),
+					),
 			),
 		).toBe(true);
 	});
