@@ -621,8 +621,14 @@ export class ProfileStore {
 		let metadata: Stats;
 		try {
 			metadata = await lstat(path);
-		} catch {
-			throw unavailableRemovalError();
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				throw unavailableRemovalError();
+			}
+			throw new ShopifyE2EInfrastructureError(
+				"Saved profile could not be inspected; no saved profile changed",
+				{ cause: error },
+			);
 		}
 		if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
 			throw unavailableRemovalError();
