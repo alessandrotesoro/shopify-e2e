@@ -292,6 +292,12 @@ describe.sequential("installed CLI release boundary", () => {
 	});
 
 	it("lists and removes only the disposable current-origin profile from the packed no-peer consumer", async () => {
+		await expect(
+			access(
+				join(missingPeerConsumerRoot, "node_modules", "@playwright", "test"),
+			),
+		).rejects.toMatchObject({ code: "ENOENT" });
+
 		const before = runInstalledCli({
 			args: ["auth", "list"],
 			consumerRoot: missingPeerConsumerRoot,
