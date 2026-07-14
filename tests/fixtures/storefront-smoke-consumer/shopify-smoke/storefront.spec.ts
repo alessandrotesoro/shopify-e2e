@@ -15,8 +15,8 @@ const passwordChallenge = (page: Page) =>
 		'form[action="/password"] input[type="password"], input#Password',
 	);
 
-test("saved customer profile bypasses the storefront password challenge", {
-	tag: "@shopify-e2e-role-customer",
+test("saved storefront access profile bypasses the storefront password challenge", {
+	tag: "@shopify-e2e-role-storefront-access",
 }, async ({ page }) => {
 	const response = await page.goto(configuredStoreOrigin(), {
 		waitUntil: "domcontentloaded",

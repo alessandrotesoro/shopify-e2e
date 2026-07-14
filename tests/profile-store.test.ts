@@ -479,12 +479,14 @@ describe("profile store", () => {
 			| "profile-rename"
 			| "profile-write"
 			| "refresh-cleanup"
+			| "refresh-cleanup-once"
 			| "refresh-rename"
 			| "refresh-rollback-chmod"
 			| "refresh-write"
 			| undefined;
 		const rawCause =
 			"raw-cause bearer-secret /private/final/storage-state.json";
+		let cleanupAttempts = 0;
 
 		vi.doMock("node:fs/promises", () => ({
 			...actual,
@@ -504,7 +506,9 @@ describe("profile store", () => {
 			): ReturnType<FileSystemPromises["rename"]> => {
 				const source = String(args[0]);
 				if (
-					((failure === "refresh-rename" || failure === "refresh-cleanup") &&
+					((failure === "refresh-rename" ||
+						failure === "refresh-cleanup" ||
+						failure === "refresh-cleanup-once") &&
 						source.includes("storage-state.json.tmp-")) ||
 					(failure === "profile-rename" &&
 						source.includes(".tmp-admin-secondary-")) ||
@@ -517,11 +521,14 @@ describe("profile store", () => {
 			rm: async (
 				...args: Parameters<FileSystemPromises["rm"]>
 			): ReturnType<FileSystemPromises["rm"]> => {
-				if (
-					failure === "refresh-cleanup" &&
-					String(args[0]).includes("storage-state.json.tmp-")
-				) {
-					throw new Error(rawCause);
+				if (String(args[0]).includes("storage-state.json.tmp-")) {
+					cleanupAttempts += 1;
+					if (
+						failure === "refresh-cleanup" ||
+						(failure === "refresh-cleanup-once" && cleanupAttempts === 1)
+					) {
+						throw new Error(rawCause);
+					}
 				}
 				return actual.rm(args[0], args[1]);
 			},
@@ -598,6 +605,30 @@ describe("profile store", () => {
 			);
 			expect(String(cleanupError)).not.toContain("bearer-secret");
 			expect(await readFile(paths.state)).toEqual(priorBytes);
+			for (const entry of await readdir(paths.profileDirectory)) {
+				if (entry.startsWith("storage-state.json.tmp-")) {
+					await actual.rm(join(paths.profileDirectory, entry), { force: true });
+				}
+			}
+
+			failure = "refresh-cleanup-once";
+			cleanupAttempts = 0;
+			const transientCleanupError = await store
+				.refresh({
+					name: "admin-primary",
+					state: stateWithCookie("replacement"),
+				})
+				.catch((cause: unknown) => cause);
+			expect(String(transientCleanupError)).toContain(
+				"previous state is unchanged",
+			);
+			expect(cleanupAttempts).toBe(2);
+			expect(await readFile(paths.state)).toEqual(priorBytes);
+			expect(
+				(await readdir(paths.profileDirectory)).filter((entry) =>
+					entry.startsWith("storage-state.json.tmp-"),
+				),
+			).toEqual([]);
 
 			for (const injectedFailure of [
 				"profile-write",
@@ -735,6 +766,229 @@ describe("profile store", () => {
 			expect(
 				(await readdir(paths.profileDirectory)).filter((entry) =>
 					entry.includes("storage-state.json."),
+				),
+			).toEqual([]);
+		} finally {
+			vi.doUnmock("node:fs/promises");
+			vi.resetModules();
+		}
+	});
+
+	it("reports failed origin, profile, and refresh rollbacks without exposing state", async () => {
+		type FileSystemPromises = typeof import("node:fs/promises");
+		const actual =
+			await vi.importActual<FileSystemPromises>("node:fs/promises");
+		const rawCause = "rollback-cause bearer-secret /private/storage-state.json";
+		let abortController: AbortController | undefined;
+		let abortOn: "origin" | "profile" | "refresh" | undefined;
+		let failRollbackOn: "origin" | "profile" | "refresh" | undefined;
+
+		vi.doMock("node:fs/promises", () => ({
+			...actual,
+			rename: async (
+				...args: Parameters<FileSystemPromises["rename"]>
+			): ReturnType<FileSystemPromises["rename"]> => {
+				const source = String(args[0]);
+				if (
+					failRollbackOn === "refresh" &&
+					source.includes("storage-state.json.rollback-")
+				) {
+					throw new Error(rawCause);
+				}
+				await actual.rename(args[0], args[1]);
+				if (
+					(abortOn === "origin" && source.includes(".tmp-origin-")) ||
+					(abortOn === "profile" && source.includes(".tmp-admin-secondary-")) ||
+					(abortOn === "refresh" && source.includes("storage-state.json.tmp-"))
+				) {
+					abortController?.abort("SIGTERM");
+				}
+			},
+			rm: async (
+				...args: Parameters<FileSystemPromises["rm"]>
+			): ReturnType<FileSystemPromises["rm"]> => {
+				const target = String(args[0]);
+				if (
+					(failRollbackOn === "origin" &&
+						target.includes(
+							`/origins/${configuredOriginKey(configuredOrigin)}`,
+						) &&
+						!target.includes(".tmp-origin-")) ||
+					(failRollbackOn === "profile" && target.endsWith("admin-secondary"))
+				) {
+					throw new Error(rawCause);
+				}
+				return actual.rm(args[0], args[1]);
+			},
+		}));
+		vi.resetModules();
+
+		try {
+			const { createProfileStore: createStoreWithMockedFileSystem } =
+				await import("../src/profiles/profile-store.js");
+
+			const originDataRoot = join(await makeRoot(), "data");
+			const originStore = createStoreWithMockedFileSystem({
+				dataRoot: originDataRoot,
+				origin: configuredOrigin,
+				roles,
+			});
+			abortController = new AbortController();
+			abortOn = "origin";
+			failRollbackOn = "origin";
+			const originError = await originStore
+				.capture({
+					name: "admin-primary",
+					role: "admin",
+					signal: abortController.signal,
+					state: stateWithCookie("not-committed"),
+				})
+				.catch((cause: unknown) => cause);
+			expect(String(originError)).toContain(
+				"Interrupted profile save could not be rolled back safely",
+			);
+			expect(String(originError)).not.toContain("bearer-secret");
+			expect(await originStore.resolve("admin-primary")).toMatchObject({
+				state: stateWithCookie("not-committed"),
+			});
+
+			const profileDataRoot = join(await makeRoot(), "data");
+			const profileStore = createStoreWithMockedFileSystem({
+				dataRoot: profileDataRoot,
+				origin: configuredOrigin,
+				roles,
+			});
+			abortOn = undefined;
+			failRollbackOn = undefined;
+			await profileStore.capture({
+				name: "admin-primary",
+				role: "admin",
+				state: stateWithCookie("prior"),
+			});
+			abortController = new AbortController();
+			abortOn = "profile";
+			failRollbackOn = "profile";
+			const profileError = await profileStore
+				.capture({
+					name: "admin-secondary",
+					role: "admin",
+					signal: abortController.signal,
+					state: stateWithCookie("not-committed"),
+				})
+				.catch((cause: unknown) => cause);
+			expect(String(profileError)).toContain(
+				"Interrupted profile save could not be rolled back safely",
+			);
+			expect(String(profileError)).not.toContain("bearer-secret");
+			expect(
+				await readdir(profilePaths(profileDataRoot).profilesDirectory),
+			).toEqual(["admin-primary", "admin-secondary"]);
+			expect(await profileStore.resolve("admin-secondary")).toMatchObject({
+				state: stateWithCookie("not-committed"),
+			});
+
+			const refreshDataRoot = join(await makeRoot(), "data");
+			const refreshStore = createStoreWithMockedFileSystem({
+				dataRoot: refreshDataRoot,
+				origin: configuredOrigin,
+				roles,
+			});
+			abortOn = undefined;
+			failRollbackOn = undefined;
+			await refreshStore.capture({
+				name: "admin-primary",
+				role: "admin",
+				state: stateWithCookie("prior"),
+			});
+			abortController = new AbortController();
+			abortOn = "refresh";
+			failRollbackOn = "refresh";
+			const refreshError = await refreshStore
+				.refresh({
+					name: "admin-primary",
+					signal: abortController.signal,
+					state: stateWithCookie("replacement"),
+				})
+				.catch((cause: unknown) => cause);
+			expect(String(refreshError)).toContain(
+				"Profile refresh rollback could not complete safely",
+			);
+			expect(String(refreshError)).not.toContain("bearer-secret");
+			expect(await refreshStore.resolve("admin-primary")).toMatchObject({
+				state: stateWithCookie("replacement"),
+			});
+			expect(
+				(await readdir(profilePaths(refreshDataRoot).profileDirectory)).filter(
+					(entry) => entry.startsWith("storage-state.json.rollback-"),
+				),
+			).toHaveLength(1);
+		} finally {
+			vi.doUnmock("node:fs/promises");
+			vi.resetModules();
+		}
+	});
+
+	it("removes partial rollback bytes when preparing refresh state fails", async () => {
+		type FileSystemPromises = typeof import("node:fs/promises");
+		const actual =
+			await vi.importActual<FileSystemPromises>("node:fs/promises");
+		const rawCause = "partial-write bearer-secret /private/storage-state.json";
+
+		vi.doMock("node:fs/promises", () => ({
+			...actual,
+			open: async (
+				...args: Parameters<FileSystemPromises["open"]>
+			): ReturnType<FileSystemPromises["open"]> => {
+				const handle = await actual.open(...args);
+				if (!String(args[0]).includes("storage-state.json.rollback-")) {
+					return handle;
+				}
+				return new Proxy(handle, {
+					get(target, property) {
+						if (property === "writeFile") {
+							return async (bytes: Uint8Array) => {
+								await target.writeFile(bytes.subarray(0, 1));
+								throw new Error(rawCause);
+							};
+						}
+						const value = Reflect.get(target, property, target) as unknown;
+						return typeof value === "function" ? value.bind(target) : value;
+					},
+				});
+			},
+		}));
+		vi.resetModules();
+
+		try {
+			const { createProfileStore: createStoreWithMockedFileSystem } =
+				await import("../src/profiles/profile-store.js");
+			const dataRoot = join(await makeRoot(), "data");
+			const store = createStoreWithMockedFileSystem({
+				dataRoot,
+				origin: configuredOrigin,
+				roles,
+			});
+			await store.capture({
+				name: "admin-primary",
+				role: "admin",
+				state: stateWithCookie("prior"),
+			});
+			const paths = profilePaths(dataRoot);
+			const priorBytes = await readFile(paths.state);
+
+			const error = await store
+				.refresh({
+					name: "admin-primary",
+					state: stateWithCookie("replacement"),
+				})
+				.catch((cause: unknown) => cause);
+
+			expect(String(error)).toContain("previous state is unchanged");
+			expect(String(error)).not.toContain("bearer-secret");
+			expect(await readFile(paths.state)).toEqual(priorBytes);
+			expect(
+				(await readdir(paths.profileDirectory)).filter((entry) =>
+					entry.startsWith("storage-state.json.rollback-"),
 				),
 			).toEqual([]);
 		} finally {

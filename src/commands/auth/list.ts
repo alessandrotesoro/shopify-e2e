@@ -1,6 +1,7 @@
 import { Command } from "@oclif/core";
 
-import { configFlag, executeAuthCommand } from "../auth.js";
+import { configFlag } from "../../flags.js";
+import { executeAuthCommand } from "../auth.js";
 
 export class AuthList extends Command {
 	static override description =

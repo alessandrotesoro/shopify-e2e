@@ -666,19 +666,14 @@ describe("auth command orchestration", () => {
 			defaultAuthDependencies(prompts, report),
 			captureProfile,
 		);
-		const list = vi.fn(store.list.bind(store));
-		const directStore = {
-			list,
-			refresh: store.refresh.bind(store),
-			resolve: store.resolve.bind(store),
-		} as unknown as ProfileStore;
+		const list = vi.spyOn(store, "list");
 
 		await orchestrateAuth(
 			authOptions(fixture, {
 				action: "refresh",
 				profile: "admin-primary",
 			}),
-			{ ...dependencies, createStore: vi.fn(() => directStore) },
+			{ ...dependencies, createStore: vi.fn(() => store) },
 		);
 
 		expect(await store.resolve("admin-primary")).toEqual({

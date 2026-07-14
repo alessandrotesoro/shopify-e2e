@@ -12,6 +12,7 @@ import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../errors.js";
+import { configFlag } from "../flags.js";
 import { PACKAGE_ROOT } from "../package-root.js";
 import {
 	createGeneratedPlaywrightConfig,
@@ -260,18 +261,29 @@ const createGeneratedConfigWithSignal = async (
 			try {
 				await generatedConfig.cleanup();
 			} catch {
-				try {
-					await generatedConfig.cleanup();
-				} catch {
-					throw new CommandSignalError(
-						error.signal,
-						"Shopify test run interrupted; temporary Playwright cleanup could not complete.",
-					);
-				}
+				await retryGeneratedConfigCleanupAfterInterruption(
+					generatedConfig,
+					error,
+				);
 			}
 		}
 		throw error;
 	}
+};
+
+const retryGeneratedConfigCleanupAfterInterruption = async (
+	generatedConfig: GeneratedPlaywrightConfig,
+	interruption: CommandSignalError,
+): Promise<never> => {
+	try {
+		await generatedConfig.cleanup();
+	} catch {
+		throw new CommandSignalError(
+			interruption.signal,
+			"Shopify test run interrupted; temporary Playwright cleanup could not complete.",
+		);
+	}
+	throw interruption;
 };
 
 const assertConfiguredOriginUnchanged = (
@@ -383,6 +395,19 @@ export const orchestrateShopifyRun = async ({
 	} catch (error) {
 		cleanupError = error;
 	}
+	if (cleanupError !== undefined && signal.aborted) {
+		try {
+			throwIfCommandAborted(signal);
+		} catch (error) {
+			if (error instanceof CommandSignalError) {
+				await retryGeneratedConfigCleanupAfterInterruption(
+					generatedConfig,
+					error,
+				);
+			}
+			throw error;
+		}
+	}
 	throwIfCommandAborted(signal);
 	if (cleanupError !== undefined) throw cleanupError;
 	if (childError !== undefined) throw childError;
@@ -399,10 +424,7 @@ export class Run extends Command {
 		"Run the dedicated Shopify Playwright E2E lane. Run controls are package-owned; arbitrary Playwright arguments are not accepted. Playwright workers, projects, file selectors, reporters, UI, and debug controls are intentionally unavailable.";
 
 	static override flags = {
-		config: Flags.string({
-			description:
-				"Path to a dedicated Shopify configuration inside the consuming project",
-		}),
+		config: configFlag,
 		grep: Flags.string({
 			char: "g",
 			description: "Run Shopify tests whose titles match this pattern",
