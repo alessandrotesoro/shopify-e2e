@@ -11,7 +11,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { configuredOriginKey } from "../src/profiles/configured-origin.js";
@@ -111,6 +111,8 @@ describe("profile removal", () => {
 		await writeFile(join(guestDirectory, "keep.txt"), "keep-me");
 		await mkdir(join(profilesDirectory, ".tmp-remove-hidden"));
 		await mkdir(join(profilesDirectory, "unsafe name"));
+		const mixedCaseDirectory = join(profilesDirectory, "Mixed-Case");
+		await mkdir(mixedCaseDirectory);
 		await writeFile(join(profilesDirectory, "file-profile"), "bearer-secret");
 		const outside = join(await makeRoot(), "outside-profile");
 		await mkdir(outside);
@@ -127,6 +129,10 @@ describe("profile removal", () => {
 				exitCode: 2,
 			});
 		}
+		await expect(store.remove({ name: "mixed-case" })).rejects.toMatchObject({
+			exitCode: 2,
+		});
+		expect((await lstat(mixedCaseDirectory)).isDirectory()).toBe(true);
 		expect(await readFile(join(guestDirectory, "keep.txt"), "utf8")).toBe(
 			"keep-me",
 		);
@@ -308,7 +314,10 @@ describe("profile removal", () => {
 			lstat: async (
 				...args: Parameters<FileSystemPromises["lstat"]>
 			): ReturnType<FileSystemPromises["lstat"]> => {
-				if (String(args[0]).endsWith("/profiles/admin-primary")) {
+				if (
+					basename(String(args[0])) === "admin-primary" &&
+					basename(dirname(String(args[0]))) === "profiles"
+				) {
 					targetLstatCalls += 1;
 					if (
 						failure === "initial-lstat" ||
@@ -347,7 +356,7 @@ describe("profile removal", () => {
 			): ReturnType<FileSystemPromises["rename"]> => {
 				if (
 					(failure === "rename" || failure === "precommit-cleanup") &&
-					String(args[1]).endsWith("/profile") &&
+					basename(String(args[1])) === "profile" &&
 					String(args[1]).includes(".tmp-remove-admin-primary-")
 				) {
 					throw new Error(rawCause);
@@ -359,7 +368,7 @@ describe("profile removal", () => {
 			): ReturnType<FileSystemPromises["rm"]> => {
 				const target = String(args[0]);
 				if (target.includes(".tmp-remove-admin-primary-")) {
-					if (String(target).endsWith("/profile")) {
+					if (basename(target) === "profile") {
 						return actual.rm(args[0], args[1]);
 					}
 					if (failure === "precommit-cleanup") throw new Error(rawCause);

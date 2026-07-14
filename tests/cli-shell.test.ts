@@ -174,6 +174,7 @@ describe.sequential("built CLI shell", () => {
 		expect(result.stdout).toContain("COMMANDS");
 		expect(result.stdout).toMatch(/\brun\b/);
 		expect(result.stdout).toMatch(/\bauth\b/);
+		expect(result.stdout).toContain("auth remove");
 		expect(result.stderr).toBe("");
 	});
 

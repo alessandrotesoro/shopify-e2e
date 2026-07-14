@@ -59,6 +59,9 @@
 			"target": "./dist/commands.js"
 		},
 		"dirname": "shopify-e2e",
+		"helpOptions": {
+			"all": true
+		},
 		"topicSeparator": " "
 	}
 }

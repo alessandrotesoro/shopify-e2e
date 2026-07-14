@@ -620,8 +620,13 @@ export class ProfileStore {
 		const path = join(this.#profilesDirectory, name);
 		let metadata: Stats;
 		try {
+			const exactNameExists = (await readdir(this.#profilesDirectory)).some(
+				(entry) => entry === name,
+			);
+			if (!exactNameExists) throw unavailableRemovalError();
 			metadata = await lstat(path);
 		} catch (error) {
+			if (error instanceof ShopifyE2EPreflightError) throw error;
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 				throw unavailableRemovalError();
 			}

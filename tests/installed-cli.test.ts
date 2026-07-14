@@ -226,6 +226,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(rootHelp.stdout).toContain("COMMANDS");
 		expect(rootHelp.stdout).toMatch(/\brun\b/);
 		expect(rootHelp.stdout).toMatch(/\bauth\b/);
+		expect(rootHelp.stdout).toContain("auth remove");
 		expect(rootHelp.stdout).not.toMatch(/\bsetup\b|\btest\b/);
 
 		const runHelp = runInstalledCli({ args: ["run", "--help"], consumerRoot });
