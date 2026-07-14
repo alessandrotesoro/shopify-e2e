@@ -34,7 +34,7 @@ describe("package metadata", () => {
 		const packageJson = await readPackage();
 
 		expect(packageJson.name).toBe("@sematico/shopify-e2e");
-		expect(packageJson.version).toBe("0.2.0");
+		expect(packageJson.version).toBe("0.3.0");
 		expect(packageJson.engines).toEqual({ node: ">=20" });
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.bin).toEqual({ "shopify-e2e": "./bin/run.js" });
@@ -45,7 +45,7 @@ describe("package metadata", () => {
 	it("pins the shell dependencies and declares the supported Playwright peer", async () => {
 		const packageJson = await readPackage();
 
-		expect(packageJson.dependencies).toMatchObject({
+		expect(packageJson.dependencies).toEqual({
 			"@inquirer/prompts": "7.10.1",
 			"@oclif/core": "4.11.14",
 			dotenv: "17.4.2",
@@ -65,14 +65,14 @@ describe("package metadata", () => {
 		});
 	});
 
-	it("coordinates the 0.2.0 release and prompt pin in the lockfile", async () => {
+	it("coordinates the 0.3.0 release and prompt pin in the lockfile", async () => {
 		const lockfile = await readPackageLock();
 
-		expect(lockfile.version).toBe("0.2.0");
+		expect(lockfile.version).toBe("0.3.0");
 		expect(lockfile.packages[""]).toMatchObject({
 			dependencies: { "@inquirer/prompts": "7.10.1" },
 			engines: { node: ">=20" },
-			version: "0.2.0",
+			version: "0.3.0",
 		});
 		expect(lockfile.packages["node_modules/@inquirer/prompts"]?.version).toBe(
 			"7.10.1",
