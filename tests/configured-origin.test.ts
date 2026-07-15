@@ -3,17 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveProfileDataRoot } from "../src/profiles/configured-origin.js";
 import {
 	configuredOriginFromEnvironment,
 	configuredOriginKey,
 	normalizeConfiguredOrigin,
 } from "../src/role-states/configured-origin.cjs";
+import { resolveRoleStateDataRoot } from "../src/role-states/data-root.js";
 
 const temporaryDirectories: string[] = [];
 
 const makeRoot = async (): Promise<string> => {
-	const root = await mkdtemp(join(tmpdir(), "shopify-e2e-profiles-"));
+	const root = await mkdtemp(join(tmpdir(), "shopify-e2e-role-states-"));
 	temporaryDirectories.push(root);
 	return realpath(root);
 };
@@ -84,7 +84,7 @@ describe("configured origin", () => {
 		const prospectiveSafeRoot = join(safeRoot, "future", "data");
 
 		await expect(
-			resolveProfileDataRoot({
+			resolveRoleStateDataRoot({
 				dataDir: prospectiveSafeRoot,
 				packageRoot,
 				projectRoot,
@@ -93,7 +93,7 @@ describe("configured origin", () => {
 
 		const consumerCandidate = join(projectRoot, "existing-data");
 		await expect(
-			resolveProfileDataRoot({
+			resolveRoleStateDataRoot({
 				dataDir: consumerCandidate,
 				packageRoot,
 				projectRoot,
@@ -103,7 +103,7 @@ describe("configured origin", () => {
 
 		const packageCandidate = join(packageRoot, "future", "nested");
 		await expect(
-			resolveProfileDataRoot({
+			resolveRoleStateDataRoot({
 				dataDir: packageCandidate,
 				packageRoot,
 				projectRoot,
@@ -119,7 +119,7 @@ describe("configured origin", () => {
 		const linkTarget = await makeRoot();
 
 		await expect(
-			resolveProfileDataRoot({
+			resolveRoleStateDataRoot({
 				dataDir: "relative/data",
 				packageRoot,
 				projectRoot,
@@ -129,7 +129,7 @@ describe("configured origin", () => {
 		if (process.platform !== "win32") {
 			await symlink(linkTarget, join(linkParent, "linked"));
 			await expect(
-				resolveProfileDataRoot({
+				resolveRoleStateDataRoot({
 					dataDir: join(linkParent, "linked", "data"),
 					packageRoot,
 					projectRoot,

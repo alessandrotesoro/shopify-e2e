@@ -26,7 +26,6 @@ const configHelperPath = join(import.meta.dirname, "../src/config/public.cts");
 const temporaryDirectories: string[] = [];
 const loadedConfig: LoadedShopifyConfig = {
 	configPath: `${projectRoot}/shopify-e2e.config.ts`,
-	legacyRoles: { guest: { authentication: "required" } },
 	playwrightConfig: defineShopifyE2EConfig({
 		roles: ["guest"],
 		testDir: "shopify-tests",

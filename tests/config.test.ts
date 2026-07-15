@@ -13,10 +13,7 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "../src/config/execution-environment.cjs";
-import {
-	loadRunnableShopifyConfig,
-	loadShopifyConfig,
-} from "../src/config/load-config.js";
+import { loadShopifyConfig } from "../src/config/load-config.js";
 import { ShopifyE2EPreflightError } from "../src/errors.js";
 
 const temporaryDirectories: string[] = [];
@@ -106,7 +103,6 @@ describe("dedicated Shopify configuration", () => {
 		);
 
 		const loaded = await loadShopifyConfig({
-			configPath: "configs/alternate.ts",
 			environment: {},
 			projectRoot: project,
 		});
@@ -176,7 +172,7 @@ describe("dedicated Shopify configuration", () => {
 		await expect(access(marker)).rejects.toThrow();
 	});
 
-	it("loads roles without specs but retains runnable discovery for the transitional run path", async () => {
+	it("loads roles without inspecting specs", async () => {
 		const project = await makeProject();
 		await rm(join(project, "shopify-tests", "lane.spec.ts"));
 		await writeConfig(project, markedConfigSource());
@@ -184,9 +180,6 @@ describe("dedicated Shopify configuration", () => {
 		await expect(
 			loadShopifyConfig({ environment: {}, projectRoot: project }),
 		).resolves.toMatchObject({ roles: ["admin", "customer"] });
-		await expect(
-			loadRunnableShopifyConfig({ environment: {}, projectRoot: project }),
-		).rejects.toThrow(/no runnable Playwright specs/i);
 	});
 
 	it("does not leave transformed config in Jiti filesystem cache", async () => {

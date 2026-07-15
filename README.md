@@ -1,8 +1,8 @@
 # `@sematico/shopify-e2e`
 
-A CLI-first, isolated Playwright lane for Shopify end-to-end tests.
+An isolated Playwright lane for Shopify end-to-end tests.
 
-Version 0.4 adds a local, read-only readiness doctor. Version 0.3 added safe local removal of saved browser profiles. The consuming application owns `@playwright/test`, Chromium, its Shopify tests, and its trusted configuration. The CLI owns readiness reporting, profile capture and removal, isolated test discovery, one-worker execution, and the allowed run controls.
+The consumer owns `@playwright/test`, Chromium, its Shopify tests, and its trusted Playwright configuration. The CLI owns role-state capture, readiness checks, the selected role and storage state, the dedicated test root, and one-worker execution.
 
 ## Install
 
@@ -11,84 +11,76 @@ npm install --save-dev @sematico/shopify-e2e @playwright/test@1.61.1
 npx playwright install chromium
 ```
 
-The supported peer range is `@playwright/test >=1.61.1 <1.62.0`. The CLI never installs a browser, calls `npx`, or falls back to its development dependency.
+The supported peer range is `@playwright/test >=1.61.1 <1.62.0`; 1.61.1 is the tested baseline. The package pins its TypeScript config loader to Jiti 2.7.0. The CLI never installs browsers, calls `npx`, or falls back to its own development dependency.
 
-## Configure roles and the Shopify test root
+## Configure
 
-Create `shopify-e2e.config.ts` in the directory where the CLI will run:
+Create exactly one `shopify-e2e.config.ts` in the consumer root:
 
 ```ts
-export default {
+import { defineShopifyE2EConfig } from "@sematico/shopify-e2e/config";
+
+export default defineShopifyE2EConfig({
 	testDir: "tests/shopify-e2e",
-	roles: {
-		admin: { authentication: "required" },
-		customer: { authentication: "required" },
-		guest: { authentication: "none" },
+	roles: ["admin", "customer", "guest"],
+
+	// Normal Playwright configuration stays here.
+	fullyParallel: true,
+	retries: 1,
+	reporter: [["html", { outputFolder: "playwright-report/shopify" }]],
+	outputDir: "test-results/shopify",
+	use: {
+		trace: "retain-on-failure",
+		screenshot: "only-on-failure",
+		video: "retain-on-failure",
 	},
-};
+});
 ```
 
-The default export must contain exactly `testDir` and a non-empty `roles` object. Role names must be ASCII lower-kebab strings no longer than 64 UTF-8 bytes. Each role has exactly one authentication value:
+CommonJS consumers can require the same helper from their TypeScript config:
 
-- `required` means developers capture one or more saved browser profiles for that role.
-- `none` creates a synthetic profile with explicit empty browser state and writes nothing to the profile registry.
+```js
+const { defineShopifyE2EConfig } = require("@sematico/shopify-e2e/config");
 
-A role names a test lane; a saved profile is one captured browser identity assigned to an authenticated role. Multiple profiles can therefore run the same role-tagged tests without duplicating role configuration.
+export default defineShopifyE2EConfig({
+	testDir: "tests/shopify-e2e",
+	roles: ["admin"],
+});
+```
 
-This is a breaking change from 0.1: `{ testDir }` alone is invalid and must be migrated explicitly. The config key order does not matter.
+The config must directly default-export the helper result. `roles` is a non-empty list of unique ASCII lower-kebab names, each at most 64 UTF-8 bytes. There is one saved browser state per role and store origin.
 
-### Migrate from 0.1 to 0.2
+The CLI never discovers an ordinary `playwright.config.*`, never searches parent directories, and has no `--config` override. Both configs may coexist; only the root `shopify-e2e.config.ts` is loaded by this CLI.
 
-- Add an explicit `roles` object to `shopify-e2e.config.ts`.
-- Set `SHOPIFY_STORE_URL` in the consumer's ignored `.env` file.
-- Tag every Shopify spec with its configured `@shopify-e2e-role-<role>` lane.
-- For each role, either capture a profile for `authentication: "required"` or configure it as `authentication: "none"`.
-- Pass `--profile <name>` to every non-interactive `run` invocation.
+### What the CLI enforces
 
-Upgrading from 0.2 to 0.3 requires no config or test changes. The only new public surface is `auth remove`. Upgrading from 0.3 to 0.4 also requires no config or test changes; the new public surface is `doctor [--config <path>]`.
+The following settings belong to the CLI and must not be configured by the consumer:
 
-The CLI discovers `./shopify-e2e.config.ts` by convention. `--config` may select another contained TypeScript config. Config is trusted consumer code and is not sandboxed.
+- `projects`
+- `workers`
+- `grep`
+- `grepInvert`
+- `use.storageState`
 
-## Configure the Shopify origin
+Conflicts fail before Playwright starts. During a run, the CLI applies the validated absolute `testDir`, the exact selected-role filter, that role's storage-state object, and `workers: 1`. It also passes `--workers=1` as defense in depth.
 
-Create an ignored `.env` in the invocation directory:
+Everything else remains normal Playwright behavior. This includes `testMatch`, `testIgnore`, `fullyParallel`, retries, repeats, timeouts, reporters, `outputDir`, traces, screenshots, videos, global setup and teardown, `webServer`, metadata, expect settings, and other valid root settings. Paths resolve from the real Shopify config because Playwright runs that file directly.
+
+Playwright projects are intentionally unsupported in this phase. Arbitrary Playwright arguments, file selectors, project selectors, worker overrides, UI/debug controls, and reporter overrides are also unsupported.
+
+## Configure the Shopify store
+
+Create an ignored `.env` in the consumer root:
 
 ```dotenv
 SHOPIFY_STORE_URL=https://your-store.myshopify.com/
 ```
 
-`auth` and `run` require an absolute HTTPS URL from inherited environment or this one `.env` file. The CLI normalizes it to its origin: user information is rejected, while path, query, and fragment are discarded. It does not search parent directories, load `.env.local`, prompt for the URL, or edit environment files. Inherited values take precedence over `.env`.
+Inherited shell or CI values take precedence. Only the root `.env` is loaded; `.env.local` and parent files are ignored. The value must be an absolute HTTPS URL without credentials. Path, query, and fragment are discarded when the origin is normalized.
 
-Profiles are partitioned by this normalized configured origin. A custom storefront domain and its `.myshopify.com` domain are separate partitions; the CLI does not guess that they represent the same Shopify shop.
+Role states are partitioned by normalized origin. A custom storefront domain and a `.myshopify.com` domain are separate partitions.
 
-## Diagnose local readiness
-
-Inspect the shared pre-profile prerequisites from the intended consumer root:
-
-```sh
-shopify-e2e doctor
-shopify-e2e doctor --config path/to/shopify-e2e.config.ts
-```
-
-The complete surface is `doctor [--config <path>]`. It accepts no positional arguments, aliases, prompts, or other flags. The report is human-facing text in this fixed order:
-
-| Check | `PASS` means |
-|---|---|
-| Project | The physical invocation directory is a usable consumer root. |
-| Environment | The root `.env` was absent or loaded while preserving inherited values. |
-| Store URL | `SHOPIFY_STORE_URL` is an absolute HTTPS URL without user information and trusted config kept its normalized origin stable. |
-| Shopify config | The dedicated config loaded and passed the same path and `{ testDir, roles }` validation used by the other commands. |
-| Shopify spec candidates | Filename-only discovery found Playwright-compatible candidates inside the dedicated `testDir`; no spec was imported. |
-| Playwright peer | The consumer's own public `@playwright/test` entry and declared CLI satisfy `>=1.61.1 <1.62.0`; the package development dependency is never a fallback. |
-| Chromium | `chromium.executablePath()` names a regular file. No browser was launched. |
-
-Each row is `PASS`, `FAIL`, `ERROR`, or `SKIP`. `FAIL` is an expected local setup problem, `ERROR` is a sanitized unexpected inspection failure, and `SKIP` means a prerequisite did not pass. The command prints all independent results before exiting: `0` means all seven checks passed, `2` means at least one expected readiness failure and no internal error, and `1` means an unexpected inspection error took precedence. There is no JSON, quiet, verbose, debug, or repair mode.
-
-Doctor is observational: it does not create profiles or generated Playwright config, run tests, launch or install Chromium, prompt, repair files, or contact Shopify. Loading the dedicated config and the verified consumer Playwright public module does execute trusted consumer-owned code; those modules are not sandboxed and can have their own side effects.
-
-Seven `PASS` rows prove only these inspected local prerequisites. They do not prove spec semantics, test execution, browser launchability, host-library compatibility, Shopify reachability, authenticated-session validity, or live-store health. Profile readiness remains owned by `shopify-e2e auth list`.
-
-## Tag tests with roles
+## Tag tests by role
 
 Use Playwright's native `tag` option:
 
@@ -99,136 +91,116 @@ test(
 	"admin can view orders",
 	{ tag: "@shopify-e2e-role-admin" },
 	async ({ page }) => {
-		// ...
+		await expect(page).toHaveURL(/orders/);
 	},
 );
 
 test(
 	"shared account behavior",
-	{
-		tag: [
-			"@shopify-e2e-role-admin",
-			"@shopify-e2e-role-customer",
-		],
-	},
+	{ tag: ["@shopify-e2e-role-admin", "@shopify-e2e-role-customer"] },
 	async ({ page }) => {
-		await expect(page).toHaveURL(/./);
+		await expect(page).toBeTruthy();
 	},
 );
 ```
 
-The reserved `@shopify-e2e-role-<role>` text must appear only as a tag—not in spec paths, suite titles, or test titles. Playwright matches one combined path/title/tag string, so this convention is an orchestration boundary for trusted tests, not a sandbox against deliberately overriding spec code. Files inside `testDir` can be imported during Playwright discovery even when their test bodies belong to another role; files outside `testDir` are never loaded.
+The reserved `@shopify-e2e-role-<role>` token must appear only in `tag`, not in file paths, suite titles, or test titles. Files inside `testDir` may load during Playwright discovery even when their test bodies belong to another role; files outside `testDir` are never loaded.
 
-## Capture, refresh, remove, and inspect profiles
+## Authenticate roles
 
-Run the interactive auth menu:
+Use the interactive menu:
 
 ```sh
 shopify-e2e auth
 ```
 
-It offers capture, refresh, remove, list, and cancel. Direct equivalents are:
+It offers Capture, Refresh, Remove, List, and Cancel with unavailable actions disabled. Direct commands are:
 
 ```sh
 shopify-e2e auth capture
-shopify-e2e auth capture --role customer --profile customer-primary
+shopify-e2e auth capture --role customer
 shopify-e2e auth refresh
-shopify-e2e auth refresh --profile customer-primary
+shopify-e2e auth refresh --role customer
 shopify-e2e auth remove
-shopify-e2e auth remove --profile customer-primary
-shopify-e2e auth remove --profile customer-primary --yes
+shopify-e2e auth remove --role customer
+shopify-e2e auth remove --role customer --yes
 shopify-e2e auth list
 ```
 
-The complete auth surface is `auth [--config <path>]`, `auth capture [--config <path>] [--role <role>] [--profile <name>]`, `auth refresh [--config <path>] [--profile <name>]`, `auth remove [--config <path>] [--profile <name>] [--yes]`, and `auth list [--config <path>]`. These commands accept no positional arguments.
+`--role` is the only selector. Capture and refresh always require an interactive terminal. They open a fresh, headed consumer-owned Chromium context; credentials and one-time codes are entered only in that browser. The CLI saves state only after terminal confirmation.
 
-Capture and refresh require an interactive terminal. Missing role/profile values are prompted; supplied values are validated without prompting. `auth list` works non-interactively and never loads Playwright.
+Capture requires missing state. Refresh requires valid existing state and atomically replaces it after confirmation. Declining or interrupting leaves the previous state unchanged.
 
-Capture opens a fresh, headed, non-persistent consumer-owned Chromium context. Enter storefront passwords, Shopify credentials, and one-time codes only in that browser window. The CLI never asks for credentials and never tries to detect when login is complete. Return to the terminal and explicitly confirm when the browser state should be saved.
+Removal follows this exact matrix:
 
-Refresh starts another fresh context using only the selected profile's prior state and atomically replaces that state after confirmation. Declining, closing the browser, or cancelling leaves the previous profile unchanged.
-
-Removal is scoped to the normalized `SHOPIFY_STORE_URL` origin currently configured. It never searches or changes another origin partition and does not require Playwright or a browser. The prompt/flag behavior is:
-
-| Invocation | Interactive terminal | Non-interactive terminal |
+| Invocation | Interactive | Non-interactive |
 |---|---|---|
-| `auth remove` | Select a profile, then confirm; confirmation defaults to no | Exit `2`; no change |
-| `auth remove --profile <name>` | Confirm the named profile; confirmation defaults to no | Exit `2`; no change |
-| `auth remove --yes` | Select a profile, then remove it without confirmation | Exit `2`; no change |
-| `auth remove --profile <name> --yes` | Remove without prompts | Remove without prompts |
+| `auth remove` | Select a removable role, then confirm; default is no | Exit `2` |
+| `auth remove --role <role>` | Confirm the role; default is no | Exit `2` |
+| `auth remove --yes` | Select a removable role, then remove | Exit `2` |
+| `auth remove --role <role> --yes` | Remove without prompts | Remove without prompts |
 
-Removal candidates are real, path-safe profile directories in the current origin, including profiles whose metadata or state is corrupt. Unknown names, unsafe names, symlinks, non-directories, hidden temporary entries, and synthetic unauthenticated role names are refused with exit `2`. A physical directory whose name collides with a synthetic role is intentionally not CLI-removable; inspect and clean that collision manually.
+`auth list` is non-interactive and reports configured roles as `ready`, `missing`, or `invalid`, plus safe stored roles no longer in config as `orphaned`. It never exposes paths, origins, state, or credentials and does not resolve Playwright.
 
-Profile names must be ASCII lower-kebab strings no longer than 64 UTF-8 bytes. Choose pseudonymous names such as `customer-primary`; do not put names, email addresses, credentials, or other personal data in a profile name.
+For a path-safe invalid state, remove and recapture it. Unsafe symlinks or non-directory collisions fail with manual-cleanup guidance; the CLI never follows or removes them.
 
-## Run a profile's tests
-
-In an interactive terminal:
+## Run Shopify tests
 
 ```sh
-shopify-e2e run
+shopify-e2e run --role customer
+shopify-e2e run --role customer --grep "account"
+shopify-e2e run --role customer --grep-invert "draft"
 ```
 
-`run` shows exactly one profile prompt. Saved choices appear as `<profile> - <role>` and unauthenticated choices as `<role> - unauthenticated`. It then starts immediately.
+In an interactive terminal, omitting `--role` prompts once from configured roles that have valid state. In non-interactive use, `--role` is required. Missing, invalid, stale, or unknown roles fail before Playwright starts.
 
-For deterministic or non-interactive use, select explicitly:
+The mandatory role filter is combined with `--grep` and `--grep-invert`; these controls can only narrow the selected role lane. Execution always uses one global worker, even when `fullyParallel` is enabled.
+
+For CI, provision the role-state data outside the repository through your machine image, encrypted cache, or another external workflow before running. This package does not import or remotely provision bearer secrets.
+
+## Doctor
 
 ```sh
-shopify-e2e run --profile customer-primary
-shopify-e2e run --profile guest
+shopify-e2e doctor
 ```
 
-The generated owner-only config contains the selected state by value, the mandatory exact role filter, the dedicated absolute `testDir`, and one worker. Playwright never receives the long-lived profile path. Existing title controls only narrow that role lane:
+Doctor prints seven ordered checks: project, environment, store URL, Shopify config, Shopify test directory, Playwright peer, and Chromium. Results are `PASS`, `FAIL`, `ERROR`, or `SKIP`.
 
-```sh
-shopify-e2e run --profile customer-primary --grep "account"
-shopify-e2e run --profile admin-primary --grep-invert "draft order"
-```
+Doctor loads the trusted Shopify config and checks helper use, roles, protected conflicts, and path boundaries. Its directory scan only proves that the validated tree contains a regular JavaScript or TypeScript candidate, recursively excluding `node_modules` and rejecting symlinks. It does not import specs, apply `testMatch`/`testIgnore`, run hooks, start `webServer`, launch Chromium, or fully validate unprotected Playwright settings. Playwright remains authoritative during `run`.
 
-Projects, file selectors, reporters, worker overrides, UI/debug modes, retries, shards, and unrestricted passthrough remain unavailable.
+## Trust and security
 
-The complete run surface is `run [--config <path>] [--profile <name>] [--grep <pattern>] [--grep-invert <pattern>]`; `-g` is the short form of `--grep`.
+Consumer config, its imports, hooks, reporters, web server, and tests are trusted executable code. Config may execute once during CLI preflight and again in Playwright-owned main, loader, and worker processes. It must call `defineShopifyE2EConfig` on every evaluation and must not mutate protected values after the helper returns.
 
-## Profile storage and security
+Saved storage state is a bearer secret. It can contain cookies, local storage, and captured IndexedDB for visited origins. Keep it outside the repository and never log or commit state, `.env`, reports, traces, screenshots, videos, or browser output.
 
-Saved state lives outside the consuming repository under oclif's platform application-data directory, partitioned by configured origin. `SHOPIFY_E2E_DATA_DIR` may override that root for a scoped local setup, but the resolved root must remain outside both the consumer and package installation.
+The CLI copies the selected state into an owner-only temporary execution context outside the consumer and package roots. Playwright receives the state object, never the long-lived registry path. The context remains available for Playwright-owned config evaluation and is removed after the direct Playwright child settles.
 
-Storage state is a bearer secret. It can contain cookies, localStorage, and captured IndexedDB for every origin visited in the dedicated capture context. It does not include sessionStorage, passkeys, or browser cache, does not guarantee origin exclusivity, and does not guarantee that Shopify authentication remains valid.
-
-Do not commit or log profile state, `.env`, screenshots, traces, or browser output. If a profile may be compromised, revoke or rotate the represented access where possible as well as removing the local copy.
-
-Removal first renames the active profile into a hidden same-partition `.tmp-remove-*` quarantine, then recursively deletes that quarantine. Before the rename commits, failure leaves the active profile unchanged. After the rename, the profile remains unavailable even if cleanup fails; the CLI exits `1` and reports that local secret cleanup is incomplete. Successful removal keeps the origin partition and all sibling profiles in place.
-
-Automatic stale-quarantine cleanup is not provided. For manual cleanup, locate the profile data root as the exact absolute `SHOPIFY_E2E_DATA_DIR` value when that override is set; otherwise use oclif's platform application-data directory for dirname `shopify-e2e` (the operating system's application-data location, never the consuming repository). Under that root, inspect only the affected `origins/<origin-hash>/profiles/.tmp-remove-*` entries. Stop CLI processes first, preserve the origin and sibling directories, and remove only quarantines you have identified. Using a known absolute `SHOPIFY_E2E_DATA_DIR` before capture makes this recovery location unambiguous across platforms.
-
-Filesystem deletion is not secure erasure or crash-durable sanitization. Data or access can survive in snapshots, backups, open file handles, storage media, a retained or partially deleted quarantine, or a still-live remote Shopify session. Revoke or rotate the represented access where possible when cleanup is incomplete or compromise is suspected.
-
-The boundary protects against accidental commits, cross-origin/profile mixups, partial replacement, and unrelated out-of-root test loading. It does not protect against malicious consumer config/spec code, a compromised Playwright/browser dependency, concurrent writers, or another process running as the same OS user.
+Concurrent state-changing commands for the same role and origin are unsupported; callers must serialize them.
 
 ## Exit behavior
 
-- `0`: success or a user cancellation with no mutation. For `doctor`, all seven checks passed. For removal, this includes declining the default-no confirmation; a signal after the removal rename also exits `0` if quarantine cleanup completes.
-- `1`: package/browser/filesystem infrastructure failure, Playwright's own test/no-test failure, or an unexpected `doctor` inspection error. A removal failure before rename leaves the active profile unchanged; a cleanup failure after rename leaves it unavailable and means local secret cleanup is incomplete.
-- `2`: usage, config, URL, profile, TTY, boundary, or peer preflight refusal. For `doctor`, at least one expected readiness check failed and no check errored. Removal refusals do not mutate the registry.
-- `130`: terminal Ctrl+C or `SIGINT` before a removal commits, after cleanup of temporary work; for `doctor`, interruption before a complete report.
-- `143`: `SIGTERM` before a removal commits, after cleanup of temporary work; for `doctor`, interruption before a complete report.
+- `0`: success or cancellation without mutation; all doctor checks passed.
+- `1`: package, browser, filesystem, or Playwright failure; unexpected doctor error.
+- `2`: usage, config, URL, role, TTY, boundary, or peer preflight refusal; expected doctor failure.
+- `130`: interrupted by `SIGINT` after required cleanup or rollback.
+- `143`: interrupted by `SIGTERM` after required cleanup or rollback.
 - Other numeric Playwright child exits pass through unchanged.
+
+## Breaking upgrade to 0.5.0
+
+Version 0.5.0 intentionally has no compatibility or migration layer. Replace the old config with the helper-based roles list, recapture each role, and change automation to `--role`.
+
+Old local named-profile data is ignored. If it is no longer needed, manually remove the obsolete `profiles` namespace from the package's platform application-data directory after stopping all CLI processes. Do not remove the new `role-states` namespace or sibling origin partitions.
 
 ## Verification
 
 ```sh
-npm run test:installed
 npm run verify
 ```
 
-These deterministic gates are browserless and do not contact Shopify or a storefront. The installed doctor proof uses a controlled consumer peer and a regular fake Chromium file whose `launch` method fails and leaves a sentinel if called. Packed consumer installation may use the configured npm registry or cache, with Playwright browser download disabled. No CI workflow is part of this phase.
-
-The optional local Chromium isolation probe is separate:
+Optional real-browser role isolation:
 
 ```sh
-npm run test:browser:profiles
+npm run test:browser:roles
 ```
-
-It installs the packed CLI into a temporary consumer and uses only a loopback HTTP origin to prove A-B-guest-A cookie, localStorage, and IndexedDB isolation. It does not weaken the production HTTPS URL requirement.
-
-The [Levelogy manual consumer](tests/fixtures/storefront-smoke-consumer/README.md) covers the password-protected Shopify acceptance flow and is intentionally excluded from deterministic verification.
