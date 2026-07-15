@@ -195,13 +195,15 @@ describe.sequential("built CLI shell", () => {
 			.split("\n")
 			.filter((line) => /^ {2}--/.test(line))
 			.map((line) => line.trim().split(/\s+/)[0]);
-		expect(flagNames).toEqual(["--config=<value>"]);
+		expect(flagNames).toEqual([]);
+		expect(result.stdout).not.toContain("--config");
 		expect(result.stderr).toBe("");
 	});
 
 	it.each([
 		["doctor", "unexpected"],
 		["doctor", "--unknown"],
+		["doctor", "--config", "alternate-shopify-e2e.config.ts"],
 		["doctor", "--", "unexpected"],
 	])("rejects unsupported doctor input before orchestration: %s", async (...args) => {
 		const consumer = await makeConsumerFixture();
@@ -217,31 +219,16 @@ describe.sequential("built CLI shell", () => {
 		expect(result.stderr).not.toMatch(/consumer \.env could not be read/i);
 	});
 
-	it("prints the complete ordered doctor report from an alternate config without importing tests", async () => {
+	it("prints the complete fixed-config doctor report without importing tests", async () => {
 		const fixture = await prepareDoctorReadyConsumer(
 			await makeConsumerFixture(),
 		);
-		const alternateConfigPath = join(
-			fixture.consumer,
-			"alternate-shopify-e2e.config.ts",
-		);
-		const alternateTestDir = join(fixture.consumer, "alternate-shopify-tests");
-		const alternateSpecSentinel = join(
-			fixture.consumer,
-			"alternate-shopify-spec-imported",
-		);
-		await mkdir(alternateTestDir);
-		await writeFile(
-			alternateConfigPath,
-			'export default { testDir: "alternate-shopify-tests", roles: { guest: { authentication: "none" } } };\n',
-		);
-		await writeFile(
-			join(alternateTestDir, "checkout.spec.ts"),
-			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(alternateSpecSentinel)}, "imported");\n`,
-		);
+		const physicalConsumer = await realpath(fixture.consumer);
+		const configPath = join(physicalConsumer, "shopify-e2e.config.ts");
+		const testDir = join(physicalConsumer, "shopify-tests");
 
 		const result = runCli({
-			args: ["doctor", "--config", "alternate-shopify-e2e.config.ts"],
+			args: ["doctor"],
 			cwd: fixture.consumer,
 		});
 
@@ -251,7 +238,7 @@ describe.sequential("built CLI shell", () => {
 			"Environment",
 			"Store URL",
 			"Shopify config",
-			"Shopify spec candidates",
+			"Shopify test directory",
 			"Playwright peer",
 			"Chromium",
 		];
@@ -261,18 +248,20 @@ describe.sequential("built CLI shell", () => {
 			expect(index).toBeGreaterThan(priorIndex);
 			priorIndex = index;
 		}
-		expect(result.stdout).toContain(alternateConfigPath);
-		expect(result.stdout).toContain(alternateTestDir);
-		expect(result.stdout).not.toContain(
-			join(fixture.consumer, "shopify-e2e.config.ts"),
+		expect(result.stdout).toContain(configPath);
+		expect(result.stdout).toContain(testDir);
+		expect(result.stdout).toContain(
+			"Package-owned Shopify config checks passed",
 		);
-		expect(result.stdout).toContain("1 Playwright spec candidate(s) found");
+		expect(result.stdout).toContain(
+			"1 JavaScript/TypeScript file candidate(s) found",
+		);
+		expect(result.stdout).not.toMatch(/runnable Playwright specs/i);
 		expect(result.stdout).not.toContain("checkout.spec.ts");
 		expect(result.stdout).not.toContain("https://shop.example");
 		expect(result.stderr).toBe("");
 		for (const sentinel of [
 			...fixture.importSentinels,
-			alternateSpecSentinel,
 			fixture.launchSentinel,
 		]) {
 			expect(existsSync(sentinel)).toBe(false);
@@ -316,6 +305,7 @@ describe.sequential("built CLI shell", () => {
 			await writeFile(
 				join(fixture.consumer, "shopify-e2e.config.ts"),
 				`import { writeFileSync } from "node:fs";
+import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)};
 writeFileSync(${JSON.stringify(inspectionStarted)}, "started");
 await new Promise((resolveSignal) => {
   const keepInspectionPending = setInterval(() => undefined, 1_000);
@@ -324,7 +314,7 @@ await new Promise((resolveSignal) => {
     resolveSignal(undefined);
   });
 });
-export default { testDir: "shopify-tests", roles: { guest: { authentication: "none" } } };
+export default defineShopifyE2EConfig({ testDir: "shopify-tests", roles: ["guest"] });
 `,
 			);
 			await writeFile(
