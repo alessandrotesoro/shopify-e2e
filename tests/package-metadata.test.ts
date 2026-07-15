@@ -104,7 +104,9 @@ describe("package metadata", () => {
 			"test:browser:profiles":
 				"npm run build && vitest run tests/browser-profile-isolation.test.ts",
 			"test:fast":
-				"vitest run --exclude tests/installed-cli.test.ts --exclude tests/browser-profile-isolation.test.ts",
+				"vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/browser-profile-isolation.test.ts",
+			"test:installed:built":
+				"vitest run tests/installed-cli.test.ts tests/installed-doctor-cli.test.ts",
 			verify:
 				"npm run lint && npm run typecheck && npm run build && npm run test:fast && npm run test:installed:built",
 		});

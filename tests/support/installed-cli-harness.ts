@@ -23,13 +23,17 @@ import {
 
 const generatedConfigPrefix = "shopify-e2e-playwright-";
 const temporaryDirectories: string[] = [];
+const doctorDedicatedSpecSource = `import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
+if (markerDirectory) {
+  writeFileSync(join(markerDirectory, "doctor-dedicated-spec-loaded.marker"), "loaded");
+}
+`;
 
 export interface InstalledCliFixture {
 	readonly consumerRoot: string;
-	readonly doctor: {
-		readonly missingChromium: DoctorConsumerFixture;
-		readonly ready: DoctorConsumerFixture;
-	};
 	readonly missingPeerConsumerRoot: string;
 	readonly profileDataRoot: string;
 	readonly removal: InstalledRemovalFixture;
@@ -40,6 +44,19 @@ export interface DoctorConsumerFixture {
 	readonly launchMarker: string;
 }
 
+export interface InstalledDoctorCliFixture {
+	readonly missingChromium: DoctorConsumerFixture;
+	readonly missingPeerConsumerRoot: string;
+	readonly ready: DoctorConsumerFixture;
+}
+
+export const doctorIsolationMarkers = [
+	"doctor-dedicated-spec-loaded.marker",
+	"doctor-peer-cli-spawned.marker",
+	"ordinary-config-loaded.marker",
+	"ordinary-spec-loaded.marker",
+] as const;
+
 export interface InstalledRemovalFixture {
 	readonly currentOriginDirectory: string;
 	readonly currentProfileDirectory: string;
@@ -49,7 +66,7 @@ export interface InstalledRemovalFixture {
 	readonly profileName: string;
 }
 
-interface PrepareInstalledCliFixtureOptions {
+interface PrepareInstalledFixtureOptions {
 	readonly fixtureRoot: string;
 	readonly projectRoot: string;
 }
@@ -192,6 +209,48 @@ export const makeTemporaryDirectory = async (
 	return directory;
 };
 
+const packVerifiedPackage = async (projectRoot: string): Promise<string> => {
+	const packDirectory = await makeTemporaryDirectory("shopify-e2e-pack-");
+	const packedArtifact = await packPackageForConsumer(
+		projectRoot,
+		packDirectory,
+	);
+	const tarballPath = packedArtifact.tarballPath;
+	expect(basename(tarballPath)).toMatch(/^sematico-shopify-e2e-.*\.tgz$/);
+	const publishedPaths = packedArtifact.files.map((file) => file.path);
+	expect(publishedPaths).toEqual(
+		expect.arrayContaining([
+			"LICENSE",
+			"README.md",
+			"bin/run.js",
+			"dist/commands.js",
+			"dist/commands/auth.js",
+			"dist/commands/auth/remove.js",
+			"dist/commands/doctor.js",
+			"dist/commands/run.js",
+			"dist/doctor/doctor-orchestrator.js",
+			"package.json",
+		]),
+	);
+	expect(
+		publishedPaths.every((path) =>
+			/^(?:LICENSE|README\.md|package\.json|bin\/|dist\/)/.test(path),
+		),
+	).toBe(true);
+	expect(
+		publishedPaths.some((path) =>
+			/^(?:profiles|src|tests)(?:\/|$)|(?:^|\/)\.env(?:\.|$)|shopify-e2e-playwright-|\.marker$/.test(
+				path,
+			),
+		),
+	).toBe(false);
+	const executable = packedArtifact.files.find(
+		(file) => file.path === "bin/run.js",
+	);
+	expect((executable?.mode ?? 0) & 0o111).not.toBe(0);
+	return tarballPath;
+};
+
 const seedProfile = async ({
 	dataRoot,
 	name,
@@ -239,6 +298,10 @@ const prepareDoctorConsumer = async ({
 			: "shopify-e2e-doctor-missing-chromium-",
 	);
 	await cp(fixtureRoot, consumerRoot, { recursive: true });
+	await writeFile(
+		join(consumerRoot, "shopify-passing", "doctor-must-not-load.spec.ts"),
+		doctorDedicatedSpecSource,
+	);
 	await installPackedPackage({
 		consumerRoot,
 		hasPlaywright: false,
@@ -265,7 +328,15 @@ const prepareDoctorConsumer = async ({
 	);
 	await writeFile(
 		join(peerRoot, "cli.js"),
-		"// Controlled doctor fixture CLI.\n",
+		`import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
+if (markerDirectory) {
+  writeFileSync(join(markerDirectory, "doctor-peer-cli-spawned.marker"), "spawned");
+}
+throw new Error("doctor must not spawn the Playwright CLI");
+`,
 	);
 	await writeFile(
 		join(peerRoot, "index.js"),
@@ -287,48 +358,86 @@ export const chromium = {
 	return { consumerRoot, launchMarker };
 };
 
+interface PrepareMissingPeerConsumerArgs {
+	readonly includeDoctorSentinels?: boolean;
+	readonly fixtureRoot: string;
+	readonly tarballPath: string;
+}
+
+const prepareMissingPeerConsumer = async ({
+	fixtureRoot,
+	includeDoctorSentinels = false,
+	tarballPath,
+}: PrepareMissingPeerConsumerArgs): Promise<string> => {
+	const consumerRoot = await makeTemporaryDirectory(
+		"shopify-e2e-missing-peer-",
+	);
+	await writeFile(
+		join(consumerRoot, "package.json"),
+		'{"name":"missing-peer-consumer","private":true,"type":"module"}\n',
+	);
+	await cp(
+		join(fixtureRoot, "shopify-e2e.config.ts"),
+		join(consumerRoot, "shopify-e2e.config.ts"),
+	);
+	await cp(
+		join(fixtureRoot, "shopify-passing"),
+		join(consumerRoot, "shopify-passing"),
+		{ recursive: true },
+	);
+	if (includeDoctorSentinels) {
+		await cp(
+			join(fixtureRoot, "playwright.config.ts"),
+			join(consumerRoot, "playwright.config.ts"),
+		);
+		await cp(
+			join(fixtureRoot, "ordinary-e2e"),
+			join(consumerRoot, "ordinary-e2e"),
+			{ recursive: true },
+		);
+		await writeFile(
+			join(consumerRoot, "shopify-passing", "doctor-must-not-load.spec.ts"),
+			doctorDedicatedSpecSource,
+		);
+	}
+	await installPackedPackage({
+		consumerRoot,
+		hasPlaywright: false,
+		tarballPath,
+	});
+	return consumerRoot;
+};
+
+export const prepareInstalledDoctorCliFixture = async ({
+	fixtureRoot,
+	projectRoot,
+}: PrepareInstalledFixtureOptions): Promise<InstalledDoctorCliFixture> => {
+	const tarballPath = await packVerifiedPackage(projectRoot);
+	const [ready, missingChromium, missingPeerConsumerRoot] = await Promise.all([
+		prepareDoctorConsumer({
+			chromiumInstalled: true,
+			fixtureRoot,
+			tarballPath,
+		}),
+		prepareDoctorConsumer({
+			chromiumInstalled: false,
+			fixtureRoot,
+			tarballPath,
+		}),
+		prepareMissingPeerConsumer({
+			fixtureRoot,
+			includeDoctorSentinels: true,
+			tarballPath,
+		}),
+	]);
+	return { missingChromium, missingPeerConsumerRoot, ready };
+};
+
 export const prepareInstalledCliFixture = async ({
 	fixtureRoot,
 	projectRoot,
-}: PrepareInstalledCliFixtureOptions): Promise<InstalledCliFixture> => {
-	const packDirectory = await makeTemporaryDirectory("shopify-e2e-pack-");
-	const packedArtifact = await packPackageForConsumer(
-		projectRoot,
-		packDirectory,
-	);
-	const tarballPath = packedArtifact.tarballPath;
-	expect(basename(tarballPath)).toMatch(/^sematico-shopify-e2e-.*\.tgz$/);
-	const publishedPaths = packedArtifact.files.map((file) => file.path);
-	expect(publishedPaths).toEqual(
-		expect.arrayContaining([
-			"LICENSE",
-			"README.md",
-			"bin/run.js",
-			"dist/commands.js",
-			"dist/commands/auth.js",
-			"dist/commands/auth/remove.js",
-			"dist/commands/doctor.js",
-			"dist/commands/run.js",
-			"dist/doctor/doctor-orchestrator.js",
-			"package.json",
-		]),
-	);
-	expect(
-		publishedPaths.every((path) =>
-			/^(?:LICENSE|README\.md|package\.json|bin\/|dist\/)/.test(path),
-		),
-	).toBe(true);
-	expect(
-		publishedPaths.some((path) =>
-			/^(?:profiles|src|tests)(?:\/|$)|(?:^|\/)\.env(?:\.|$)|shopify-e2e-playwright-|\.marker$/.test(
-				path,
-			),
-		),
-	).toBe(false);
-	const executable = packedArtifact.files.find(
-		(file) => file.path === "bin/run.js",
-	);
-	expect((executable?.mode ?? 0) & 0o111).not.toBe(0);
+}: PrepareInstalledFixtureOptions): Promise<InstalledCliFixture> => {
+	const tarballPath = await packVerifiedPackage(projectRoot);
 
 	const consumerRoot = await makeTemporaryDirectory("shopify-e2e-consumer-");
 	await cp(fixtureRoot, consumerRoot, { recursive: true });
@@ -341,18 +450,6 @@ export const prepareInstalledCliFixture = async ({
 		hasPlaywright: true,
 		tarballPath,
 	});
-	const [doctorReady, doctorMissingChromium] = await Promise.all([
-		prepareDoctorConsumer({
-			chromiumInstalled: true,
-			fixtureRoot,
-			tarballPath,
-		}),
-		prepareDoctorConsumer({
-			chromiumInstalled: false,
-			fixtureRoot,
-			tarballPath,
-		}),
-	]);
 	const profileDataRoot = await makeTemporaryDirectory(
 		"shopify-e2e-profile-data-",
 	);
@@ -437,31 +534,13 @@ export const prepareInstalledCliFixture = async ({
 		profileName: removalProfileName,
 	};
 
-	const missingPeerConsumerRoot = await makeTemporaryDirectory(
-		"shopify-e2e-missing-peer-",
-	);
-	await writeFile(
-		join(missingPeerConsumerRoot, "package.json"),
-		'{"name":"missing-peer-consumer","private":true,"type":"module"}\n',
-	);
-	await cp(
-		join(fixtureRoot, "shopify-e2e.config.ts"),
-		join(missingPeerConsumerRoot, "shopify-e2e.config.ts"),
-	);
-	await cp(
-		join(fixtureRoot, "shopify-passing"),
-		join(missingPeerConsumerRoot, "shopify-passing"),
-		{ recursive: true },
-	);
-	await installPackedPackage({
-		consumerRoot: missingPeerConsumerRoot,
-		hasPlaywright: false,
+	const missingPeerConsumerRoot = await prepareMissingPeerConsumer({
+		fixtureRoot,
 		tarballPath,
 	});
 
 	return {
 		consumerRoot,
-		doctor: { missingChromium: doctorMissingChromium, ready: doctorReady },
 		missingPeerConsumerRoot,
 		profileDataRoot,
 		removal,

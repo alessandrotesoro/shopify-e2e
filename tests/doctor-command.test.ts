@@ -160,6 +160,35 @@ describe("doctor orchestration", () => {
 		);
 	});
 
+	it("fails project resolution and skips every downstream check", async () => {
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.resolveProjectRoot).mockRejectedValueOnce(
+			new ShopifyE2EPreflightError(
+				"Consuming project directory does not exist: /logical/consumer",
+			),
+		);
+
+		const report = await runDoctor(dependencies);
+
+		expect(report.checks.map(({ id }) => id)).toEqual(DOCTOR_CHECK_ORDER);
+		expect(report.checks.map(({ status }) => status)).toEqual([
+			"FAIL",
+			"SKIP",
+			"SKIP",
+			"SKIP",
+			"SKIP",
+			"SKIP",
+			"SKIP",
+		]);
+		expect(report.exitCode).toBe(2);
+		expect(dependencies.loadProjectEnvironment).not.toHaveBeenCalled();
+		expect(dependencies.normalizeOrigin).not.toHaveBeenCalled();
+		expect(dependencies.loadConfig).not.toHaveBeenCalled();
+		expect(dependencies.discoverSpecs).not.toHaveBeenCalled();
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+		expect(dependencies.loadChromium).not.toHaveBeenCalled();
+	});
+
 	it("uses production boundaries for a browserless ready consumer", async () => {
 		const consumer = await makeReadyConsumer();
 		const environment = {
@@ -254,6 +283,34 @@ describe("doctor orchestration", () => {
 		const stableReport = await runDoctor(stable, stableEnvironment);
 
 		expect(stableReport.checks[2]).toMatchObject({ status: "PASS" });
+	});
+
+	it("fails a missing store URL while completing independent checks", async () => {
+		const dependencies = makeDependencies();
+
+		const report = await runDoctor(dependencies, {});
+
+		expect(report.checks.map(({ id }) => id)).toEqual(DOCTOR_CHECK_ORDER);
+		expect(report.checks.map(({ status }) => status)).toEqual([
+			"PASS",
+			"PASS",
+			"FAIL",
+			"PASS",
+			"PASS",
+			"PASS",
+			"PASS",
+		]);
+		expect(report.checks[2]?.detail).toBe(
+			"SHOPIFY_STORE_URL must be an absolute HTTPS URL without credentials",
+		);
+		expect(JSON.stringify(report)).not.toContain(
+			"SHOPIFY_STORE_URL is required. Set it",
+		);
+		expect(report.exitCode).toBe(2);
+		expect(dependencies.loadConfig).toHaveBeenCalledOnce();
+		expect(dependencies.discoverSpecs).toHaveBeenCalledOnce();
+		expect(dependencies.resolvePeer).toHaveBeenCalledOnce();
+		expect(dependencies.loadChromium).toHaveBeenCalledOnce();
 	});
 
 	it("fails spec discovery without suppressing the peer branch", async () => {

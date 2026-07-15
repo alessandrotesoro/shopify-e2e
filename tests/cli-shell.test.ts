@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
 	cp,
@@ -29,6 +29,59 @@ interface RunCliArgs {
 	readonly cwd?: string;
 	readonly environmentOverrides?: NodeJS.ProcessEnv;
 }
+
+interface ChildOutcome {
+	readonly code: number | null;
+	readonly signal: NodeJS.Signals | null;
+}
+
+const waitForPath = async (path: string, timeoutMs: number): Promise<void> => {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (existsSync(path)) return;
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+	}
+	throw new Error(`Timed out waiting for ${path}`);
+};
+
+const waitForChildOutcome = (
+	child: ChildProcess,
+	timeoutMs: number,
+): Promise<ChildOutcome> => {
+	if (child.exitCode !== null || child.signalCode !== null) {
+		return Promise.resolve({
+			code: child.exitCode,
+			signal: child.signalCode,
+		});
+	}
+
+	return new Promise<ChildOutcome>((resolveOutcome, rejectOutcome) => {
+		const cleanup = (): void => {
+			clearTimeout(timeout);
+			child.off("error", onError);
+			child.off("exit", onExit);
+		};
+		const onError = (error: Error): void => {
+			cleanup();
+			rejectOutcome(error);
+		};
+		const onExit = (
+			code: number | null,
+			signal: NodeJS.Signals | null,
+		): void => {
+			cleanup();
+			resolveOutcome({ code, signal });
+		};
+		const timeout = setTimeout(() => {
+			cleanup();
+			rejectOutcome(
+				new Error(`CLI process ${child.pid ?? "unknown"} remained alive`),
+			);
+		}, timeoutMs);
+		child.once("error", onError);
+		child.once("exit", onExit);
+	});
+};
 
 const runCli = ({
 	args,
@@ -303,6 +356,100 @@ describe.sequential("built CLI shell", () => {
 		expect(result.stdout).toMatch(/SKIP Chromium:/);
 		expect(result.stderr).toBe("");
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"interrupts an in-flight doctor inspection without a partial report",
+		async () => {
+			const fixture = await makeDoctorReadyConsumer();
+			const inspectionStarted = join(
+				fixture.consumer,
+				"doctor-inspection-started",
+			);
+			const laterCheckMarker = join(
+				fixture.consumer,
+				"doctor-later-check-started",
+			);
+			const peerRoot = join(
+				fixture.consumer,
+				"node_modules",
+				"@playwright",
+				"test",
+			);
+			await writeFile(
+				join(fixture.consumer, "shopify-e2e.config.ts"),
+				`import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(inspectionStarted)}, "started");
+await new Promise((resolveSignal) => {
+  const keepInspectionPending = setInterval(() => undefined, 1_000);
+  process.once("SIGTERM", () => {
+    clearInterval(keepInspectionPending);
+    resolveSignal(undefined);
+  });
+});
+export default { testDir: "shopify-tests", roles: { guest: { authentication: "none" } } };
+`,
+			);
+			await writeFile(
+				join(peerRoot, "index.js"),
+				`import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(laterCheckMarker)}, "started");
+export const chromium = {
+  executablePath() { return ${JSON.stringify(join(peerRoot, "chromium"))}; },
+  launch() {
+    writeFileSync(${JSON.stringify(fixture.launchSentinel)}, "launched");
+    throw new Error("doctor must not launch Chromium");
+  },
+};
+`,
+			);
+
+			const child = spawn(process.execPath, [binPath, "doctor"], {
+				cwd: fixture.consumer,
+				env: {
+					...process.env,
+					NO_COLOR: "1",
+					SHOPIFY_STORE_URL: "https://shop.example",
+				},
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			let stdout = "";
+			let stderr = "";
+			child.stdout?.setEncoding("utf8");
+			child.stderr?.setEncoding("utf8");
+			child.stdout?.on("data", (chunk: string) => {
+				stdout += chunk;
+			});
+			child.stderr?.on("data", (chunk: string) => {
+				stderr += chunk;
+			});
+			const outcomePromise = waitForChildOutcome(child, 10_000);
+			let didExit = false;
+
+			try {
+				await waitForPath(inspectionStarted, 5_000);
+				expect(child.pid).toBeTypeOf("number");
+				process.kill(child.pid as number, "SIGTERM");
+				const outcome = await outcomePromise;
+				didExit = true;
+
+				expect(
+					outcome,
+					`interrupted doctor\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+				).toEqual({ code: 143, signal: null });
+				expect(stderr).toContain("Doctor interrupted; no report completed.");
+				expect(stderr).not.toContain(fixture.consumer);
+				expect(stdout).not.toMatch(/^(?:PASS|FAIL|ERROR|SKIP) /m);
+				expect(existsSync(laterCheckMarker)).toBe(false);
+				expect(existsSync(fixture.launchSentinel)).toBe(false);
+			} finally {
+				if (!didExit && child.exitCode === null && child.signalCode === null) {
+					child.kill("SIGKILL");
+					await waitForChildOutcome(child, 2_000).catch(() => undefined);
+				}
+			}
+		},
+		15_000,
+	);
 
 	it.each([
 		{ args: ["auth", "--help"], flags: ["--config"] },
