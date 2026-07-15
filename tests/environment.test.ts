@@ -12,7 +12,10 @@ import { join } from "node:path";
 import * as dotenv from "dotenv";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { loadEnvironment } from "../src/environment/load-environment.js";
+import {
+	loadEnvironment,
+	loadProjectEnvironment,
+} from "../src/environment/load-environment.js";
 import { ShopifyE2EPreflightError } from "../src/errors.js";
 
 vi.mock("dotenv", async (importOriginal) => {
@@ -38,6 +41,21 @@ afterEach(async () => {
 });
 
 describe("consumer environment loading", () => {
+	it("can populate an already-resolved physical project root", async () => {
+		const project = await makeProject();
+		await writeFile(join(project, ".env"), "FROM_PROJECT_ROOT=loaded\n");
+		const environment: NodeJS.ProcessEnv = {
+			FROM_SHELL: "kept",
+		};
+
+		await loadProjectEnvironment({ projectRoot: project, environment });
+
+		expect(environment).toEqual({
+			FROM_PROJECT_ROOT: "loaded",
+			FROM_SHELL: "kept",
+		});
+	});
+
 	it("loads recognized assignments from exactly the physical cwd .env without output", async () => {
 		const project = await makeProject();
 		await writeFile(
