@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const fsPromises = require("node:fs/promises");
+const childProcess = require("node:child_process");
 const http = require("node:http");
 const https = require("node:https");
 const net = require("node:net");
@@ -161,6 +162,18 @@ for (const [target, name] of [
 }
 
 for (const [target, names] of [
+	[
+		childProcess,
+		[
+			"exec",
+			"execFile",
+			"execFileSync",
+			"execSync",
+			"fork",
+			"spawn",
+			"spawnSync",
+		],
+	],
 	[http, ["get", "request"]],
 	[https, ["get", "request"]],
 	[net, ["connect", "createConnection"]],
