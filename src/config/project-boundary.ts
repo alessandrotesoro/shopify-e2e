@@ -79,24 +79,13 @@ export const resolveProjectRoot = async (cwd: string): Promise<string> => {
 };
 
 export interface ResolveShopifyConfigPathArgs {
-	readonly explicitConfigPath?: string;
 	readonly projectRoot: string;
 }
 
 export const resolveShopifyConfigPath = async ({
-	explicitConfigPath,
 	projectRoot,
 }: ResolveShopifyConfigPathArgs): Promise<string> => {
-	const selectedPath = resolve(
-		projectRoot,
-		explicitConfigPath ?? conventionalConfigName,
-	);
-
-	if (!selectedPath.endsWith(".ts")) {
-		throw new ShopifyE2EPreflightError(
-			`Dedicated Shopify config must be a .ts file: ${selectedPath}`,
-		);
-	}
+	const selectedPath = resolve(projectRoot, conventionalConfigName);
 	if (!isStrictlyContained({ candidate: selectedPath, root: projectRoot })) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must be inside the consuming project: ${selectedPath}`,

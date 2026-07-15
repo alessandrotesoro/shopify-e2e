@@ -13,7 +13,7 @@
 		"sourceMap": true,
 		"strict": true,
 		"target": "ES2022",
-		"verbatimModuleSyntax": true
+		"verbatimModuleSyntax": false
 	},
-	"include": ["src/**/*.ts"]
+	"include": ["src/**/*.ts", "src/**/*.cts"]
 }

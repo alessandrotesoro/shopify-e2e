@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
+import { defineShopifyE2EConfig } from "../src/config/define-config.cjs";
 import type { LoadedShopifyConfig } from "../src/config/load-config.js";
 import {
 	DOCTOR_CHECK_ORDER,
@@ -25,8 +25,13 @@ const projectRoot = "/physical/consumer";
 const temporaryDirectories: string[] = [];
 const loadedConfig: LoadedShopifyConfig = {
 	configPath: `${projectRoot}/shopify-e2e.config.ts`,
+	legacyRoles: { guest: { authentication: "required" } },
+	playwrightConfig: defineShopifyE2EConfig({
+		roles: ["guest"],
+		testDir: "shopify-tests",
+	}),
 	projectRoot,
-	roles: { guest: { authentication: "none" } },
+	roles: ["guest"],
 	testDir: `${projectRoot}/shopify-tests`,
 };
 

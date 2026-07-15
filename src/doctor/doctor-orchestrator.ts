@@ -202,6 +202,7 @@ export const orchestrateDoctor = async ({
 			() =>
 				dependencies.loadConfig({
 					configPath: options.configPath,
+					environment: options.environment,
 					projectRoot,
 				}),
 			options.signal,
