@@ -1,8 +1,9 @@
 import { Command, Errors, Flags } from "@oclif/core";
 
+import { buildPlaywrightChildEnvironment } from "../config/execution-environment.cjs";
 import {
 	type LoadedShopifyConfig,
-	loadRunnableShopifyConfig,
+	loadShopifyConfig,
 } from "../config/load-config.js";
 import {
 	type LoadEnvironmentOptions,
@@ -12,12 +13,11 @@ import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../errors.js";
-import { configFlag } from "../flags.js";
 import { PACKAGE_ROOT } from "../package-root.js";
 import {
-	createGeneratedPlaywrightConfig,
-	type GeneratedPlaywrightConfig,
-} from "../playwright/generated-config.js";
+	createPlaywrightExecutionContext,
+	type PlaywrightExecutionContextArtifact,
+} from "../playwright/execution-context.cjs";
 import {
 	type BuildPlaywrightInvocationOptions,
 	buildPlaywrightInvocation,
@@ -34,21 +34,21 @@ import {
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
 import { runChild } from "../process/run-child.js";
+import { resolveProfileDataRoot as resolveRoleStateDataRoot } from "../profiles/configured-origin.js";
+import { inquirerPrompts } from "../prompts/inquirer.js";
 import {
 	configuredOriginFromEnvironment,
 	normalizeConfiguredOrigin,
-	resolveProfileDataRoot,
-} from "../profiles/configured-origin.js";
+} from "../role-states/configured-origin.cjs";
 import {
-	createProfileStore,
-	EMPTY_STORAGE_STATE,
-	type ProfileSelection,
-	type ProfileStore,
-} from "../profiles/profile-store.js";
-import { inquirerPrompts } from "../prompts/inquirer.js";
+	createRoleStateStore,
+	type RoleStateSelection,
+	type RoleStateStatus,
+	type RoleStateStore,
+} from "../role-states/role-state-store.js";
+import { assertRoleName } from "../roles/role-name.cjs";
 
 export interface RunCommandOptions {
-	readonly configPath?: string;
 	readonly cwd: string;
 	readonly dataDir?: string;
 	readonly environment?: NodeJS.ProcessEnv;
@@ -58,13 +58,12 @@ export interface RunCommandOptions {
 	readonly interactive?: boolean;
 	readonly output?: NodeJS.WritableStream;
 	readonly packageRoot?: string;
-	readonly profile?: string;
+	readonly role?: string;
 	readonly signal?: AbortSignal;
 }
 
 interface SelectedShopifyBoundary {
 	readonly configPath: string;
-	readonly profile: string;
 	readonly role: string;
 	readonly testDir: string;
 }
@@ -73,27 +72,26 @@ export interface RunCommandDependencies {
 	readonly buildInvocation: (
 		options: BuildPlaywrightInvocationOptions,
 	) => PlaywrightInvocation;
-	readonly createGeneratedConfig: (
-		options: Parameters<typeof createGeneratedPlaywrightConfig>[0],
-	) => Promise<GeneratedPlaywrightConfig>;
+	readonly createExecutionContext: (
+		options: Parameters<typeof createPlaywrightExecutionContext>[0],
+	) => Promise<PlaywrightExecutionContextArtifact>;
 	readonly createStore: (options: {
 		readonly dataRoot: string;
 		readonly origin: string;
-		readonly roles: Parameters<typeof createProfileStore>[0]["roles"];
-	}) => ProfileStore;
+		readonly roles: readonly string[];
+	}) => RoleStateStore;
 	readonly loadEnvironment: (
 		options: LoadEnvironmentOptions,
 	) => Promise<string>;
 	readonly loadConfig: (options: {
-		readonly configPath?: string;
 		readonly environment: NodeJS.ProcessEnv;
 		readonly projectRoot: string;
 	}) => Promise<LoadedShopifyConfig>;
 	readonly reportSelection: (selection: SelectedShopifyBoundary) => void;
-	readonly resolveDataRoot: typeof resolveProfileDataRoot;
+	readonly resolveDataRoot: typeof resolveRoleStateDataRoot;
 	readonly resolvePeer: (cwd: string) => Promise<ResolvedPlaywrightPeer>;
 	readonly runChild: (invocation: PlaywrightInvocation) => Promise<number>;
-	readonly selectProfile: (options: {
+	readonly selectRole: (options: {
 		readonly choices: readonly {
 			readonly name: string;
 			readonly value: string;
@@ -106,25 +104,23 @@ export interface RunCommandDependencies {
 
 const defaultDependencies: RunCommandDependencies = {
 	buildInvocation: buildPlaywrightInvocation,
-	createGeneratedConfig: createGeneratedPlaywrightConfig,
-	createStore: createProfileStore,
-	loadConfig: loadRunnableShopifyConfig,
+	createExecutionContext: createPlaywrightExecutionContext,
+	createStore: createRoleStateStore,
+	loadConfig: loadShopifyConfig,
 	loadEnvironment,
 	reportSelection: (selection) => {
 		process.stderr.write(`Shopify config: ${selection.configPath}\n`);
 		process.stderr.write(`Shopify test directory: ${selection.testDir}\n`);
-		process.stderr.write(
-			`Shopify profile: ${selection.profile} - ${selection.role}\n`,
-		);
+		process.stderr.write(`Shopify role: ${selection.role}\n`);
 	},
-	resolveDataRoot: resolveProfileDataRoot,
+	resolveDataRoot: resolveRoleStateDataRoot,
 	resolvePeer: resolvePlaywrightPeer,
 	runChild: (invocation) => runChild({ invocation }),
-	selectProfile: ({ choices, input, output, signal }) =>
+	selectRole: ({ choices, input, output, signal }) =>
 		inquirerPrompts.select({
 			choices,
 			input,
-			message: "Which profile should run the Shopify tests?",
+			message: "Which role should run the Shopify tests?",
 			output,
 			signal,
 		}),
@@ -139,14 +135,90 @@ const parseNonEmptyFilter = async (input: string): Promise<string> => {
 	return input;
 };
 
-export interface OrchestrateShopifyRunArgs {
-	readonly dependencies?: RunCommandDependencies;
-	readonly options: RunCommandOptions;
-}
+const unknownRole = (role: string): ShopifyE2EPreflightError =>
+	new ShopifyE2EPreflightError(
+		`Role ${role} is not configured. Run \`shopify-e2e auth list\` or omit --role in an interactive terminal.`,
+	);
+
+const missingState = (role: string): ShopifyE2EPreflightError =>
+	new ShopifyE2EPreflightError(
+		`Role ${role} has no saved state. Run \`shopify-e2e auth capture --role ${role}\`.`,
+	);
+
+const invalidState = (role: string): ShopifyE2EPreflightError =>
+	new ShopifyE2EPreflightError(
+		`Role ${role} has invalid saved state. Run \`shopify-e2e auth remove --role ${role}\`, then \`shopify-e2e auth capture --role ${role}\`.`,
+	);
+
+const unsafeCollision = (role: string): ShopifyE2EPreflightError =>
+	new ShopifyE2EPreflightError(
+		`Role ${role} has an unsafe filesystem collision. Manual cleanup is required; the CLI will not follow or remove it.`,
+	);
+
+const assertConfiguredRole = (
+	loadedConfig: LoadedShopifyConfig,
+	role: string,
+): string => {
+	let selectedRole: string;
+	try {
+		selectedRole = assertRoleName(role);
+	} catch (cause) {
+		throw new ShopifyE2EPreflightError(
+			"Role is invalid. Run `shopify-e2e auth list` or omit --role in an interactive terminal.",
+			{ cause },
+		);
+	}
+	if (!loadedConfig.roles.includes(selectedRole))
+		throw unknownRole(selectedRole);
+	return selectedRole;
+};
+
+const throwForUnavailableState = async (
+	store: RoleStateStore,
+	role: string,
+	signal: AbortSignal,
+	status: RoleStateStatus | undefined,
+): Promise<never> => {
+	if (status === "missing") throw missingState(role);
+	if (status === "invalid") {
+		const removableRoles = await runWithCommandSignal(
+			() => store.removableRoles(),
+			signal,
+		);
+		if (removableRoles.includes(role)) throw invalidState(role);
+		throw unsafeCollision(role);
+	}
+	throw unknownRole(role);
+};
+
+const resolveReadyRole = async (
+	store: RoleStateStore,
+	role: string,
+	signal: AbortSignal,
+): Promise<RoleStateSelection> => {
+	const summary = (await runWithCommandSignal(() => store.list(), signal)).find(
+		(candidate) => candidate.role === role,
+	);
+	if (summary?.status !== "ready") {
+		await throwForUnavailableState(store, role, signal, summary?.status);
+	}
+	try {
+		return await runWithCommandSignal(() => store.resolve(role), signal);
+	} catch (error) {
+		if (error instanceof CommandSignalError) throw error;
+		const latest = (
+			await runWithCommandSignal(() => store.list(), signal)
+		).find((candidate) => candidate.role === role);
+		if (latest?.status !== "ready") {
+			await throwForUnavailableState(store, role, signal, latest?.status);
+		}
+		throw error;
+	}
+};
 
 interface ResolveRunSelectionArgs {
 	readonly dependencies: RunCommandDependencies;
-	readonly loadedConfig: Awaited<ReturnType<typeof loadRunnableShopifyConfig>>;
+	readonly loadedConfig: LoadedShopifyConfig;
 	readonly options: RunCommandOptions;
 	readonly origin: string;
 	readonly signal: AbortSignal;
@@ -158,22 +230,22 @@ const resolveRunSelection = async ({
 	options,
 	origin,
 	signal,
-}: ResolveRunSelectionArgs): Promise<ProfileSelection> => {
+}: ResolveRunSelectionArgs): Promise<RoleStateSelection> => {
 	throwIfCommandAborted(signal);
-	if (
-		options.profile !== undefined &&
-		loadedConfig.legacyRoles[options.profile]?.authentication === "none"
-	) {
-		return {
-			kind: "unauthenticated",
-			name: options.profile,
-			role: options.profile,
-			state: EMPTY_STORAGE_STATE,
-		};
+	if (options.role === undefined && !options.interactive) {
+		throw new ShopifyE2EPreflightError(
+			"A role is required in non-interactive use. Pass `--role <role>`.",
+		);
 	}
+	const explicitRole =
+		options.role === undefined
+			? undefined
+			: assertConfiguredRole(loadedConfig, options.role);
 	const dataDir = options.dataDir;
 	if (!dataDir) {
-		throw new ShopifyE2EPreflightError("Profile data directory is unavailable");
+		throw new ShopifyE2EPreflightError(
+			"Role-state data directory is unavailable",
+		);
 	}
 	const dataRoot = await runWithCommandSignal(
 		() =>
@@ -184,101 +256,73 @@ const resolveRunSelection = async ({
 			}),
 		signal,
 	);
-	throwIfCommandAborted(signal);
 	const store = dependencies.createStore({
 		dataRoot,
 		origin,
-		roles: loadedConfig.legacyRoles,
+		roles: loadedConfig.roles,
 	});
-	const profile = options.profile;
-	if (profile !== undefined) {
-		return runWithCommandSignal(() => store.resolve(profile), signal);
+	if (explicitRole !== undefined) {
+		return resolveReadyRole(store, explicitRole, signal);
 	}
-	if (!options.interactive) {
-		throw new ShopifyE2EPreflightError(
-			"A profile is required in non-interactive use. Pass `--profile <name>`.",
-		);
-	}
-	const selections = await runWithCommandSignal(
-		() => store.runnableProfiles(),
+
+	const readyRoles = await runWithCommandSignal(
+		() => store.readyRoles(),
 		signal,
 	);
-	if (selections.length === 0) {
+	if (readyRoles.length === 0) {
 		throw new ShopifyE2EPreflightError(
-			"No runnable profile exists. Capture one or configure an unauthenticated role.",
+			"No configured role has ready state. Run `shopify-e2e auth capture --role <role>` for a missing role.",
 		);
 	}
-	const selectionNames = new Set<string>();
-	for (const selection of selections) {
-		if (selectionNames.has(selection.name)) {
-			throw new ShopifyE2EPreflightError(
-				"A saved profile name collides with an unauthenticated role. Remove or rename the saved profile.",
-			);
-		}
-		selectionNames.add(selection.name);
-	}
-	const selectedName = await runWithCommandSignal(
+	const selectedRole = await runWithCommandSignal(
 		() =>
-			dependencies.selectProfile({
-				choices: selections.map((candidate) => ({
-					name:
-						candidate.kind === "saved"
-							? `${candidate.name} - ${candidate.role}`
-							: `${candidate.role} - unauthenticated`,
-					value: candidate.name,
-				})),
+			dependencies.selectRole({
+				choices: readyRoles.map((role) => ({ name: role, value: role })),
 				input: options.input,
 				output: options.output,
 				signal,
 			}),
 		signal,
 	);
-	const selected = selections.find(
-		(candidate) => candidate.name === selectedName,
-	);
-	if (!selected) {
-		throw new ShopifyE2EPreflightError("Selected profile is unavailable");
+	if (!readyRoles.includes(selectedRole)) {
+		throw new ShopifyE2EPreflightError("Selected role is unavailable");
 	}
-	return runWithCommandSignal(() => store.resolve(selected.name), signal);
+	return resolveReadyRole(store, selectedRole, signal);
 };
 
-const createGeneratedConfigWithSignal = async (
+const createExecutionContextWithSignal = async (
 	dependencies: RunCommandDependencies,
-	options: Parameters<typeof createGeneratedPlaywrightConfig>[0],
+	options: Parameters<typeof createPlaywrightExecutionContext>[0],
 	signal: AbortSignal,
-): Promise<GeneratedPlaywrightConfig> => {
+): Promise<PlaywrightExecutionContextArtifact> => {
 	throwIfCommandAborted(signal);
-	const creation = dependencies.createGeneratedConfig(options);
+	const creation = dependencies.createExecutionContext(options);
 	try {
 		return await runWithCommandSignal(() => creation, signal);
 	} catch (error) {
 		if (error instanceof CommandSignalError) {
-			let generatedConfig: GeneratedPlaywrightConfig;
+			let artifact: PlaywrightExecutionContextArtifact;
 			try {
-				generatedConfig = await creation;
+				artifact = await creation;
 			} catch {
-				// Creation failed after the signal won, so there is no config to clean.
 				throw error;
 			}
 			try {
-				await generatedConfig.cleanup();
+				await artifact.cleanup();
 			} catch {
-				await retryGeneratedConfigCleanupAfterInterruption(
-					generatedConfig,
-					error,
-				);
+				await retryExecutionContextCleanupAfterInterruption(artifact, error);
 			}
 		}
 		throw error;
 	}
 };
 
-const retryGeneratedConfigCleanupAfterInterruption = async (
-	generatedConfig: GeneratedPlaywrightConfig,
+const retryExecutionContextCleanupAfterInterruption = async (
+	artifact: PlaywrightExecutionContextArtifact,
 	interruption: CommandSignalError,
 ): Promise<never> => {
 	try {
-		await generatedConfig.cleanup();
+		await artifact.cleanup();
 	} catch {
 		throw new CommandSignalError(
 			interruption.signal,
@@ -298,13 +342,26 @@ const assertConfiguredOriginUnchanged = (
 			"SHOPIFY_STORE_URL was removed while trusted config was loading. Set it in the consumer .env file or inherited environment.",
 		);
 	}
-	const currentOrigin = normalizeConfiguredOrigin(configuredUrl);
+	let currentOrigin: string;
+	try {
+		currentOrigin = normalizeConfiguredOrigin(configuredUrl);
+	} catch (cause) {
+		throw new ShopifyE2EPreflightError(
+			"SHOPIFY_STORE_URL changed to an invalid value while trusted config was loading. Keep it stable in the consumer .env file or inherited environment.",
+			{ cause },
+		);
+	}
 	if (currentOrigin !== expectedOrigin) {
 		throw new ShopifyE2EPreflightError(
 			"SHOPIFY_STORE_URL changed while trusted config was loading. Keep it stable in the consumer .env file or inherited environment.",
 		);
 	}
 };
+
+export interface OrchestrateShopifyRunArgs {
+	readonly dependencies?: RunCommandDependencies;
+	readonly options: RunCommandOptions;
+}
 
 export const orchestrateShopifyRun = async ({
 	dependencies = defaultDependencies,
@@ -313,48 +370,46 @@ export const orchestrateShopifyRun = async ({
 	const environment = options.environment ?? process.env;
 	const signal = options.signal ?? new AbortController().signal;
 	const projectRoot = await runWithCommandSignal(
-		() =>
-			dependencies.loadEnvironment({
-				cwd: options.cwd,
-				environment,
-			}),
+		() => dependencies.loadEnvironment({ cwd: options.cwd, environment }),
 		signal,
 	);
 	throwIfCommandAborted(signal);
-	const origin = configuredOriginFromEnvironment(environment);
+	let origin: string;
+	try {
+		origin = configuredOriginFromEnvironment(environment);
+	} catch (cause) {
+		throw new ShopifyE2EPreflightError(
+			cause instanceof Error ? cause.message : "SHOPIFY_STORE_URL is invalid",
+			{ cause },
+		);
+	}
 	const loadedConfig = await runWithCommandSignal(
-		() =>
-			dependencies.loadConfig({
-				configPath: options.configPath,
-				environment,
-				projectRoot,
-			}),
+		() => dependencies.loadConfig({ environment, projectRoot }),
 		signal,
 	);
 	assertConfiguredOriginUnchanged(environment, origin);
 	throwIfCommandAborted(signal);
-	const selection = await runWithCommandSignal(
-		() =>
-			resolveRunSelection({
-				dependencies,
-				loadedConfig,
-				options,
-				origin,
-				signal,
-			}),
+	const selection = await resolveRunSelection({
+		dependencies,
+		loadedConfig,
+		options,
+		origin,
 		signal,
-	);
+	});
 	const peer = await runWithCommandSignal(
 		() => dependencies.resolvePeer(loadedConfig.projectRoot),
 		signal,
 	);
 	throwIfCommandAborted(signal);
-	const generatedConfig = await createGeneratedConfigWithSignal(
+	const executionContext = await createExecutionContextWithSignal(
 		dependencies,
 		{
+			configPath: loadedConfig.configPath,
+			normalizedOrigin: origin,
 			packageRoot: options.packageRoot ?? PACKAGE_ROOT,
 			projectRoot: loadedConfig.projectRoot,
-			selection,
+			role: selection.role,
+			state: selection.state,
 			testDir: loadedConfig.testDir,
 		},
 		signal,
@@ -365,19 +420,22 @@ export const orchestrateShopifyRun = async ({
 	try {
 		throwIfCommandAborted(signal);
 		const invocation = dependencies.buildInvocation({
+			configPath: loadedConfig.configPath,
 			controls: {
 				...(options.grep === undefined ? {} : { grep: options.grep }),
 				...(options.grepInvert === undefined
 					? {}
 					: { grepInvert: options.grepInvert }),
 			},
-			generatedConfig,
+			environment: buildPlaywrightChildEnvironment(
+				environment,
+				executionContext.contextPath,
+			),
 			peer,
 		});
 		throwIfCommandAborted(signal);
 		dependencies.reportSelection({
 			configPath: loadedConfig.configPath,
-			profile: selection.name,
 			role: selection.role,
 			testDir: loadedConfig.testDir,
 		});
@@ -388,7 +446,7 @@ export const orchestrateShopifyRun = async ({
 	}
 	let cleanupError: unknown;
 	try {
-		await generatedConfig.cleanup();
+		await executionContext.cleanup();
 	} catch (error) {
 		cleanupError = error;
 	}
@@ -397,8 +455,8 @@ export const orchestrateShopifyRun = async ({
 			throwIfCommandAborted(signal);
 		} catch (error) {
 			if (error instanceof CommandSignalError) {
-				await retryGeneratedConfigCleanupAfterInterruption(
-					generatedConfig,
+				await retryExecutionContextCleanupAfterInterruption(
+					executionContext,
 					error,
 				);
 			}
@@ -421,7 +479,6 @@ export class Run extends Command {
 		"Run the dedicated Shopify Playwright E2E lane. Run controls are package-owned; arbitrary Playwright arguments are not accepted. Playwright workers, projects, file selectors, reporters, UI, and debug controls are intentionally unavailable.";
 
 	static override flags = {
-		config: configFlag,
 		grep: Flags.string({
 			char: "g",
 			description: "Run Shopify tests whose titles match this pattern",
@@ -431,9 +488,8 @@ export class Run extends Command {
 			description: "Exclude Shopify tests whose titles match this pattern",
 			parse: parseNonEmptyFilter,
 		}),
-		profile: Flags.string({
-			description:
-				"Saved profile name or configured unauthenticated role to run",
+		role: Flags.string({
+			description: "Configured role whose saved browser state should run",
 		}),
 	};
 
@@ -446,7 +502,6 @@ export class Run extends Command {
 		try {
 			exitCode = await orchestrateShopifyRun({
 				options: {
-					configPath: flags.config,
 					cwd: process.cwd(),
 					dataDir: this.config.dataDir,
 					environment: process.env,
@@ -456,15 +511,13 @@ export class Run extends Command {
 					interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 					output: process.stdout,
 					packageRoot: PACKAGE_ROOT,
-					profile: flags.profile,
+					role: flags.role,
 					signal: signals.signal,
 				},
 			});
 		} catch (error) {
 			if (error instanceof CommandSignalError) {
-				this.error(error.message, {
-					exit: error.exitCode,
-				});
+				this.error(error.message, { exit: error.exitCode });
 			}
 			if (
 				error instanceof ShopifyE2EPreflightError ||
@@ -476,7 +529,7 @@ export class Run extends Command {
 				error instanceof Error &&
 				(error.name === "ExitPromptError" || error.name === "AbortPromptError")
 			) {
-				this.error("Profile selection interrupted; no tests started.", {
+				this.error("Role selection interrupted; no tests started.", {
 					exit: 130,
 				});
 			}
