@@ -79,6 +79,55 @@ const makeRunnableConsumer = async (consumerRoot?: string): Promise<string> => {
 	return consumer;
 };
 
+const makeDoctorReadyConsumer = async (): Promise<{
+	readonly consumer: string;
+	readonly importSentinels: readonly string[];
+	readonly launchSentinel: string;
+}> => {
+	const consumer = await makeConsumerFixture();
+	const peerRoot = join(consumer, "node_modules", "@playwright", "test");
+	const chromiumPath = join(peerRoot, "chromium");
+	const launchSentinel = join(consumer, "doctor-browser-launched");
+	const importSentinels = [
+		join(consumer, "ordinary-config-imported"),
+		join(consumer, "ordinary-spec-imported"),
+		join(consumer, "shopify-spec-imported"),
+	] as const;
+	await mkdir(peerRoot, { recursive: true });
+	await writeFile(chromiumPath, "fake chromium\n");
+	await writeFile(join(peerRoot, "cli.js"), "// fake Playwright CLI\n");
+	await writeFile(
+		join(peerRoot, "index.js"),
+		`import { writeFileSync } from "node:fs"; export const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, launch() { writeFileSync(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
+	);
+	await writeFile(
+		join(peerRoot, "package.json"),
+		`${JSON.stringify({
+			bin: { playwright: "cli.js" },
+			exports: {
+				".": "./index.js",
+				"./package.json": "./package.json",
+			},
+			name: "@playwright/test",
+			type: "module",
+			version: "1.61.1",
+		})}\n`,
+	);
+	await writeFile(
+		join(consumer, "playwright.config.ts"),
+		`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(importSentinels[0])}, "imported"); export default {};\n`,
+	);
+	await writeFile(
+		join(consumer, "ordinary.spec.ts"),
+		`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(importSentinels[1])}, "imported");\n`,
+	);
+	await writeFile(
+		join(consumer, "shopify-tests", "checkout.spec.ts"),
+		`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(importSentinels[2])}, "imported");\n`,
+	);
+	return { consumer, importSentinels, launchSentinel };
+};
+
 const makeDotenvAwareConsumer = async (): Promise<string> => {
 	const consumer = await makeRunnableConsumer();
 	await writeFile(
@@ -173,8 +222,85 @@ describe.sequential("built CLI shell", () => {
 		expect(result.stdout).toContain("USAGE");
 		expect(result.stdout).toContain("COMMANDS");
 		expect(result.stdout).toMatch(/\brun\b/);
+		expect(result.stdout).toMatch(/\bdoctor\b/);
 		expect(result.stdout).toMatch(/\bauth\b/);
 		expect(result.stdout).toContain("auth remove");
+		expect(result.stderr).toBe("");
+	});
+
+	it("documents the exact doctor surface", () => {
+		const result = runCli({ args: ["doctor", "--help"] });
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("shopify-e2e doctor");
+		const flagNames = result.stdout
+			.split("\n")
+			.filter((line) => /^ {2}--/.test(line))
+			.map((line) => line.trim().split(/\s+/)[0]);
+		expect(flagNames).toEqual(["--config=<value>"]);
+		expect(result.stderr).toBe("");
+	});
+
+	it.each([
+		["doctor", "unexpected"],
+		["doctor", "--unknown"],
+		["doctor", "--", "unexpected"],
+	])("rejects unsupported doctor input before orchestration: %s", async (...args) => {
+		const consumer = await makeConsumerFixture();
+		await mkdir(join(consumer, ".env"));
+
+		const result = runCli({ args, cwd: consumer });
+
+		expect(result.status).toBe(2);
+		expect(result.stderr).toMatch(
+			/unexpected argument|nonexistent flag|command .* not found/i,
+		);
+		expect(result.stdout).not.toContain("Project:");
+		expect(result.stderr).not.toMatch(/consumer \.env could not be read/i);
+	});
+
+	it("prints the complete ordered doctor report without importing tests", async () => {
+		const fixture = await makeDoctorReadyConsumer();
+
+		const result = runCli({
+			args: ["doctor", "--config", "shopify-e2e.config.ts"],
+			cwd: fixture.consumer,
+		});
+
+		expect(result.status, result.stderr).toBe(0);
+		const labels = [
+			"Project",
+			"Environment",
+			"Store URL",
+			"Shopify config",
+			"Shopify spec candidates",
+			"Playwright peer",
+			"Chromium",
+		];
+		let priorIndex = -1;
+		for (const label of labels) {
+			const index = result.stdout.indexOf(`PASS ${label}:`);
+			expect(index).toBeGreaterThan(priorIndex);
+			priorIndex = index;
+		}
+		expect(result.stdout).not.toContain("https://shop.example");
+		expect(result.stderr).toBe("");
+		for (const sentinel of [
+			...fixture.importSentinels,
+			fixture.launchSentinel,
+		]) {
+			expect(existsSync(sentinel)).toBe(false);
+		}
+	});
+
+	it("prints failures and skips before exiting doctor with code 2", async () => {
+		const consumer = await makeConsumerFixture();
+
+		const result = runCli({ args: ["doctor"], cwd: consumer });
+
+		expect(result.status).toBe(2);
+		expect(result.stdout).toMatch(/FAIL Playwright peer:/);
+		expect(result.stdout).toMatch(/SKIP Chromium:/);
 		expect(result.stderr).toBe("");
 	});
 
