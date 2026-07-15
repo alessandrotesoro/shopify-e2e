@@ -1,9 +1,24 @@
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
 
-const playwrightDefaultSpecName = /\.(?:spec|test)\.(?:[cm]?[jt]sx?)$/;
+// Doctor proves only source-file plausibility. Playwright owns matcher and
+// git-ignore semantics during an actual run.
+const playwrightLoadableSourceExtensions = new Set([
+	".js",
+	".jsx",
+	".ts",
+	".tsx",
+	".mjs",
+	".mjsx",
+	".mts",
+	".mtsx",
+	".cjs",
+	".cjsx",
+	".cts",
+	".ctsx",
+]);
 
 export const discoverShopifySpecs = async (
 	testDir: string,
@@ -34,8 +49,7 @@ export const discoverShopifySpecs = async (
 			}
 			if (
 				entry.isFile() &&
-				entry.name !== ".gitignore" &&
-				playwrightDefaultSpecName.test(entry.name)
+				playwrightLoadableSourceExtensions.has(extname(entry.name))
 			) {
 				candidates.push(entryPath);
 			}
@@ -46,7 +60,7 @@ export const discoverShopifySpecs = async (
 	candidates.sort((left, right) => left.localeCompare(right));
 	if (candidates.length === 0) {
 		throw new ShopifyE2EPreflightError(
-			`Shopify test directory contains no runnable Playwright specs: ${testDir}`,
+			`Shopify test directory contains no JavaScript or TypeScript files with a Playwright-loadable extension: ${testDir}`,
 		);
 	}
 	return candidates;
