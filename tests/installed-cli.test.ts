@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -21,6 +22,24 @@ interface InstalledConsumer {
 	readonly dataRoot: string;
 	readonly root: string;
 }
+
+const findAvailablePort = async (): Promise<number> =>
+	new Promise((resolvePort, reject) => {
+		const server = createServer();
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				server.close();
+				reject(new Error("Could not allocate a web server fixture port"));
+				return;
+			}
+			server.close((error) => {
+				if (error) reject(error);
+				else resolvePort(address.port);
+			});
+		});
+	});
 
 const runCli = (
 	consumer: InstalledConsumer,
@@ -75,6 +94,8 @@ const prepareEsmConsumer = async (
 	tarballPath: string,
 ): Promise<InstalledConsumer> => {
 	const root = await makeTemporaryDirectory("shopify-e2e-installed-esm-");
+	const webServerPort = await findAvailablePort();
+	const webServerUrl = `http://127.0.0.1:${webServerPort}`;
 	const dataRoot = await makeTemporaryDirectory(
 		"shopify-e2e-installed-role-states-",
 	);
@@ -104,8 +125,11 @@ const prepareEsmConsumer = async (
 import { devices } from "@playwright/test";
 import { retryCount } from "fixture-dependency";
 export const normalSettings = {
-  metadata: { installed: true },
+  expect: { timeout: 150 },
+  metadata: { installed: true, webServerUrl: ${JSON.stringify(webServerUrl)} },
+  repeatEach: 2,
   retries: retryCount,
+  timeout: 2_000,
   use: { ...devices["Desktop Chrome"], screenshot: "off", trace: "off", video: "off" },
 } satisfies PlaywrightTestConfig;
 `,
@@ -122,7 +146,25 @@ export default defineShopifyE2EConfig({
   reporter: [["json", { outputFile: "artifacts/results.json" }]],
   roles: ["admin", "customer"],
   testDir: "shopify-tests",
+  webServer: {
+    command: "node ./web-server.mjs",
+    reuseExistingServer: false,
+    timeout: 10_000,
+    url: ${JSON.stringify(`${webServerUrl}/ready`)},
+  },
 });
+`,
+	);
+	await writeFile(
+		join(root, "web-server.mjs"),
+		`import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+const server = createServer((_request, response) => {
+  response.writeHead(200, { "content-type": "text/plain" });
+  response.end("ready");
+});
+server.listen(${webServerPort}, "127.0.0.1", () => writeFileSync("web-server.marker", "started"));
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
 `,
 	);
 	await writeFile(
@@ -143,13 +185,35 @@ export default defineShopifyE2EConfig({
 	);
 	await writeFile(
 		join(root, "shopify-tests", "roles.spec.ts"),
-		`import { writeFileSync } from "node:fs";
+		`import { appendFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-test("admin packed lane", { tag: "@shopify-e2e-role-admin" }, ({}, testInfo) => {
+test("admin packed lane", { tag: "@shopify-e2e-role-admin" }, async ({}, testInfo) => {
   expect(testInfo.config.metadata.installed).toBe(true);
+  expect(testInfo.project.outputDir).toBe(resolve("artifacts/output"));
+  expect(testInfo.project.repeatEach).toBe(2);
+  expect(testInfo.project.retries).toBe(1);
+  expect(testInfo.project.testDir).toBe(resolve("shopify-tests"));
+  expect(testInfo.project.timeout).toBe(2_000);
+  expect(testInfo.project.use.screenshot).toBe("off");
+  expect(testInfo.project.use.trace).toBe("off");
+  expect(testInfo.project.use.video).toBe("off");
+  expect(testInfo.project.use.viewport).toEqual({ height: 720, width: 1280 });
   const state = testInfo.project.use.storageState;
   expect(typeof state).toBe("object");
   expect(state.cookies[0].value).toBe("admin-state");
+  const response = await fetch(testInfo.config.metadata.webServerUrl);
+  expect(await response.text()).toBe("ready");
+  const expectStartedAt = Date.now();
+  let expectTimedOut = false;
+  try {
+    await expect.poll(() => false).toBe(true);
+  } catch {
+    expectTimedOut = true;
+  }
+  expect(expectTimedOut).toBe(true);
+  expect(Date.now() - expectStartedAt).toBeLessThan(1_000);
+  appendFileSync("repeat.marker", String(testInfo.repeatEachIndex) + "\\n");
   writeFileSync("admin-body.marker", "ran");
 });
 test("customer packed lane", { tag: "@shopify-e2e-role-customer" }, () => writeFileSync("customer-body.marker", "ran"));
@@ -177,11 +241,26 @@ const prepareCjsConsumer = async (
 		hasPlaywright: true,
 		tarballPath,
 	});
+	await mkdir(join(root, "node_modules", "fixture-dependency"));
+	await writeFile(
+		join(root, "node_modules", "fixture-dependency", "package.json"),
+		'{"name":"fixture-dependency","type":"commonjs","main":"index.cjs"}\n',
+	);
+	await writeFile(
+		join(root, "node_modules", "fixture-dependency", "index.cjs"),
+		'module.exports = { dependencyMarker: "commonjs-dependency", retryCount: 0 };\n',
+	);
 	await mkdir(join(root, "shopify-tests"));
 	await writeFile(
 		join(root, "config-helper.ts"),
 		`import type { PlaywrightTestConfig } from "@playwright/test";
-export const settings = { retries: 0 } satisfies PlaywrightTestConfig;
+const { devices } = require("@playwright/test");
+const { dependencyMarker, retryCount } = require("fixture-dependency");
+export const settings = {
+  metadata: { dependencyMarker },
+  retries: retryCount,
+  use: { ...devices["Desktop Chrome"], trace: "off" },
+} satisfies PlaywrightTestConfig;
 `,
 	);
 	await writeFile(
@@ -193,7 +272,14 @@ export default defineShopifyE2EConfig({ ...settings, roles: ["admin"], testDir: 
 	);
 	await writeFile(
 		join(root, "shopify-tests", "admin.spec.ts"),
-		'const { test } = require("@playwright/test"); test("cjs admin", { tag: "@shopify-e2e-role-admin" }, () => {});\n',
+		`const { expect, test } = require("@playwright/test");
+test("cjs admin", { tag: "@shopify-e2e-role-admin" }, ({}, testInfo) => {
+  expect(testInfo.config.metadata.dependencyMarker).toBe("commonjs-dependency");
+  expect(testInfo.project.retries).toBe(0);
+  expect(testInfo.project.use.trace).toBe("off");
+  expect(testInfo.project.use.viewport).toEqual({ height: 720, width: 1280 });
+});
+`,
 	);
 	const consumer = { dataRoot, root };
 	await createRoleStateStore({ dataRoot, origin, roles: ["admin"] }).capture({
@@ -253,6 +339,15 @@ describe.sequential("installed CLI release boundary", () => {
 		await expect(
 			access(join(esm.root, "teardown.marker")),
 		).resolves.toBeUndefined();
+		await expect(
+			access(join(esm.root, "web-server.marker")),
+		).resolves.toBeUndefined();
+		expect(
+			(await readFile(join(esm.root, "repeat.marker"), "utf8"))
+				.trim()
+				.split("\n")
+				.sort(),
+		).toEqual(["0", "1"]);
 		const report = JSON.parse(
 			await readFile(join(esm.root, "artifacts", "results.json"), "utf8"),
 		) as { config: { workers: number } };
