@@ -19,6 +19,7 @@ import {
 } from "../src/doctor/doctor-orchestrator.js";
 import { ShopifyE2EPreflightError } from "../src/errors.js";
 import type { CommandSignalError } from "../src/process/command-signals.js";
+import { configuredOriginFromEnvironment } from "../src/profiles/configured-origin.js";
 
 const projectRoot = "/physical/consumer";
 const temporaryDirectories: string[] = [];
@@ -30,6 +31,7 @@ const loadedConfig: LoadedShopifyConfig = {
 };
 
 const makeDependencies = (): DoctorDependencies => ({
+	configuredOriginFromEnvironment: vi.fn(configuredOriginFromEnvironment),
 	discoverSpecs: vi.fn(async () => [
 		`${projectRoot}/shopify-tests/checkout.spec.ts`,
 	]),
@@ -39,7 +41,6 @@ const makeDependencies = (): DoctorDependencies => ({
 	})),
 	loadConfig: vi.fn(async () => loadedConfig),
 	loadProjectEnvironment: vi.fn(async () => undefined),
-	normalizeOrigin: vi.fn(() => "https://shop.example"),
 	resolvePeer: vi.fn(async () => ({
 		executablePath: `${projectRoot}/node_modules/@playwright/test/cli.js`,
 		modulePath: `${projectRoot}/node_modules/@playwright/test/index.js`,
@@ -182,7 +183,7 @@ describe("doctor orchestration", () => {
 		]);
 		expect(report.exitCode).toBe(2);
 		expect(dependencies.loadProjectEnvironment).not.toHaveBeenCalled();
-		expect(dependencies.normalizeOrigin).not.toHaveBeenCalled();
+		expect(dependencies.configuredOriginFromEnvironment).not.toHaveBeenCalled();
 		expect(dependencies.loadConfig).not.toHaveBeenCalled();
 		expect(dependencies.discoverSpecs).not.toHaveBeenCalled();
 		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
@@ -208,6 +209,10 @@ describe("doctor orchestration", () => {
 		);
 		expect(report.checks[3]?.detail).toContain(consumer.configPath);
 		expect(report.checks[4]?.detail).toContain(consumer.testDir);
+		expect(report.checks[4]?.detail).toContain(
+			"1 Playwright spec candidate(s) found",
+		);
+		expect(report.checks[4]?.detail).not.toContain("checkout.spec.ts");
 		expect(JSON.stringify(report)).not.toContain(consumer.chromiumPath);
 		expect(JSON.stringify(report)).not.toContain(environment.SHOPIFY_STORE_URL);
 		await expect(access(consumer.launchSentinel)).rejects.toThrow();
@@ -237,9 +242,6 @@ describe("doctor orchestration", () => {
 		const removedEnvironment: NodeJS.ProcessEnv = {
 			SHOPIFY_STORE_URL: "https://shop.example/initial",
 		};
-		vi.mocked(removed.normalizeOrigin).mockImplementation(
-			(value) => new URL(value).origin,
-		);
 		vi.mocked(removed.loadConfig).mockImplementationOnce(async () => {
 			delete removedEnvironment.SHOPIFY_STORE_URL;
 			return loadedConfig;
@@ -254,9 +256,6 @@ describe("doctor orchestration", () => {
 		const changedEnvironment: NodeJS.ProcessEnv = {
 			SHOPIFY_STORE_URL: "https://shop.example/initial",
 		};
-		vi.mocked(changed.normalizeOrigin).mockImplementation(
-			(value) => new URL(value).origin,
-		);
 		vi.mocked(changed.loadConfig).mockImplementationOnce(async () => {
 			changedEnvironment.SHOPIFY_STORE_URL = "https://other.example/changed";
 			return loadedConfig;
@@ -271,9 +270,6 @@ describe("doctor orchestration", () => {
 		const stableEnvironment: NodeJS.ProcessEnv = {
 			SHOPIFY_STORE_URL: "https://shop.example/initial",
 		};
-		vi.mocked(stable.normalizeOrigin).mockImplementation(
-			(value) => new URL(value).origin,
-		);
 		vi.mocked(stable.loadConfig).mockImplementationOnce(async () => {
 			stableEnvironment.SHOPIFY_STORE_URL =
 				"https://SHOP.example:443/rewritten?preview=1";
@@ -389,9 +385,11 @@ describe("doctor orchestration", () => {
 	it("sanitizes invalid URL failures without echoing the configured value", async () => {
 		const secretUrl = "http://secret-user:secret-pass@shop.example";
 		const dependencies = makeDependencies();
-		vi.mocked(dependencies.normalizeOrigin).mockImplementation(() => {
-			throw new ShopifyE2EPreflightError("SHOPIFY_STORE_URL must use HTTPS");
-		});
+		vi.mocked(dependencies.configuredOriginFromEnvironment).mockImplementation(
+			() => {
+				throw new ShopifyE2EPreflightError("SHOPIFY_STORE_URL must use HTTPS");
+			},
+		);
 
 		const report = await runDoctor(dependencies, {
 			SHOPIFY_STORE_URL: secretUrl,

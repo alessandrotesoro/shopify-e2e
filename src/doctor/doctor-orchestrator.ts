@@ -15,7 +15,7 @@ import {
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
-import { normalizeConfiguredOrigin } from "../profiles/configured-origin.js";
+import { configuredOriginFromEnvironment } from "../profiles/configured-origin.js";
 
 export const DOCTOR_CHECK_ORDER = [
 	"project",
@@ -53,7 +53,7 @@ export interface DoctorDependencies {
 	readonly loadChromium: typeof loadConsumerChromium;
 	readonly loadConfig: typeof loadShopifyConfig;
 	readonly loadProjectEnvironment: typeof loadProjectEnvironment;
-	readonly normalizeOrigin: typeof normalizeConfiguredOrigin;
+	readonly configuredOriginFromEnvironment: typeof configuredOriginFromEnvironment;
 	readonly resolvePeer: typeof resolvePlaywrightPeer;
 	readonly resolveProjectRoot: typeof resolveProjectRoot;
 }
@@ -68,7 +68,7 @@ const defaultDoctorDependencies: DoctorDependencies = {
 	loadChromium: loadConsumerChromium,
 	loadConfig: loadShopifyConfig,
 	loadProjectEnvironment,
-	normalizeOrigin: normalizeConfiguredOrigin,
+	configuredOriginFromEnvironment,
 	resolvePeer: resolvePlaywrightPeer,
 	resolveProjectRoot,
 };
@@ -179,13 +179,9 @@ export const orchestrateDoctor = async ({
 		);
 		try {
 			throwIfCommandAborted(options.signal);
-			const configuredUrl = options.environment.SHOPIFY_STORE_URL;
-			if (!configuredUrl) {
-				throw new ShopifyE2EPreflightError(
-					"SHOPIFY_STORE_URL is required. Set it in the consumer .env file or inherited environment.",
-				);
-			}
-			configuredOrigin = dependencies.normalizeOrigin(configuredUrl);
+			configuredOrigin = dependencies.configuredOriginFromEnvironment(
+				options.environment,
+			);
 			results.set(
 				"store-url",
 				pass("store-url", "SHOPIFY_STORE_URL is a valid HTTPS origin"),
@@ -226,10 +222,9 @@ export const orchestrateDoctor = async ({
 
 		if (configuredOrigin !== undefined) {
 			try {
-				const configuredUrl = options.environment.SHOPIFY_STORE_URL;
 				if (
-					!configuredUrl ||
-					dependencies.normalizeOrigin(configuredUrl) !== configuredOrigin
+					dependencies.configuredOriginFromEnvironment(options.environment) !==
+					configuredOrigin
 				) {
 					throw new ShopifyE2EPreflightError("Configured origin changed");
 				}

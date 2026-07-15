@@ -23,12 +23,14 @@ import {
 
 const generatedConfigPrefix = "shopify-e2e-playwright-";
 const temporaryDirectories: string[] = [];
+const doctorDedicatedSpecMarker = "doctor-dedicated-spec-loaded.marker";
+const doctorPeerCliMarker = "doctor-peer-cli-spawned.marker";
 const doctorDedicatedSpecSource = `import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
 if (markerDirectory) {
-  writeFileSync(join(markerDirectory, "doctor-dedicated-spec-loaded.marker"), "loaded");
+  writeFileSync(join(markerDirectory, ${JSON.stringify(doctorDedicatedSpecMarker)}), "loaded");
 }
 `;
 
@@ -51,8 +53,8 @@ export interface InstalledDoctorCliFixture {
 }
 
 export const doctorIsolationMarkers = [
-	"doctor-dedicated-spec-loaded.marker",
-	"doctor-peer-cli-spawned.marker",
+	doctorDedicatedSpecMarker,
+	doctorPeerCliMarker,
 	"ordinary-config-loaded.marker",
 	"ordinary-spec-loaded.marker",
 ] as const;
@@ -333,7 +335,7 @@ import { join } from "node:path";
 
 const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
 if (markerDirectory) {
-  writeFileSync(join(markerDirectory, "doctor-peer-cli-spawned.marker"), "spawned");
+  writeFileSync(join(markerDirectory, ${JSON.stringify(doctorPeerCliMarker)}), "spawned");
 }
 throw new Error("doctor must not spawn the Playwright CLI");
 `,
