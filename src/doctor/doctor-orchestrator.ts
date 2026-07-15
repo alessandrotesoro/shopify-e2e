@@ -4,15 +4,10 @@ import {
 	loadShopifyConfig,
 } from "../config/load-config.js";
 import { resolveProjectRoot } from "../config/project-boundary.js";
-import {
-	type LoadProjectEnvironmentOptions,
-	loadProjectEnvironment,
-} from "../environment/load-environment.js";
+import { loadProjectEnvironment } from "../environment/load-environment.js";
 import { ShopifyE2EPreflightError } from "../errors.js";
 import {
-	type ConsumerChromiumLauncher,
 	loadConsumerChromium,
-	type ResolvedPlaywrightPeer,
 	resolvePlaywrightPeer,
 } from "../playwright/peer.js";
 import {
@@ -33,9 +28,9 @@ export const DOCTOR_CHECK_ORDER = [
 ] as const;
 
 export type DoctorCheckId = (typeof DOCTOR_CHECK_ORDER)[number];
-export type DoctorCheckStatus = "PASS" | "FAIL" | "ERROR" | "SKIP";
+type DoctorCheckStatus = "PASS" | "FAIL" | "ERROR" | "SKIP";
 
-export interface DoctorCheckResult {
+interface DoctorCheckResult {
 	readonly detail: string;
 	readonly id: DoctorCheckId;
 	readonly status: DoctorCheckStatus;
@@ -46,7 +41,7 @@ export interface DoctorReport {
 	readonly exitCode: 0 | 1 | 2;
 }
 
-export interface DoctorOptions {
+interface DoctorOptions {
 	readonly configPath?: string;
 	readonly cwd: string;
 	readonly environment: NodeJS.ProcessEnv;
@@ -54,23 +49,16 @@ export interface DoctorOptions {
 }
 
 export interface DoctorDependencies {
-	readonly discoverSpecs: (testDir: string) => Promise<readonly string[]>;
-	readonly loadChromium: (
-		peer: ResolvedPlaywrightPeer,
-	) => Promise<ConsumerChromiumLauncher>;
-	readonly loadConfig: (options: {
-		readonly configPath?: string;
-		readonly projectRoot: string;
-	}) => Promise<LoadedShopifyConfig>;
-	readonly loadProjectEnvironment: (
-		options: LoadProjectEnvironmentOptions,
-	) => Promise<void>;
-	readonly normalizeOrigin: (input: string) => string;
-	readonly resolvePeer: (cwd: string) => Promise<ResolvedPlaywrightPeer>;
-	readonly resolveProjectRoot: (cwd: string) => Promise<string>;
+	readonly discoverSpecs: typeof discoverShopifySpecs;
+	readonly loadChromium: typeof loadConsumerChromium;
+	readonly loadConfig: typeof loadShopifyConfig;
+	readonly loadProjectEnvironment: typeof loadProjectEnvironment;
+	readonly normalizeOrigin: typeof normalizeConfiguredOrigin;
+	readonly resolvePeer: typeof resolvePlaywrightPeer;
+	readonly resolveProjectRoot: typeof resolveProjectRoot;
 }
 
-export interface OrchestrateDoctorArgs {
+interface OrchestrateDoctorArgs {
 	readonly dependencies?: DoctorDependencies;
 	readonly options: DoctorOptions;
 }
@@ -124,11 +112,9 @@ const reportFrom = (
 		if (!result) throw new Error(`Missing doctor result for ${id}`);
 		return result;
 	});
-	const exitCode = checks.some(({ status }) => status === "ERROR")
-		? 1
-		: checks.some(({ status }) => status === "FAIL")
-			? 2
-			: 0;
+	let exitCode: DoctorReport["exitCode"] = 0;
+	if (checks.some(({ status }) => status === "ERROR")) exitCode = 1;
+	else if (checks.some(({ status }) => status === "FAIL")) exitCode = 2;
 	return { checks, exitCode };
 };
 
