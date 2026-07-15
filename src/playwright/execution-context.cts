@@ -17,16 +17,9 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import {
-	basename,
-	dirname,
-	isAbsolute,
-	join,
-	relative,
-	resolve,
-	sep,
-} from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "../config/execution-environment.cjs";
+import { isPathContained } from "../path-boundary.utils.cjs";
 import { normalizeConfiguredOrigin } from "../role-states/configured-origin.cjs";
 import { assertRoleName } from "../roles/role-name.cjs";
 import {
@@ -90,22 +83,6 @@ export interface ReadPlaywrightExecutionContextOptions {
 	readonly environment?: NodeJS.ProcessEnv;
 	readonly packageRoot?: string;
 }
-
-const isPathContained = ({
-	candidate,
-	parent,
-}: {
-	readonly candidate: string;
-	readonly parent: string;
-}): boolean => {
-	const pathFromParent = relative(parent, candidate);
-	return (
-		pathFromParent === "" ||
-		(!pathFromParent.startsWith(`..${sep}`) &&
-			pathFromParent !== ".." &&
-			!isAbsolute(pathFromParent))
-	);
-};
 
 class PlaywrightExecutionContextError extends TypeError {
 	public constructor(detail: string) {

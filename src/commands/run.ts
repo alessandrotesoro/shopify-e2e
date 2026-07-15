@@ -35,11 +35,15 @@ import {
 } from "../process/command-signals.js";
 import { runChild } from "../process/run-child.js";
 import { inquirerPrompts } from "../prompts/inquirer.js";
-import {
-	configuredOriginFromEnvironment,
-	normalizeConfiguredOrigin,
-} from "../role-states/configured-origin.cjs";
+import { normalizeConfiguredOrigin } from "../role-states/configured-origin.cjs";
 import { resolveRoleStateDataRoot } from "../role-states/data-root.js";
+import {
+	configuredOriginForCommand,
+	invalidState,
+	missingState,
+	unknownRole,
+	unsafeCollision,
+} from "../role-states/preflight.js";
 import {
 	createRoleStateStore,
 	type RoleStateSelection,
@@ -134,26 +138,6 @@ const parseNonEmptyFilter = async (input: string): Promise<string> => {
 	}
 	return input;
 };
-
-const unknownRole = (role: string): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError(
-		`Role ${role} is not configured. Run \`shopify-e2e auth list\` or omit --role in an interactive terminal.`,
-	);
-
-const missingState = (role: string): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError(
-		`Role ${role} has no saved state. Run \`shopify-e2e auth capture --role ${role}\`.`,
-	);
-
-const invalidState = (role: string): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError(
-		`Role ${role} has invalid saved state. Run \`shopify-e2e auth remove --role ${role}\`, then \`shopify-e2e auth capture --role ${role}\`.`,
-	);
-
-const unsafeCollision = (role: string): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError(
-		`Role ${role} has an unsafe filesystem collision. Manual cleanup is required; the CLI will not follow or remove it.`,
-	);
 
 const assertConfiguredRole = (
 	loadedConfig: LoadedShopifyConfig,
@@ -374,15 +358,7 @@ export const orchestrateShopifyRun = async ({
 		signal,
 	);
 	throwIfCommandAborted(signal);
-	let origin: string;
-	try {
-		origin = configuredOriginFromEnvironment(environment);
-	} catch (cause) {
-		throw new ShopifyE2EPreflightError(
-			cause instanceof Error ? cause.message : "SHOPIFY_STORE_URL is invalid",
-			{ cause },
-		);
-	}
+	const origin = configuredOriginForCommand(environment);
 	const loadedConfig = await runWithCommandSignal(
 		() => dependencies.loadConfig({ environment, projectRoot }),
 		signal,
