@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import semver from "semver";
 
-import type { CaptureBrowser } from "../auth/capture-profile.js";
+import type { CaptureBrowser } from "../auth/capture-role-state.js";
 import { ShopifyE2EPreflightError } from "../errors.js";
 import { PACKAGE_ROOT } from "../package-root.js";
 import { isPathContained } from "../path-boundary.utils.js";
