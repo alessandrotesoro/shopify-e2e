@@ -58,6 +58,10 @@ const emitSignal = ({ fake, signal }: EmitSignalArgs): void => {
 
 const invocation = {
 	args: ["/consumer/@playwright/test/cli.js", "test", "--workers=1"],
+	environment: {
+		PATH: "/usr/bin",
+		SHOPIFY_E2E_EXECUTION_CONTEXT: "/tmp/context.json",
+	},
 	executable: process.execPath,
 } as const;
 
@@ -81,6 +85,7 @@ describe("Playwright child lifecycle", () => {
 			invocation.args,
 			{
 				detached: true,
+				env: invocation.environment,
 				shell: false,
 				stdio: "inherit",
 			},

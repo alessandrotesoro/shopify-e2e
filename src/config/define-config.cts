@@ -1,6 +1,9 @@
 import type { PlaywrightTestConfig } from "@playwright/test";
 
+import { readPlaywrightExecutionContext } from "../playwright/execution-context.cjs";
 import { validateRoleList } from "../roles/role-name.cjs";
+import { buildRoleTokenPattern } from "../roles/role-token.cjs";
+import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "./execution-environment.cjs";
 
 const CONFIG_BRAND = Symbol.for("@sematico/shopify-e2e/config/defined");
 const CONFIG_ERROR_BRAND = Symbol.for(
@@ -179,10 +182,33 @@ export const defineShopifyE2EConfig = <TestArgs = object, WorkerArgs = object>(
 	try {
 		const validated = validateInput(input);
 		const use = validateUse(validated.input);
+		const executionContext = Object.hasOwn(
+			process.env,
+			SHOPIFY_E2E_EXECUTION_CONTEXT_ENV,
+		)
+			? readPlaywrightExecutionContext()
+			: undefined;
+		if (
+			executionContext !== undefined &&
+			!validated.roles.includes(executionContext.role)
+		) {
+			throw new TypeError(
+				`Selected role is not present in Shopify config roles: ${executionContext.role}`,
+			);
+		}
 		const config = {
 			...validated.input,
 			roles: validated.roles,
-			...(use === undefined ? {} : { use: { ...use } }),
+			...(executionContext === undefined
+				? use === undefined
+					? {}
+					: { use: { ...use } }
+				: {
+						grep: buildRoleTokenPattern(executionContext.role),
+						testDir: executionContext.testDir,
+						use: { ...use, storageState: executionContext.state },
+						workers: 1,
+					}),
 		} as DefinedShopifyE2EConfig<TestArgs, WorkerArgs>;
 		Object.defineProperty(config, CONFIG_BRAND, {
 			configurable: false,

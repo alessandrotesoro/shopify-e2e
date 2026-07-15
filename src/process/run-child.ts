@@ -68,6 +68,9 @@ export const runChild = async ({
 	const isPosixPlatform = isPosix(runtime.platform);
 	const child = runtime.spawn(invocation.executable, invocation.args, {
 		detached: isPosixPlatform,
+		...(invocation.environment === undefined
+			? {}
+			: { env: invocation.environment }),
 		shell: false,
 		stdio: "inherit",
 	});

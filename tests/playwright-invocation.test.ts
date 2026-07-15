@@ -141,6 +141,40 @@ describe("generated Playwright configuration", () => {
 });
 
 describe("owned Playwright invocation", () => {
+	it("rejects a non-canonical relative real config path", async () => {
+		const peer = await resolvePlaywrightPeer(process.cwd());
+		expect(() =>
+			buildPlaywrightInvocation({
+				configPath: "shopify-e2e.config.ts",
+				peer,
+			}),
+		).toThrow(/absolute/i);
+	});
+
+	it("constructs the real config invocation with one worker and the explicit child environment", async () => {
+		const testDir = await makeTestRoot();
+		const peer = await resolvePlaywrightPeer(process.cwd());
+		const configPath = join(dirname(testDir), "shopify-e2e.config.ts");
+		const environment = {
+			PATH: "/usr/bin",
+			SHOPIFY_E2E_EXECUTION_CONTEXT: "/tmp/context.json",
+		};
+
+		expect(
+			buildPlaywrightInvocation({ configPath, environment, peer }),
+		).toEqual({
+			args: [
+				peer.executablePath,
+				"test",
+				"--config",
+				configPath,
+				"--workers=1",
+			],
+			environment,
+			executable: process.execPath,
+		});
+	});
+
 	it("constructs only the consumer peer, test command, generated config, and one worker", async () => {
 		const generatedConfig = await createGuestConfig(await makeTestRoot());
 		const peer = await resolvePlaywrightPeer(process.cwd());
@@ -327,6 +361,10 @@ test("untagged role", () => {});
 			}
 		} finally {
 			await generatedConfig.cleanup();
+			await rm(join(consumer, "test-results"), {
+				force: true,
+				recursive: true,
+			});
 		}
 	});
 
