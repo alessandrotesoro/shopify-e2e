@@ -6,9 +6,11 @@ import {
 	CommandSignalError,
 	commandSignalFromReason,
 } from "../process/command-signals.js";
-import { normalizeConfiguredOrigin } from "../profiles/configured-origin.js";
-import type { PlaywrightStorageState } from "../profiles/profile-schema.js";
-import { validateStorageState } from "../profiles/profile-schema.js";
+import { normalizeConfiguredOrigin } from "../role-states/configured-origin.cjs";
+import {
+	type PlaywrightStorageState,
+	validateStorageState,
+} from "../storage-state/schema.cjs";
 
 export interface CaptureEventSource {
 	off(event: string, listener: () => void): unknown;
@@ -33,7 +35,7 @@ export interface CaptureBrowser extends CaptureEventSource {
 	}): Promise<CaptureContext>;
 }
 
-export interface CaptureProfileDependencies {
+export interface CaptureRoleStateDependencies {
 	readonly confirmSave: (options: {
 		readonly signal: AbortSignal;
 	}) => Promise<boolean>;
@@ -43,14 +45,14 @@ export interface CaptureProfileDependencies {
 	readonly report: (message: string) => void;
 }
 
-export interface CaptureBrowserProfileArgs {
-	readonly dependencies: CaptureProfileDependencies;
+export interface CaptureBrowserRoleStateArgs {
+	readonly dependencies: CaptureRoleStateDependencies;
 	readonly initialState: PlaywrightStorageState;
 	readonly origin: string;
 	readonly signal: AbortSignal;
 }
 
-export type CaptureBrowserProfileResult =
+export type CaptureBrowserRoleStateResult =
 	| {
 			readonly state: PlaywrightStorageState;
 			readonly status: "captured";
@@ -62,14 +64,14 @@ export type CaptureBrowserProfileResult =
 
 export class CaptureSignalError extends CommandSignalError {
 	public constructor(signal: "SIGINT" | "SIGTERM") {
-		super(signal, `Profile capture interrupted by ${signal}`);
+		super(signal, `Role-state capture interrupted by ${signal}`);
 		this.name = "CaptureSignalError";
 	}
 }
 
 class BrowserClosedCaptureError extends Error {
 	public constructor() {
-		super("Browser closed during profile capture");
+		super("Browser closed during role-state capture");
 		this.name = "BrowserClosedCaptureError";
 	}
 }
@@ -77,6 +79,29 @@ class BrowserClosedCaptureError extends Error {
 const throwIfCaptureAborted = (signal: AbortSignal): void => {
 	if (signal.aborted) {
 		throw new CaptureSignalError(commandSignalFromReason(signal.reason));
+	}
+};
+
+const validateCapturedState = (value: unknown): PlaywrightStorageState => {
+	try {
+		return validateStorageState(value);
+	} catch (cause) {
+		throw new ShopifyE2EPreflightError("Browser role state is invalid", {
+			cause,
+		});
+	}
+};
+
+const normalizeCaptureOrigin = (origin: string): string => {
+	try {
+		return normalizeConfiguredOrigin(origin);
+	} catch (cause) {
+		throw new ShopifyE2EPreflightError(
+			cause instanceof Error
+				? cause.message
+				: "Configured store origin is invalid",
+			{ cause },
+		);
 	}
 };
 
@@ -92,22 +117,22 @@ const normalizeCaptureError = (error: unknown): Error => {
 		return new CaptureSignalError("SIGINT");
 	}
 	return new ShopifyE2EInfrastructureError(
-		"Browser profile capture could not complete",
+		"Browser role-state capture could not complete",
 		{ cause: error },
 	);
 };
 
-export const captureBrowserProfile = async ({
+export const captureBrowserRoleState = async ({
 	dependencies,
 	initialState,
 	origin,
 	signal,
-}: CaptureBrowserProfileArgs): Promise<CaptureBrowserProfileResult> => {
-	const validatedInitialState = validateStorageState(initialState);
-	const normalizedOrigin = normalizeConfiguredOrigin(origin);
+}: CaptureBrowserRoleStateArgs): Promise<CaptureBrowserRoleStateResult> => {
+	const validatedInitialState = validateCapturedState(initialState);
+	const normalizedOrigin = normalizeCaptureOrigin(origin);
 	if (normalizedOrigin !== origin) {
 		throw new ShopifyE2EPreflightError(
-			"Browser profile capture requires the normalized configured store origin",
+			"Browser role-state capture requires the normalized configured store origin",
 		);
 	}
 	throwIfCaptureAborted(signal);
@@ -123,7 +148,7 @@ export const captureBrowserProfile = async ({
 		readonly source: CaptureEventSource;
 	}> = [];
 	let operationError: Error | undefined;
-	let result: CaptureBrowserProfileResult | undefined;
+	let result: CaptureBrowserRoleStateResult | undefined;
 	const externalInterruption = new Promise<never>((_resolve, reject) => {
 		externalAbortListener = () =>
 			reject(new CaptureSignalError(commandSignalFromReason(signal.reason)));
@@ -260,7 +285,7 @@ export const captureBrowserProfile = async ({
 				if (lifecycleAbort.signal.aborted) {
 					result = { reason: "browser-closed", status: "cancelled" };
 				} else {
-					const state = validateStorageState(captured.state);
+					const state = validateCapturedState(captured.state);
 					throwIfCaptureAborted(signal);
 					if (lifecycleAbort.signal.aborted) {
 						result = { reason: "browser-closed", status: "cancelled" };
@@ -300,7 +325,7 @@ export const captureBrowserProfile = async ({
 		}
 		if (!operationError && cleanupCause !== undefined) {
 			operationError = new ShopifyE2EInfrastructureError(
-				"Browser profile capture cleanup could not complete",
+				"Browser role-state capture cleanup could not complete",
 				{ cause: cleanupCause },
 			);
 		}
@@ -308,7 +333,7 @@ export const captureBrowserProfile = async ({
 	if (operationError) throw operationError;
 	if (!result) {
 		throw new ShopifyE2EInfrastructureError(
-			"Browser profile capture could not complete",
+			"Browser role-state capture could not complete",
 		);
 	}
 	return result;

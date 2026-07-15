@@ -1,4 +1,4 @@
-import { confirm, input, select } from "@inquirer/prompts";
+import { confirm, select } from "@inquirer/prompts";
 
 export interface PromptChoice<Value> {
 	readonly description?: string;
@@ -18,13 +18,6 @@ export interface SelectPromptOptions<Value> extends PromptContext {
 	readonly message: string;
 }
 
-export interface InputPromptOptions extends PromptContext {
-	readonly message: string;
-	readonly validate?: (
-		value: string,
-	) => boolean | string | Promise<boolean | string>;
-}
-
 export interface ConfirmPromptOptions extends PromptContext {
 	readonly default?: boolean;
 	readonly message: string;
@@ -32,7 +25,6 @@ export interface ConfirmPromptOptions extends PromptContext {
 
 export interface PromptFunctions {
 	readonly confirm: (options: ConfirmPromptOptions) => Promise<boolean>;
-	readonly input: (options: InputPromptOptions) => Promise<string>;
 	readonly select: <Value>(
 		options: SelectPromptOptions<Value>,
 	) => Promise<Value>;
@@ -55,11 +47,6 @@ export const inquirerPrompts: PromptFunctions = {
 				default: options.default,
 				message: options.message,
 			},
-			contextFrom(options),
-		),
-	input: (options) =>
-		input(
-			{ message: options.message, validate: options.validate },
 			contextFrom(options),
 		),
 	select: (options) =>

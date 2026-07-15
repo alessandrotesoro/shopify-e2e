@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const promptMocks = vi.hoisted(() => ({
 	confirm: vi.fn(async () => true),
-	input: vi.fn(async () => "profile-name"),
 	select: vi.fn(async () => "selected"),
 }));
 
@@ -34,21 +33,15 @@ describe("Inquirer prompt boundary", () => {
 		);
 	});
 
-	it("forwards validation and cancellation context to input and confirm", async () => {
+	it("forwards cancellation context and the default to confirm", async () => {
 		const signal = new AbortController().signal;
-		const validate = vi.fn(() => true);
 
-		await inquirerPrompts.input({ message: "Name", signal, validate });
 		await inquirerPrompts.confirm({
 			default: false,
 			message: "Save?",
 			signal,
 		});
 
-		expect(promptMocks.input).toHaveBeenCalledWith(
-			{ message: "Name", validate },
-			expect.objectContaining({ signal }),
-		);
 		expect(promptMocks.confirm).toHaveBeenCalledWith(
 			{ default: false, message: "Save?" },
 			expect.objectContaining({ signal }),

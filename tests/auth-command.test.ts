@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,29 +7,25 @@ import {
 	defaultAuthDependencies,
 	orchestrateAuth,
 } from "../src/auth/auth-orchestrator.js";
-import { CaptureSignalError } from "../src/auth/capture-profile.js";
+import { CaptureSignalError } from "../src/auth/capture-role-state.js";
 import { classifyAuthCommandFailure } from "../src/commands/auth.js";
 import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../src/errors.js";
-import { configuredOriginKey } from "../src/profiles/configured-origin.js";
-import type { PlaywrightStorageState } from "../src/profiles/profile-schema.js";
-import {
-	createProfileStore,
-	EMPTY_STORAGE_STATE,
-	type ProfileStore,
-} from "../src/profiles/profile-store.js";
+import { configuredOriginKey } from "../src/role-states/configured-origin.cjs";
+import { createRoleStateStore } from "../src/role-states/role-state-store.js";
+import type { PlaywrightStorageState } from "../src/storage-state/schema.cjs";
 import {
 	authOptions,
 	createAuthFixtureScope,
 	DEFAULT_ROLES,
+	EMPTY_STORAGE_STATE,
 	makePrompts,
-	seedProfile,
+	seedRoleState,
 	withStubbedBrowser,
 } from "./support/auth-command-fixture.js";
 
-const packageRoot = resolve(import.meta.dirname, "..");
 const { cleanup: cleanupFixtures, makeFixture } = createAuthFixtureScope();
 
 const stateWithMarker = (marker: string): PlaywrightStorageState => ({
@@ -47,556 +43,161 @@ afterEach(async () => {
 	await cleanupFixtures();
 });
 
-describe("auth command orchestration", () => {
-	it("lists an empty current-origin registry without loading Playwright", async () => {
+describe("role-only auth command orchestration", () => {
+	it("lists configured readiness without prompts, Playwright, paths, or secrets", async () => {
 		const fixture = await makeFixture();
+		await seedRoleState(fixture, "admin");
 		const report = vi.fn();
 		const prompts = makePrompts();
 		const dependencies = defaultAuthDependencies(prompts, report);
 		const resolvePeer = vi.fn(dependencies.resolvePeer);
 
 		await orchestrateAuth(
-			{
-				action: "list",
-				cwd: fixture.projectRoot,
-				dataDir: fixture.dataDir,
-				environment: {},
-				interactive: false,
-				packageRoot,
-				signal: new AbortController().signal,
-			},
-			{ ...dependencies, resolvePeer },
-		);
-
-		expect(report).toHaveBeenCalledWith(
-			"No saved profiles for the configured store.",
-		);
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it("captures with explicit role and profile before persisting", async () => {
-		const fixture = await makeFixture();
-		const report = vi.fn();
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, report);
-		const captureProfile = vi.fn(async () => ({
-			state: EMPTY_STORAGE_STATE,
-			status: "captured" as const,
-		}));
-
-		await orchestrateAuth(
-			{
-				action: "capture",
-				cwd: fixture.projectRoot,
-				dataDir: fixture.dataDir,
-				environment: {},
-				interactive: true,
-				packageRoot,
-				profile: "admin-primary",
-				role: "admin",
-				signal: new AbortController().signal,
-			},
+			authOptions(fixture, { action: "list", interactive: false }),
 			{
 				...dependencies,
-				captureProfile,
-				loadChromium: vi.fn(async () => ({
-					executablePath: vi.fn(() => "/consumer/chromium"),
-					launch: vi.fn(),
-				})),
-				resolvePeer: vi.fn(async () => ({
-					executablePath: "/consumer/cli.js",
-					modulePath: "/consumer/index.js",
-				})),
+				resolvePeer,
 			},
 		);
 
-		expect(captureProfile).toHaveBeenCalledWith(
-			expect.objectContaining({ origin: "https://shop.example" }),
+		expect(report.mock.calls).toEqual([
+			["admin\tready"],
+			["customer\tmissing"],
+		]);
+		expect(JSON.stringify(report.mock.calls)).not.toMatch(
+			/cookie|storage-state|https:\/\/|\/private|secret/i,
 		);
-		expect(report).toHaveBeenCalledWith(
-			expect.stringContaining("run --profile admin-primary"),
-		);
-		expect(prompts.input).not.toHaveBeenCalled();
-	});
-
-	it("rejects non-interactive capture before peer or browser work", async () => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await expect(
-			orchestrateAuth(
-				{
-					action: "capture",
-					cwd: fixture.projectRoot,
-					dataDir: fixture.dataDir,
-					environment: {},
-					interactive: false,
-					packageRoot,
-					profile: "admin-primary",
-					role: "admin",
-					signal: new AbortController().signal,
-				},
-				{ ...dependencies, resolvePeer },
-			),
-		).rejects.toThrow(/interactive terminal/i);
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it("fails missing URL before config, prompts, or peer resolution", async () => {
-		const fixture = await makeFixture();
-		await rm(join(fixture.projectRoot, ".env"));
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const loadConfig = vi.fn(dependencies.loadConfig);
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await expect(
-			orchestrateAuth(
-				{
-					action: "menu",
-					cwd: fixture.projectRoot,
-					dataDir: fixture.dataDir,
-					environment: {},
-					interactive: true,
-					packageRoot,
-					signal: new AbortController().signal,
-				},
-				{ ...dependencies, loadConfig, resolvePeer },
-			),
-		).rejects.toThrow(/SHOPIFY_STORE_URL.*\.env/i);
-		expect(loadConfig).not.toHaveBeenCalled();
 		expect(prompts.select).not.toHaveBeenCalled();
 		expect(resolvePeer).not.toHaveBeenCalled();
 	});
 
-	it("gives .env remediation for every invalid configured URL before prompts or peer resolution", async () => {
+	it("reports a validly named stored role removed from config as orphaned", async () => {
 		const fixture = await makeFixture();
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const loadConfig = vi.fn(dependencies.loadConfig);
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await expect(
-			orchestrateAuth(
-				{
-					action: "menu",
-					cwd: fixture.projectRoot,
-					dataDir: fixture.dataDir,
-					environment: {
-						SHOPIFY_STORE_URL: "https://user:secret@shop.example",
-					},
-					interactive: true,
-					packageRoot,
-					signal: new AbortController().signal,
-				},
-				{ ...dependencies, loadConfig, resolvePeer },
-			),
-		).rejects.toThrow(/SHOPIFY_STORE_URL.*\.env/i);
-		expect(loadConfig).not.toHaveBeenCalled();
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it.each([
-		{ label: "removes", nextUrl: undefined },
-		{ label: "changes", nextUrl: "https://other-shop.example" },
-	])("fails closed when trusted config $label SHOPIFY_STORE_URL", async ({
-		nextUrl,
-	}) => {
-		const fixture = await makeFixture();
-		const environment: NodeJS.ProcessEnv = {};
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const loadConfig = vi.fn(dependencies.loadConfig);
-		loadConfig.mockImplementation(async (options) => {
-			const config = await dependencies.loadConfig(options);
-			if (nextUrl === undefined) {
-				delete environment.SHOPIFY_STORE_URL;
-			} else {
-				environment.SHOPIFY_STORE_URL = nextUrl;
-			}
-			return config;
-		});
-		const resolveDataRoot = vi.fn(dependencies.resolveDataRoot);
-		const createStore = vi.fn(dependencies.createStore);
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await expect(
-			orchestrateAuth(
-				authOptions(fixture, {
-					action: "capture",
-					environment,
-					profile: "admin-primary",
-					role: "admin",
-				}),
-				{
-					...dependencies,
-					createStore,
-					loadConfig,
-					resolveDataRoot,
-					resolvePeer,
-				},
-			),
-		).rejects.toThrow(/SHOPIFY_STORE_URL.*\.env/i);
-		expect(loadConfig).toHaveBeenCalledTimes(1);
-		expect(resolveDataRoot).not.toHaveBeenCalled();
-		expect(createStore).not.toHaveBeenCalled();
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it("bare auth offers exactly capture, refresh, remove, list, and cancel", async () => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts({ selectValues: ["cancel"] });
+		await seedRoleState(fixture, "removed-role", EMPTY_STORAGE_STATE, [
+			...DEFAULT_ROLES,
+			"removed-role",
+		]);
 		const report = vi.fn();
-		const dependencies = defaultAuthDependencies(prompts, report);
 
 		await orchestrateAuth(
-			{
-				action: "menu",
-				cwd: fixture.projectRoot,
-				dataDir: fixture.dataDir,
-				environment: {},
-				interactive: true,
-				packageRoot,
-				signal: new AbortController().signal,
-			},
+			authOptions(fixture, { action: "list", interactive: false }),
+			defaultAuthDependencies(makePrompts(), report),
+		);
+
+		expect(report).toHaveBeenCalledWith("removed-role\torphaned");
+	});
+
+	it("captures an explicit role into its single state slot", async () => {
+		const fixture = await makeFixture();
+		const report = vi.fn();
+		const prompts = makePrompts();
+		const dependencies = withStubbedBrowser(
+			defaultAuthDependencies(prompts, report),
+		);
+
+		await orchestrateAuth(
+			authOptions(fixture, { action: "capture", role: "admin" }),
+			dependencies,
+		);
+
+		const store = createRoleStateStore({
+			dataRoot: fixture.dataDir,
+			origin: "https://shop.example",
+			roles: DEFAULT_ROLES,
+		});
+		expect(await store.resolve("admin")).toEqual({
+			role: "admin",
+			state: EMPTY_STORAGE_STATE,
+		});
+		expect(prompts.select).not.toHaveBeenCalled();
+		expect(report).toHaveBeenCalledWith(
+			"Saved role state for admin. Run `shopify-e2e run --role admin`.",
+		);
+	});
+
+	it("capture omission prompts only from missing configured roles", async () => {
+		const fixture = await makeFixture();
+		await seedRoleState(fixture, "admin");
+		const prompts = makePrompts({ selectValues: ["customer"] });
+		const dependencies = withStubbedBrowser(
+			defaultAuthDependencies(prompts, vi.fn()),
+		);
+
+		await orchestrateAuth(
+			authOptions(fixture, { action: "capture" }),
 			dependencies,
 		);
 
 		expect(prompts.select).toHaveBeenCalledWith(
 			expect.objectContaining({
-				choices: expect.arrayContaining([
-					expect.objectContaining({ value: "capture" }),
-					expect.objectContaining({ value: "refresh" }),
-					expect.objectContaining({ value: "remove" }),
-					expect.objectContaining({ value: "list" }),
-					expect.objectContaining({ value: "cancel" }),
-				]),
+				choices: [{ name: "customer", value: "customer" }],
+				message: "Which role should be captured?",
 			}),
 		);
-		expect(report).toHaveBeenCalledWith(
-			"Authentication menu cancelled; no profile changed.",
-		);
 	});
 
-	it("disables unavailable menu actions with concise remediation", async () => {
-		const fixture = await makeFixture({
-			guest: { authentication: "none" },
-		});
-		const prompts = makePrompts({ selectValues: ["cancel"] });
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await orchestrateAuth(authOptions(fixture), {
-			...dependencies,
-			resolvePeer,
-		});
-
-		const choices = vi.mocked(prompts.select).mock.calls[0]?.[0].choices;
-		expect(choices).toEqual([
-			expect.objectContaining({
-				disabled: "No authenticated role is configured",
-				value: "capture",
-			}),
-			expect.objectContaining({
-				disabled: "No runnable saved profile exists",
-				value: "refresh",
-			}),
-			expect.objectContaining({
-				disabled: "No removable saved profile exists",
-				value: "remove",
-			}),
-			{ name: "List profiles", value: "list" },
-			{ name: "Cancel", value: "cancel" },
-		]);
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it("reuses the bare-menu registry summary for list", async () => {
+	it("rejects capture of ready state with refresh remediation before peer work", async () => {
 		const fixture = await makeFixture();
-		const prompts = makePrompts({ selectValues: ["list"] });
-		const report = vi.fn();
-		const list = vi.fn(async () => [
-			{ name: "admin-primary", role: "admin", status: "runnable" as const },
-		]);
-		const removableProfiles = vi.fn(async () => ["admin-primary"]);
-		const store = { list, removableProfiles } as unknown as ProfileStore;
-		const dependencies = defaultAuthDependencies(prompts, report);
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await orchestrateAuth(authOptions(fixture), {
-			...dependencies,
-			createStore: vi.fn(() => store),
-			resolvePeer,
-		});
-
-		expect(list).toHaveBeenCalledTimes(1);
-		expect(removableProfiles).toHaveBeenCalledTimes(1);
-		expect(report).toHaveBeenCalledWith("admin-primary\tadmin\trunnable");
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it("reuses the bare-menu registry summary and re-resolves only the selected refresh profile", async () => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts({
-			selectValues: ["refresh", "admin-primary"],
-		});
-		const report = vi.fn();
-		const selectedState = stateWithMarker("before");
-		const list = vi.fn(async () => [
-			{ name: "admin-primary", role: "admin", status: "runnable" as const },
-			{ name: "orphaned", role: "removed", status: "invalid" as const },
-		]);
-		const resolveProfile = vi.fn(async () => ({
-			kind: "saved" as const,
-			name: "admin-primary",
-			role: "admin",
-			state: selectedState,
-		}));
-		const refresh = vi.fn(async () => undefined);
-		const removableProfiles = vi.fn(async () => ["admin-primary", "orphaned"]);
-		const store = {
-			list,
-			removableProfiles,
-			refresh,
-			resolve: resolveProfile,
-		} as unknown as ProfileStore;
-		const captureProfile = vi.fn(async () => ({
-			state: stateWithMarker("after"),
-			status: "captured" as const,
-		}));
+		await seedRoleState(fixture, "admin");
 		const dependencies = withStubbedBrowser(
-			defaultAuthDependencies(prompts, report),
-			captureProfile,
+			defaultAuthDependencies(makePrompts(), vi.fn()),
 		);
-
-		await orchestrateAuth(authOptions(fixture), {
-			...dependencies,
-			createStore: vi.fn(() => store),
-		});
-
-		expect(list).toHaveBeenCalledTimes(1);
-		expect(removableProfiles).toHaveBeenCalledTimes(1);
-		expect(resolveProfile).toHaveBeenCalledTimes(1);
-		expect(resolveProfile).toHaveBeenCalledWith("admin-primary");
-		expect(captureProfile).toHaveBeenCalledWith(
-			expect.objectContaining({ initialState: selectedState }),
-		);
-		expect(refresh).toHaveBeenCalledTimes(1);
-		expect(refresh).toHaveBeenCalledWith(
-			expect.objectContaining({
-				name: "admin-primary",
-				signal: expect.any(AbortSignal),
-				state: stateWithMarker("after"),
-			}),
-		);
-		const refreshChoices = vi.mocked(prompts.select).mock.calls[1]?.[0].choices;
-		expect(refreshChoices).toEqual([
-			{ name: "admin-primary - admin", value: "admin-primary" },
-		]);
-	});
-
-	it.each([
-		{ interactive: false, action: "menu" as const },
-		{ interactive: false, action: "capture" as const },
-		{ interactive: false, action: "refresh" as const },
-	])("rejects non-interactive $action without prompting", async (overrides) => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await expect(
-			orchestrateAuth(authOptions(fixture, overrides), {
-				...dependencies,
-				resolvePeer,
-			}),
-		).rejects.toThrow(/interactive terminal/i);
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(prompts.input).not.toHaveBeenCalled();
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it.each([
-		{
-			label: "both supplied",
-			profile: "admin-primary",
-			role: "admin",
-			selectCalls: 0,
-			inputCalls: 0,
-		},
-		{
-			label: "only role supplied",
-			profile: undefined,
-			role: "admin",
-			selectCalls: 0,
-			inputCalls: 1,
-		},
-		{
-			label: "only profile supplied",
-			profile: "admin-primary",
-			role: undefined,
-			selectCalls: 1,
-			inputCalls: 0,
-		},
-	])("capture prompts only for missing values when $label", async ({
-		inputCalls,
-		profile,
-		role,
-		selectCalls,
-	}) => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts({ selectValues: ["admin"] });
-		const dependencies = withStubbedBrowser(
-			defaultAuthDependencies(prompts, vi.fn()),
-		);
-
-		await orchestrateAuth(
-			authOptions(fixture, {
-				action: "capture",
-				profile,
-				role,
-			}),
-			dependencies,
-		);
-
-		expect(prompts.select).toHaveBeenCalledTimes(selectCalls);
-		expect(prompts.input).toHaveBeenCalledTimes(inputCalls);
-		expect(dependencies.resolvePeer).toHaveBeenCalledTimes(1);
-	});
-
-	it("validates and re-prompts a missing capture profile before resolving Playwright", async () => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts();
-		const input = vi.mocked(prompts.input);
-		input.mockImplementationOnce(async (options) => {
-			expect(await options.validate?.("Not Valid")).toMatch(/lower-kebab/i);
-			expect(await options.validate?.("guest")).toMatch(/collide/i);
-			expect(await options.validate?.("admin-primary")).toBe(true);
-			return "admin-primary";
-		});
-		const dependencies = withStubbedBrowser(
-			defaultAuthDependencies(prompts, vi.fn()),
-		);
-
-		await orchestrateAuth(
-			authOptions(fixture, {
-				action: "capture",
-				role: "admin",
-			}),
-			dependencies,
-		);
-
-		expect(input).toHaveBeenCalledWith(
-			expect.objectContaining({
-				message: expect.stringMatching(/lower-kebab.*no credentials/i),
-				validate: expect.any(Function),
-			}),
-		);
-		expect(dependencies.resolvePeer).toHaveBeenCalledTimes(1);
-	});
-
-	it.each([
-		{ profile: "Not Valid", role: "admin" },
-		{ profile: "guest", role: "admin" },
-		{ profile: "admin-primary", role: "guest" },
-		{ profile: "admin-primary", role: "unknown" },
-	])("rejects invalid explicit capture selection before Playwright: $profile/$role", async ({
-		profile,
-		role,
-	}) => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
 
 		await expect(
 			orchestrateAuth(
-				authOptions(fixture, {
-					action: "capture",
-					profile,
-					role,
-				}),
-				{ ...dependencies, resolvePeer },
+				authOptions(fixture, { action: "capture", role: "admin" }),
+				dependencies,
 			),
-		).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(prompts.input).not.toHaveBeenCalled();
-		expect(resolvePeer).not.toHaveBeenCalled();
+		).rejects.toThrow(/auth refresh --role admin/i);
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
 	});
 
-	it("rejects capture when no authenticated role exists before Playwright", async () => {
-		const fixture = await makeFixture({ guest: { authentication: "none" } });
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
+	it("rejects an unsafe explicit role without echoing it or resolving Playwright", async () => {
+		const fixture = await makeFixture();
+		const dependencies = withStubbedBrowser(
+			defaultAuthDependencies(makePrompts(), vi.fn()),
+		);
+		const unsafeRole = "admin\nsecret=/private/state";
 
-		await expect(
-			orchestrateAuth(authOptions(fixture, { action: "capture" }), {
-				...dependencies,
-				resolvePeer,
-			}),
-		).rejects.toThrow(/no role with required authentication/i);
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(resolvePeer).not.toHaveBeenCalled();
+		const error = await orchestrateAuth(
+			authOptions(fixture, { action: "capture", role: unsafeRole }),
+			dependencies,
+		).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+		expect(String(error)).not.toContain(unsafeRole);
+		expect(String(error)).not.toContain("/private/state");
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
 	});
 
-	it("refresh preserves role and seeds only the selected profile state", async () => {
+	it("refreshes an explicit ready role atomically from its prior state", async () => {
 		const fixture = await makeFixture();
 		const before = stateWithMarker("before");
 		const after = stateWithMarker("after");
-		const store = await seedProfile(fixture, "admin-primary", before);
-		const metadataPath = join(
-			fixture.dataDir,
-			"origins",
-			configuredOriginKey("https://shop.example"),
-			"profiles",
-			"admin-primary",
-			"profile.json",
-		);
-		const metadataBefore = await readFile(metadataPath);
-		const prompts = makePrompts();
-		const report = vi.fn();
-		const captureProfile = vi.fn(async (args) => {
+		const store = await seedRoleState(fixture, "admin", before);
+		const captureRoleState = vi.fn(async (args) => {
 			expect(args.initialState).toEqual(before);
 			return { state: after, status: "captured" as const };
 		});
+		const report = vi.fn();
 		const dependencies = withStubbedBrowser(
-			defaultAuthDependencies(prompts, report),
-			captureProfile,
+			defaultAuthDependencies(makePrompts(), report),
+			captureRoleState,
 		);
-		const list = vi.spyOn(store, "list");
 
 		await orchestrateAuth(
-			authOptions(fixture, {
-				action: "refresh",
-				profile: "admin-primary",
-			}),
-			{ ...dependencies, createStore: vi.fn(() => store) },
+			authOptions(fixture, { action: "refresh", role: "admin" }),
+			dependencies,
 		);
 
-		expect(await store.resolve("admin-primary")).toEqual({
-			kind: "saved",
-			name: "admin-primary",
-			role: "admin",
-			state: after,
-		});
-		expect(await readFile(metadataPath)).toEqual(metadataBefore);
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(list).not.toHaveBeenCalled();
-		expect(report).toHaveBeenCalledWith(
-			"Refreshed profile admin-primary for role admin.",
-		);
+		expect((await store.resolve("admin")).state).toEqual(after);
+		expect(report).toHaveBeenCalledWith("Refreshed role state for admin.");
 	});
 
-	it("refresh prompts with runnable saved profiles only", async () => {
+	it("refresh omission prompts only from ready configured roles", async () => {
 		const fixture = await makeFixture();
-		await seedProfile(fixture);
-		const prompts = makePrompts({ selectValues: ["admin-primary"] });
+		await seedRoleState(fixture, "admin");
+		const prompts = makePrompts({ selectValues: ["admin"] });
 		const dependencies = withStubbedBrowser(
 			defaultAuthDependencies(prompts, vi.fn()),
 		);
@@ -608,273 +209,246 @@ describe("auth command orchestration", () => {
 
 		expect(prompts.select).toHaveBeenCalledWith(
 			expect.objectContaining({
-				choices: [{ name: "admin-primary - admin", value: "admin-primary" }],
+				choices: [{ name: "admin", value: "admin" }],
+				message: "Which role should be refreshed?",
 			}),
 		);
 	});
 
-	it("rejects refresh when there is no runnable saved profile before Playwright", async () => {
+	it("rejects refresh of missing state with capture remediation before peer work", async () => {
 		const fixture = await makeFixture();
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await expect(
-			orchestrateAuth(authOptions(fixture, { action: "refresh" }), {
-				...dependencies,
-				resolvePeer,
-			}),
-		).rejects.toThrow(/no runnable saved profile/i);
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it("fails closed when the refresh prompt returns an unavailable profile", async () => {
-		const fixture = await makeFixture();
-		await seedProfile(fixture);
-		const prompts = makePrompts({ selectValues: ["removed-profile"] });
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await expect(
-			orchestrateAuth(authOptions(fixture, { action: "refresh" }), {
-				...dependencies,
-				resolvePeer,
-			}),
-		).rejects.toThrow(/selected profile is unavailable/i);
-		expect(prompts.select).toHaveBeenCalledTimes(1);
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it.each([
-		"unknown",
-		"guest",
-		"Not Valid",
-	])("rejects explicit refresh profile %s before Playwright", async (profile) => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
-		const resolvePeer = vi.fn(dependencies.resolvePeer);
-
-		await expect(
-			orchestrateAuth(authOptions(fixture, { action: "refresh", profile }), {
-				...dependencies,
-				resolvePeer,
-			}),
-		).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
-		expect(prompts.select).not.toHaveBeenCalled();
-		expect(resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it.each([
-		{ action: "capture" as const, reason: "declined" as const },
-		{ action: "capture" as const, reason: "browser-closed" as const },
-	])("$reason capture cancellation reports no change and writes nothing", async ({
-		action,
-		reason,
-	}) => {
-		const fixture = await makeFixture();
-		const prompts = makePrompts();
-		const report = vi.fn();
 		const dependencies = withStubbedBrowser(
-			defaultAuthDependencies(prompts, report),
-			vi.fn(async () => ({ reason, status: "cancelled" as const })),
+			defaultAuthDependencies(makePrompts(), vi.fn()),
 		);
+
+		await expect(
+			orchestrateAuth(
+				authOptions(fixture, { action: "refresh", role: "customer" }),
+				dependencies,
+			),
+		).rejects.toThrow(/auth capture --role customer/i);
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		"capture",
+		"refresh",
+	] as const)("rejects non-interactive %s before environment, prompts, or peer work", async (action) => {
+		const fixture = await makeFixture();
+		const prompts = makePrompts();
+		const dependencies = withStubbedBrowser(
+			defaultAuthDependencies(prompts, vi.fn()),
+		);
+		const loadEnvironment = vi.fn(dependencies.loadEnvironment);
+
+		await expect(
+			orchestrateAuth(
+				authOptions(fixture, {
+					action,
+					interactive: false,
+					role: "admin",
+				}),
+				{ ...dependencies, loadEnvironment },
+			),
+		).rejects.toThrow(/interactive terminal/i);
+		expect(loadEnvironment).not.toHaveBeenCalled();
+		expect(prompts.select).not.toHaveBeenCalled();
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+	});
+
+	it("bare non-interactive auth directs callers to direct subcommands", async () => {
+		const fixture = await makeFixture();
+		const dependencies = defaultAuthDependencies(makePrompts(), vi.fn());
+		const loadEnvironment = vi.fn(dependencies.loadEnvironment);
+
+		await expect(
+			orchestrateAuth(
+				authOptions(fixture, { action: "menu", interactive: false }),
+				{ ...dependencies, loadEnvironment },
+			),
+		).rejects.toThrow(/auth capture.*auth refresh.*auth remove.*auth list/i);
+		expect(loadEnvironment).not.toHaveBeenCalled();
+	});
+
+	it("bare interactive auth exposes availability-aware actions and cancellation", async () => {
+		const fixture = await makeFixture();
+		await seedRoleState(fixture, "admin");
+		const prompts = makePrompts({ selectValues: ["cancel"] });
+		const report = vi.fn();
 
 		await orchestrateAuth(
-			authOptions(fixture, {
-				action,
-				profile: "admin-primary",
-				role: "admin",
-			}),
-			dependencies,
+			authOptions(fixture),
+			defaultAuthDependencies(prompts, report),
 		);
 
-		const store = createProfileStore({
-			dataRoot: fixture.dataDir,
-			origin: "https://shop.example",
-			roles: DEFAULT_ROLES,
-		});
-		expect(await store.list()).toEqual([]);
+		expect(vi.mocked(prompts.select).mock.calls[0]?.[0].choices).toEqual([
+			{ disabled: false, name: "Capture", value: "capture" },
+			{ disabled: false, name: "Refresh", value: "refresh" },
+			{ disabled: false, name: "Remove", value: "remove" },
+			{ name: "List", value: "list" },
+			{ name: "Cancel", value: "cancel" },
+		]);
 		expect(report).toHaveBeenCalledWith(
-			"Authentication capture cancelled; no profile changed.",
+			"Authentication menu cancelled; no role state changed.",
 		);
+	});
+
+	it("bare auth routes List through the cached secret-free summary", async () => {
+		const fixture = await makeFixture();
+		const prompts = makePrompts({ selectValues: ["list"] });
+		const report = vi.fn();
+		const dependencies = defaultAuthDependencies(prompts, report);
+		const resolvePeer = vi.fn(dependencies.resolvePeer);
+
+		await orchestrateAuth(authOptions(fixture), {
+			...dependencies,
+			resolvePeer,
+		});
+
+		expect(report.mock.calls).toEqual([
+			["admin\tmissing"],
+			["customer\tmissing"],
+		]);
+		expect(resolvePeer).not.toHaveBeenCalled();
+	});
+
+	it("revalidates a stale capture prompt choice before browser work", async () => {
+		const fixture = await makeFixture();
+		const prompts = makePrompts();
+		vi.mocked(prompts.select).mockImplementationOnce(async () => {
+			await seedRoleState(fixture, "admin");
+			return "admin";
+		});
+		const dependencies = withStubbedBrowser(
+			defaultAuthDependencies(prompts, vi.fn()),
+		);
+
+		await expect(
+			orchestrateAuth(
+				authOptions(fixture, { action: "capture" }),
+				dependencies,
+			),
+		).rejects.toThrow(/auth refresh --role admin/i);
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+	});
+
+	it("rejects unsafe configured collisions with manual-cleanup guidance", async () => {
+		const fixture = await makeFixture();
+		await seedRoleState(fixture, "customer");
+		const statesDirectory = join(
+			fixture.dataDir,
+			"origins",
+			configuredOriginKey("https://shop.example"),
+			"role-states",
+		);
+		await mkdir(join(fixture.projectRoot, "unsafe-target"));
+		await symlink(
+			join(fixture.projectRoot, "unsafe-target"),
+			join(statesDirectory, "admin"),
+		);
+		const dependencies = withStubbedBrowser(
+			defaultAuthDependencies(makePrompts(), vi.fn()),
+		);
+
+		await expect(
+			orchestrateAuth(
+				authOptions(fixture, { action: "capture", role: "admin" }),
+				dependencies,
+			),
+		).rejects.toThrow(/unsafe.*manual cleanup/i);
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
 	});
 
 	it.each([
 		"declined",
 		"browser-closed",
-	] as const)("%s refresh cancellation leaves the prior profile byte-for-byte usable", async (reason) => {
+	] as const)("%s capture cancellation leaves the role missing", async (reason) => {
 		const fixture = await makeFixture();
-		const before = stateWithMarker("before");
-		const store = await seedProfile(fixture, "admin-primary", before);
-		const metadataPath = join(
-			fixture.dataDir,
-			"origins",
-			configuredOriginKey("https://shop.example"),
-			"profiles",
-			"admin-primary",
-			"profile.json",
-		);
-		const statePath = join(
-			fixture.dataDir,
-			"origins",
-			configuredOriginKey("https://shop.example"),
-			"profiles",
-			"admin-primary",
-			"storage-state.json",
-		);
-		const metadataBefore = await readFile(metadataPath);
-		const stateBefore = await readFile(statePath);
-		const prompts = makePrompts();
 		const report = vi.fn();
 		const dependencies = withStubbedBrowser(
-			defaultAuthDependencies(prompts, report),
-			vi.fn(async () => ({
-				reason,
-				status: "cancelled" as const,
-			})),
+			defaultAuthDependencies(makePrompts(), report),
+			vi.fn(async () => ({ reason, status: "cancelled" as const })),
 		);
 
 		await orchestrateAuth(
-			authOptions(fixture, {
-				action: "refresh",
-				profile: "admin-primary",
-			}),
+			authOptions(fixture, { action: "capture", role: "admin" }),
 			dependencies,
 		);
 
-		expect((await store.resolve("admin-primary")).state).toEqual(before);
-		expect(await readFile(metadataPath)).toEqual(metadataBefore);
-		expect(await readFile(statePath)).toEqual(stateBefore);
+		const store = createRoleStateStore({
+			dataRoot: fixture.dataDir,
+			origin: "https://shop.example",
+			roles: DEFAULT_ROLES,
+		});
+		expect(await store.list()).toContainEqual({
+			role: "admin",
+			status: "missing",
+		});
 		expect(report).toHaveBeenCalledWith(
-			"Authentication refresh cancelled; no profile changed.",
+			"Authentication capture cancelled; no role state changed.",
 		);
 	});
 
-	it("uses an explicit false-by-default terminal confirmation with no credential prompt", async () => {
+	it("fails a missing URL before config, state, prompts, or peer resolution", async () => {
 		const fixture = await makeFixture();
-		const prompts = makePrompts({ confirmValue: false });
-		const dependencies = withStubbedBrowser(
-			defaultAuthDependencies(prompts, vi.fn()),
-			vi.fn(async (args) => {
-				const confirmed = await args.dependencies.confirmSave({
-					signal: args.signal,
-				});
-				return confirmed
-					? { state: EMPTY_STORAGE_STATE, status: "captured" as const }
-					: { reason: "declined" as const, status: "cancelled" as const };
-			}),
-		);
-
-		await orchestrateAuth(
-			authOptions(fixture, {
-				action: "capture",
-				profile: "admin-primary",
-				role: "admin",
-			}),
-			dependencies,
-		);
-
-		expect(prompts.confirm).toHaveBeenCalledWith(
-			expect.objectContaining({
-				default: false,
-				message: "Authentication complete. Save this browser profile?",
-			}),
-		);
-		const terminalText = JSON.stringify(
-			vi.mocked(prompts.confirm).mock.calls[0]?.[0],
-		);
-		expect(terminalText).not.toMatch(
-			/storefront password|shopify password|one-time|credential value/i,
-		);
-	});
-
-	it("renders only safe list summary fields", async () => {
-		const fixture = await makeFixture();
+		await rm(join(fixture.projectRoot, ".env"));
 		const prompts = makePrompts();
-		const report = vi.fn();
-		const list = vi.fn(async () => [
-			{ name: "<invalid-name>", role: "unknown", status: "invalid" as const },
-			{ name: "admin-primary", role: "admin", status: "runnable" as const },
-		]);
-		const dependencies = defaultAuthDependencies(prompts, report);
+		const dependencies = defaultAuthDependencies(prompts, vi.fn());
+		const loadConfig = vi.fn(dependencies.loadConfig);
+		const createStore = vi.fn(dependencies.createStore);
+
+		await expect(
+			orchestrateAuth(authOptions(fixture, { action: "list" }), {
+				...dependencies,
+				createStore,
+				loadConfig,
+			}),
+		).rejects.toThrow(/SHOPIFY_STORE_URL.*\.env/i);
+		expect(loadConfig).not.toHaveBeenCalled();
+		expect(createStore).not.toHaveBeenCalled();
+		expect(prompts.select).not.toHaveBeenCalled();
+	});
+
+	it("allows trusted config imports while package-owned list avoids Playwright", async () => {
+		const fixture = await makeFixture(["admin"]);
+		const sentinel = join(fixture.projectRoot, "trusted-import-ran");
+		const helperPath = resolve(import.meta.dirname, "../src/config/public.cts");
+		await writeFile(
+			join(fixture.projectRoot, "shopify-e2e.config.ts"),
+			`import { writeFileSync } from "node:fs"; import { defineShopifyE2EConfig } from ${JSON.stringify(helperPath)}; writeFileSync(${JSON.stringify(sentinel)}, "ran"); export default defineShopifyE2EConfig({ roles: ["admin"], testDir: "shopify-tests" });\n`,
+		);
+		const dependencies = defaultAuthDependencies(makePrompts(), vi.fn());
 		const resolvePeer = vi.fn(dependencies.resolvePeer);
 
-		await orchestrateAuth(authOptions(fixture, { action: "list" }), {
-			...dependencies,
-			createStore: vi.fn(() => ({ list }) as unknown as ProfileStore),
-			resolvePeer,
-		});
-
-		expect(report.mock.calls).toEqual([
-			["<invalid-name>\tunknown\tinvalid"],
-			["admin-primary\tadmin\trunnable"],
-		]);
-		expect(JSON.stringify(report.mock.calls)).not.toMatch(
-			/cookie|storage-state|\/private|secret/i,
+		await orchestrateAuth(
+			authOptions(fixture, { action: "list", interactive: false }),
+			{ ...dependencies, resolvePeer },
 		);
-		expect(prompts.select).not.toHaveBeenCalled();
+
 		expect(resolvePeer).not.toHaveBeenCalled();
+		expect(
+			await import("node:fs/promises").then(({ readFile }) =>
+				readFile(sentinel, "utf8"),
+			),
+		).toBe("ran");
 	});
 });
 
 describe("auth command failure mapping", () => {
 	it.each([
-		"Interrupted profile save could not be rolled back safely",
-		"Profile refresh rollback could not complete safely",
-	])("preserves rollback failure instead of claiming no change: %s", (message) => {
-		expect(
-			classifyAuthCommandFailure(
-				new ShopifyE2EInfrastructureError(message),
-				130,
-			),
-		).toEqual({ exitCode: 1, message });
-	});
-
-	it.each([
-		{
-			error: new Error("hidden"),
-			exitCode: 130,
-			expected: 130,
-		},
-		{
-			error: new Error("hidden"),
-			exitCode: 143,
-			expected: 143,
-		},
-		{
-			error: new CaptureSignalError("SIGINT"),
-			exitCode: undefined,
-			expected: 130,
-		},
-		{
-			error: new CaptureSignalError("SIGTERM"),
-			exitCode: undefined,
-			expected: 143,
-		},
-	])("maps interruption to exit $expected", ({ error, exitCode, expected }) => {
-		expect(
-			classifyAuthCommandFailure(error, exitCode as 130 | 143 | undefined),
-		).toEqual({
-			exitCode: expected,
-			message: "Authentication interrupted; no profile changed.",
-		});
-	});
-
-	it.each([
-		"ExitPromptError",
-		"AbortPromptError",
-	])("maps %s without exposing a prompt stack", (name) => {
-		const error = new Error("dependency stack and secret");
-		error.name = name;
+		{ error: new CaptureSignalError("SIGINT"), expected: 130 },
+		{ error: new CaptureSignalError("SIGTERM"), expected: 143 },
+	])("maps role-state capture interruption to exit $expected", ({
+		error,
+		expected,
+	}) => {
 		expect(classifyAuthCommandFailure(error)).toEqual({
-			exitCode: 130,
-			message: "Authentication interrupted; no profile changed.",
+			exitCode: expected,
+			message: "Authentication interrupted; no role state changed.",
 		});
 	});
 
-	it("preserves sanitized known errors and hides unknown causes", () => {
+	it("preserves sanitized known failures and hides unknown causes", () => {
 		expect(
 			classifyAuthCommandFailure(
 				new ShopifyE2EPreflightError("actionable preflight"),

@@ -22,6 +22,7 @@ import {
 } from "./support/doctor-cli-shell.js";
 
 const projectRoot = resolve(import.meta.dirname, "..");
+const configHelperPath = resolve(projectRoot, "src/config/public.cts");
 const binPath = resolve(projectRoot, "bin/run.js");
 const unrelatedCommandPath = resolve(projectRoot, "dist/commands/unrelated.js");
 const importSentinelPath = resolve(projectRoot, "dist/unrelated-imported");
@@ -63,7 +64,7 @@ const makeConsumerFixture = async (consumerRoot?: string): Promise<string> => {
 	await writeFile(join(consumer, "package.json"), '{"type":"module"}\n');
 	await writeFile(
 		join(consumer, "shopify-e2e.config.ts"),
-		'export default { testDir: "shopify-tests", roles: { admin: { authentication: "required" }, guest: { authentication: "none" } } };\n',
+		`import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)}; export default defineShopifyE2EConfig({ testDir: "shopify-tests", roles: ["admin", "guest"] });\n`,
 	);
 	await writeFile(
 		join(testDir, "checkout.spec.ts"),
@@ -389,26 +390,28 @@ export const chromium = {
 	);
 
 	it.each([
-		{ args: ["auth", "--help"], flags: ["--config"] },
+		{ args: ["auth", "--help"], flags: [] },
 		{
 			args: ["auth", "capture", "--help"],
-			flags: ["--config", "--role", "--profile"],
+			flags: ["--role"],
 		},
 		{
 			args: ["auth", "refresh", "--help"],
-			flags: ["--config", "--profile"],
+			flags: ["--role"],
 		},
 		{
 			args: ["auth", "remove", "--help"],
-			flags: ["--config", "--profile", "--yes"],
+			flags: ["--role", "--yes"],
 		},
-		{ args: ["auth", "list", "--help"], flags: ["--config"] },
+		{ args: ["auth", "list", "--help"], flags: [] },
 	])("prints auth help for $args", ({ args, flags }) => {
 		const result = runCli({ args });
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("USAGE");
 		for (const flag of flags) expect(result.stdout).toContain(flag);
+		expect(result.stdout).not.toContain("--profile");
+		expect(result.stdout).not.toContain("--config");
 		expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
 			/password.*prompt/i,
 		);
@@ -422,28 +425,24 @@ export const chromium = {
 			.split("\n")
 			.filter((line) => /^ {2}--/.test(line))
 			.map((line) => line.trim().split(/\s+/)[0]);
-		expect(flagNames).toEqual([
-			"--config=<value>",
-			"--profile=<value>",
-			"--yes",
-		]);
+		expect(flagNames).toEqual(["--role=<value>", "--yes"]);
 		expect(result.stdout).toMatch(/--yes.*skip confirmation/is);
 		expect(result.stdout).toMatch(
-			/non-interactive removal requires\s+--profile and --yes/i,
+			/non-interactive removal requires\s+--role and\s+--yes/i,
 		);
-		expect(result.stdout).not.toContain("--role");
+		expect(result.stdout).not.toContain("--profile");
+		expect(result.stdout).not.toContain("--config");
 	});
 
-	it("documents capture role and profile naming constraints", () => {
+	it("documents capture's sole role selector", () => {
 		const result = runCli({ args: ["auth", "capture", "--help"] });
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toMatch(
-			/--profile.*ASCII lower-kebab, max 64 UTF-8 bytes/s,
-		);
-		expect(result.stdout).toMatch(
 			/--role.*ASCII lower-kebab, max 64 UTF-8 bytes/s,
 		);
+		expect(result.stdout).not.toContain("--profile");
+		expect(result.stdout).not.toContain("--config");
 	});
 
 	it("lists the exact auth command vocabulary", () => {
@@ -466,8 +465,15 @@ export const chromium = {
 		["auth", "refresh", "unexpected"],
 		["auth", "list", "unexpected"],
 		["auth", "--profile", "admin-primary"],
+		["auth", "--config", "other.ts"],
+		["auth", "capture", "--profile", "admin-primary"],
+		["auth", "capture", "--config", "other.ts"],
 		["auth", "list", "--role", "admin"],
-		["auth", "refresh", "--role", "admin"],
+		["auth", "list", "--config", "other.ts"],
+		["auth", "refresh", "--profile", "admin-primary"],
+		["auth", "refresh", "--config", "other.ts"],
+		["auth", "remove", "--profile", "admin-primary"],
+		["auth", "remove", "--config", "other.ts"],
 		["auth", "capture", "--unknown"],
 	])("rejects unsupported auth input before preflight: %s", (...args) => {
 		const result = runCli({ args });
@@ -513,7 +519,7 @@ export const chromium = {
 
 	it.each([
 		[],
-		["--profile", "admin-primary"],
+		["--role", "admin"],
 		["--yes"],
 	])("requires the non-interactive removal flag pair for %s", async (...flags) => {
 		const consumer = await makeConsumerFixture();
@@ -524,7 +530,7 @@ export const chromium = {
 		});
 
 		expect(result.status).toBe(2);
-		expect(result.stderr).toMatch(/--profile.*--yes/i);
+		expect(result.stderr).toMatch(/--role.*--yes/i);
 		expect(result.stderr).not.toMatch(
 			/inquirer|exitprompterror|abortprompterror/i,
 		);
@@ -546,9 +552,8 @@ export const chromium = {
 		});
 
 		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout).toContain(
-			"No saved profiles for the configured store.",
-		);
+		expect(result.stdout).toContain("admin\tmissing");
+		expect(result.stdout).toContain("guest\tmissing");
 	});
 
 	it("rejects an auth data-directory override inside the consumer before persistence", async () => {
@@ -565,7 +570,7 @@ export const chromium = {
 
 		expect(result.status).toBe(2);
 		expect(result.stderr).toMatch(
-			/profile data directory.*outside the consumer project/i,
+			/role state data directory.*outside the consumer project|profile data directory.*outside the consumer project/i,
 		);
 		expect(existsSync(join(physicalConsumer, ".profiles"))).toBe(false);
 	});
