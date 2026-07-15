@@ -11,7 +11,7 @@ export const startLoopbackServer = async (): Promise<LoopbackServer> => {
 			"content-type": "text/html; charset=utf-8",
 			"x-content-type-options": "nosniff",
 		});
-		response.end("<!doctype html><title>Profile isolation probe</title>");
+		response.end("<!doctype html><title>Role isolation probe</title>");
 	});
 	await new Promise<void>((resolveListening, rejectListening) => {
 		server.once("error", rejectListening);

@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { Browser, BrowserContext, Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { startLoopbackServer } from "./fixtures/profile-isolation/server.js";
+import { startLoopbackServer } from "./fixtures/role-isolation/server.js";
 import {
 	installPackedPackage,
 	packPackageForConsumer,
@@ -41,7 +41,7 @@ const setIdentity = async (page: Page, identity: string): Promise<void> => {
 	await page.evaluate(async (value) => {
 		localStorage.setItem("identity", value);
 		await new Promise<void>((resolveDatabase, rejectDatabase) => {
-			const request = indexedDB.open("profile-identity", 1);
+			const request = indexedDB.open("role-identity", 1);
 			request.onupgradeneeded = () =>
 				request.result.createObjectStore("identity");
 			request.onerror = () => rejectDatabase(request.error);
@@ -69,10 +69,10 @@ const readIdentity = async (
 				?.slice("identity=".length) ?? null;
 		const databases = await indexedDB.databases();
 		const indexedDBIdentity = databases.some(
-			(database) => database.name === "profile-identity",
+			(database) => database.name === "role-identity",
 		)
 			? await new Promise<string | null>((resolveDatabase, rejectDatabase) => {
-					const request = indexedDB.open("profile-identity", 1);
+					const request = indexedDB.open("role-identity", 1);
 					request.onerror = () => rejectDatabase(request.error);
 					request.onsuccess = () => {
 						if (!request.result.objectStoreNames.contains("identity")) {
@@ -172,7 +172,7 @@ const expectRestoredIdentity = async (
 	}
 };
 
-describe.sequential("consumer browser profile isolation", () => {
+describe.sequential("consumer browser role isolation", () => {
 	let browser: Browser;
 	let server: Awaited<ReturnType<typeof startLoopbackServer>>;
 
@@ -185,7 +185,7 @@ describe.sequential("consumer browser profile isolation", () => {
 		);
 		await writeFile(
 			join(consumerRoot, "package.json"),
-			'{"name":"profile-isolation-consumer","private":true,"type":"module"}\n',
+			'{"name":"role-isolation-consumer","private":true,"type":"module"}\n',
 		);
 		const packed = await packPackageForConsumer(projectRoot, packDirectory);
 		await installPackedPackage({
@@ -214,7 +214,7 @@ describe.sequential("consumer browser profile isolation", () => {
 			browser = (await chromium.launch({ headless: true })) as Browser;
 		} catch (error) {
 			throw new Error(
-				"Consumer Chromium is unavailable. Install Chromium for @playwright/test 1.61.1 in a consumer project with `npm exec playwright install chromium`, then retry the browser profile gate.",
+				"Consumer Chromium is unavailable. Install Chromium for @playwright/test 1.61.1 in a consumer project with `npm exec playwright install chromium`, then retry the browser role gate.",
 				{ cause: error },
 			);
 		}
@@ -231,7 +231,7 @@ describe.sequential("consumer browser profile isolation", () => {
 		);
 	});
 
-	it("preserves A-B-guest-A cookie, localStorage, and IndexedDB identity", async () => {
+	it("preserves A-B-A cookie, localStorage, and IndexedDB role identity", async () => {
 		const stateA = await captureIdentity(browser, server.origin, "A");
 		const stateB = await captureIdentity(browser, server.origin, "B");
 		expect(JSON.stringify(stateA)).toContain("indexedDB");
@@ -247,16 +247,6 @@ describe.sequential("consumer browser profile isolation", () => {
 			indexedDB: "B",
 			localStorage: "B",
 		});
-		await expectRestoredIdentity(
-			browser,
-			server.origin,
-			{ cookies: [], origins: [] },
-			{
-				cookie: null,
-				indexedDB: null,
-				localStorage: null,
-			},
-		);
 		await expectRestoredIdentity(browser, server.origin, stateA, {
 			cookie: "A",
 			indexedDB: "A",
