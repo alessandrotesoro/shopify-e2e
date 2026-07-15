@@ -28,6 +28,18 @@ export const normalizeConfiguredOrigin = (input: string): string => {
 	return url.origin;
 };
 
+export const configuredOriginFromEnvironment = (
+	environment: NodeJS.ProcessEnv,
+): string => {
+	const configuredUrl = environment.SHOPIFY_STORE_URL;
+	if (!configuredUrl) {
+		throw new ShopifyE2EPreflightError(
+			"SHOPIFY_STORE_URL is required. Set it in the consumer .env file or inherited environment.",
+		);
+	}
+	return normalizeConfiguredOrigin(configuredUrl);
+};
+
 export const configuredOriginKey = (normalizedOrigin: string): string =>
 	createHash("sha256").update(normalizedOrigin).digest("hex");
 

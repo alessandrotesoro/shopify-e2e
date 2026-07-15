@@ -26,13 +26,18 @@ const temporaryDirectories: string[] = [];
 
 export interface InstalledCliFixture {
 	readonly consumerRoot: string;
-	readonly doctorMissingChromiumConsumerRoot: string;
-	readonly doctorMissingChromiumLaunchMarker: string;
-	readonly doctorReadyConsumerRoot: string;
-	readonly doctorReadyLaunchMarker: string;
+	readonly doctor: {
+		readonly missingChromium: DoctorConsumerFixture;
+		readonly ready: DoctorConsumerFixture;
+	};
 	readonly missingPeerConsumerRoot: string;
 	readonly profileDataRoot: string;
 	readonly removal: InstalledRemovalFixture;
+}
+
+export interface DoctorConsumerFixture {
+	readonly consumerRoot: string;
+	readonly launchMarker: string;
 }
 
 export interface InstalledRemovalFixture {
@@ -227,10 +232,7 @@ const prepareDoctorConsumer = async ({
 	chromiumInstalled,
 	fixtureRoot,
 	tarballPath,
-}: PrepareDoctorConsumerArgs): Promise<{
-	readonly consumerRoot: string;
-	readonly launchMarker: string;
-}> => {
+}: PrepareDoctorConsumerArgs): Promise<DoctorConsumerFixture> => {
 	const consumerRoot = await makeTemporaryDirectory(
 		chromiumInstalled
 			? "shopify-e2e-doctor-ready-"
@@ -339,16 +341,18 @@ export const prepareInstalledCliFixture = async ({
 		hasPlaywright: true,
 		tarballPath,
 	});
-	const doctorReady = await prepareDoctorConsumer({
-		chromiumInstalled: true,
-		fixtureRoot,
-		tarballPath,
-	});
-	const doctorMissingChromium = await prepareDoctorConsumer({
-		chromiumInstalled: false,
-		fixtureRoot,
-		tarballPath,
-	});
+	const [doctorReady, doctorMissingChromium] = await Promise.all([
+		prepareDoctorConsumer({
+			chromiumInstalled: true,
+			fixtureRoot,
+			tarballPath,
+		}),
+		prepareDoctorConsumer({
+			chromiumInstalled: false,
+			fixtureRoot,
+			tarballPath,
+		}),
+	]);
 	const profileDataRoot = await makeTemporaryDirectory(
 		"shopify-e2e-profile-data-",
 	);
@@ -457,10 +461,7 @@ export const prepareInstalledCliFixture = async ({
 
 	return {
 		consumerRoot,
-		doctorMissingChromiumConsumerRoot: doctorMissingChromium.consumerRoot,
-		doctorMissingChromiumLaunchMarker: doctorMissingChromium.launchMarker,
-		doctorReadyConsumerRoot: doctorReady.consumerRoot,
-		doctorReadyLaunchMarker: doctorReady.launchMarker,
+		doctor: { missingChromium: doctorMissingChromium, ready: doctorReady },
 		missingPeerConsumerRoot,
 		profileDataRoot,
 		removal,

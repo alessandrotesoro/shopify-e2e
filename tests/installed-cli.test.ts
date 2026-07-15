@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	cleanupInstalledCliFixture,
+	type DoctorConsumerFixture,
 	expectMarkersAbsent,
 	expectOrdinaryLaneFixturesPresent,
 	generatedConfigDirectories,
@@ -173,10 +174,8 @@ const runInstalledCliWithSimulatedTty = ({
 
 describe.sequential("installed CLI release boundary", () => {
 	let consumerRoot = "";
-	let doctorMissingChromiumConsumerRoot = "";
-	let doctorMissingChromiumLaunchMarker = "";
-	let doctorReadyConsumerRoot = "";
-	let doctorReadyLaunchMarker = "";
+	let doctorMissingChromium: DoctorConsumerFixture;
+	let doctorReady: DoctorConsumerFixture;
 	let missingPeerConsumerRoot = "";
 
 	beforeAll(async () => {
@@ -185,12 +184,8 @@ describe.sequential("installed CLI release boundary", () => {
 			projectRoot,
 		});
 		consumerRoot = fixture.consumerRoot;
-		doctorMissingChromiumConsumerRoot =
-			fixture.doctorMissingChromiumConsumerRoot;
-		doctorMissingChromiumLaunchMarker =
-			fixture.doctorMissingChromiumLaunchMarker;
-		doctorReadyConsumerRoot = fixture.doctorReadyConsumerRoot;
-		doctorReadyLaunchMarker = fixture.doctorReadyLaunchMarker;
+		doctorMissingChromium = fixture.doctor.missingChromium;
+		doctorReady = fixture.doctor.ready;
 		missingPeerConsumerRoot = fixture.missingPeerConsumerRoot;
 		installedProfileDataRoot = fixture.profileDataRoot;
 		installedRemovalFixture = fixture.removal;
@@ -280,11 +275,11 @@ describe.sequential("installed CLI release boundary", () => {
 
 	it("proves packed doctor readiness without launching Chromium", async () => {
 		const generatedBefore = await generatedConfigDirectories(
-			doctorReadyConsumerRoot,
+			doctorReady.consumerRoot,
 		);
 		const result = runInstalledCli({
 			args: ["doctor"],
-			consumerRoot: doctorReadyConsumerRoot,
+			consumerRoot: doctorReady.consumerRoot,
 		});
 
 		expectSuccess({ label: "installed ready doctor", result });
@@ -301,11 +296,11 @@ describe.sequential("installed CLI release boundary", () => {
 			expect.stringMatching(/^PASS Playwright peer:/),
 			expect.stringMatching(/^PASS Chromium:/),
 		]);
-		await expect(access(doctorReadyLaunchMarker)).rejects.toMatchObject({
+		await expect(access(doctorReady.launchMarker)).rejects.toMatchObject({
 			code: "ENOENT",
 		});
 		await expect(
-			generatedConfigDirectories(doctorReadyConsumerRoot),
+			generatedConfigDirectories(doctorReady.consumerRoot),
 		).resolves.toEqual(generatedBefore);
 	});
 
@@ -330,7 +325,7 @@ describe.sequential("installed CLI release boundary", () => {
 	it("reports packed missing Chromium with install guidance and no launch", async () => {
 		const result = runInstalledCli({
 			args: ["doctor"],
-			consumerRoot: doctorMissingChromiumConsumerRoot,
+			consumerRoot: doctorMissingChromium.consumerRoot,
 		});
 
 		expect(result.status).toBe(2);
@@ -338,7 +333,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(result.stdout).toMatch(/^FAIL Chromium:/m);
 		expect(result.stdout).toMatch(/npx playwright install chromium/i);
 		await expect(
-			access(doctorMissingChromiumLaunchMarker),
+			access(doctorMissingChromium.launchMarker),
 		).rejects.toMatchObject({
 			code: "ENOENT",
 		});

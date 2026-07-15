@@ -35,6 +35,7 @@ import {
 } from "../process/command-signals.js";
 import { runChild } from "../process/run-child.js";
 import {
+	configuredOriginFromEnvironment,
 	normalizeConfiguredOrigin,
 	resolveProfileDataRoot,
 } from "../profiles/configured-origin.js";
@@ -319,13 +320,7 @@ export const orchestrateShopifyRun = async ({
 		signal,
 	);
 	throwIfCommandAborted(signal);
-	const configuredUrl = environment.SHOPIFY_STORE_URL;
-	if (!configuredUrl) {
-		throw new ShopifyE2EPreflightError(
-			"SHOPIFY_STORE_URL is required. Set it in the consumer .env file or inherited environment.",
-		);
-	}
-	const origin = normalizeConfiguredOrigin(configuredUrl);
+	const origin = configuredOriginFromEnvironment(environment);
 	const loadedConfig = await runWithCommandSignal(
 		() =>
 			dependencies.loadConfig({

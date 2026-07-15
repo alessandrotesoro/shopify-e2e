@@ -19,7 +19,7 @@ import {
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
 import {
-	normalizeConfiguredOrigin,
+	configuredOriginFromEnvironment,
 	resolveProfileDataRoot,
 } from "../profiles/configured-origin.js";
 import {
@@ -81,18 +81,6 @@ const createPromptContext = (options: AuthOrchestratorOptions) => ({
 	output: options.output,
 	signal: options.signal,
 });
-
-const configuredOriginFromEnvironment = (
-	environment: NodeJS.ProcessEnv,
-): string => {
-	const configuredUrl = environment.SHOPIFY_STORE_URL;
-	if (!configuredUrl) {
-		throw new ShopifyE2EPreflightError(
-			"SHOPIFY_STORE_URL is required. Set it in the consumer .env file or inherited environment.",
-		);
-	}
-	return normalizeConfiguredOrigin(configuredUrl);
-};
 
 const selectSavedProfile = async (
 	summaries: readonly ProfileSummary[],
