@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
 	cp,
@@ -15,6 +15,12 @@ import { join, resolve } from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import {
+	prepareDoctorReadyConsumer,
+	waitForChildOutcome,
+	waitForPath,
+} from "./support/doctor-cli-shell.js";
+
 const projectRoot = resolve(import.meta.dirname, "..");
 const binPath = resolve(projectRoot, "bin/run.js");
 const unrelatedCommandPath = resolve(projectRoot, "dist/commands/unrelated.js");
@@ -29,59 +35,6 @@ interface RunCliArgs {
 	readonly cwd?: string;
 	readonly environmentOverrides?: NodeJS.ProcessEnv;
 }
-
-interface ChildOutcome {
-	readonly code: number | null;
-	readonly signal: NodeJS.Signals | null;
-}
-
-const waitForPath = async (path: string, timeoutMs: number): Promise<void> => {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (existsSync(path)) return;
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
-	}
-	throw new Error(`Timed out waiting for ${path}`);
-};
-
-const waitForChildOutcome = (
-	child: ChildProcess,
-	timeoutMs: number,
-): Promise<ChildOutcome> => {
-	if (child.exitCode !== null || child.signalCode !== null) {
-		return Promise.resolve({
-			code: child.exitCode,
-			signal: child.signalCode,
-		});
-	}
-
-	return new Promise<ChildOutcome>((resolveOutcome, rejectOutcome) => {
-		const cleanup = (): void => {
-			clearTimeout(timeout);
-			child.off("error", onError);
-			child.off("exit", onExit);
-		};
-		const onError = (error: Error): void => {
-			cleanup();
-			rejectOutcome(error);
-		};
-		const onExit = (
-			code: number | null,
-			signal: NodeJS.Signals | null,
-		): void => {
-			cleanup();
-			resolveOutcome({ code, signal });
-		};
-		const timeout = setTimeout(() => {
-			cleanup();
-			rejectOutcome(
-				new Error(`CLI process ${child.pid ?? "unknown"} remained alive`),
-			);
-		}, timeoutMs);
-		child.once("error", onError);
-		child.once("exit", onExit);
-	});
-};
 
 const runCli = ({
 	args,
@@ -130,55 +83,6 @@ const makeRunnableConsumer = async (consumerRoot?: string): Promise<string> => {
 		"dir",
 	);
 	return consumer;
-};
-
-const makeDoctorReadyConsumer = async (): Promise<{
-	readonly consumer: string;
-	readonly importSentinels: readonly string[];
-	readonly launchSentinel: string;
-}> => {
-	const consumer = await makeConsumerFixture();
-	const peerRoot = join(consumer, "node_modules", "@playwright", "test");
-	const chromiumPath = join(peerRoot, "chromium");
-	const launchSentinel = join(consumer, "doctor-browser-launched");
-	const importSentinels = [
-		join(consumer, "ordinary-config-imported"),
-		join(consumer, "ordinary-spec-imported"),
-		join(consumer, "shopify-spec-imported"),
-	] as const;
-	await mkdir(peerRoot, { recursive: true });
-	await writeFile(chromiumPath, "fake chromium\n");
-	await writeFile(join(peerRoot, "cli.js"), "// fake Playwright CLI\n");
-	await writeFile(
-		join(peerRoot, "index.js"),
-		`import { writeFileSync } from "node:fs"; export const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, launch() { writeFileSync(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
-	);
-	await writeFile(
-		join(peerRoot, "package.json"),
-		`${JSON.stringify({
-			bin: { playwright: "cli.js" },
-			exports: {
-				".": "./index.js",
-				"./package.json": "./package.json",
-			},
-			name: "@playwright/test",
-			type: "module",
-			version: "1.61.1",
-		})}\n`,
-	);
-	await writeFile(
-		join(consumer, "playwright.config.ts"),
-		`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(importSentinels[0])}, "imported"); export default {};\n`,
-	);
-	await writeFile(
-		join(consumer, "ordinary.spec.ts"),
-		`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(importSentinels[1])}, "imported");\n`,
-	);
-	await writeFile(
-		join(consumer, "shopify-tests", "checkout.spec.ts"),
-		`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(importSentinels[2])}, "imported");\n`,
-	);
-	return { consumer, importSentinels, launchSentinel };
 };
 
 const makeDotenvAwareConsumer = async (): Promise<string> => {
@@ -312,11 +216,31 @@ describe.sequential("built CLI shell", () => {
 		expect(result.stderr).not.toMatch(/consumer \.env could not be read/i);
 	});
 
-	it("prints the complete ordered doctor report without importing tests", async () => {
-		const fixture = await makeDoctorReadyConsumer();
+	it("prints the complete ordered doctor report from an alternate config without importing tests", async () => {
+		const fixture = await prepareDoctorReadyConsumer(
+			await makeConsumerFixture(),
+		);
+		const alternateConfigPath = join(
+			fixture.consumer,
+			"alternate-shopify-e2e.config.ts",
+		);
+		const alternateTestDir = join(fixture.consumer, "alternate-shopify-tests");
+		const alternateSpecSentinel = join(
+			fixture.consumer,
+			"alternate-shopify-spec-imported",
+		);
+		await mkdir(alternateTestDir);
+		await writeFile(
+			alternateConfigPath,
+			'export default { testDir: "alternate-shopify-tests", roles: { guest: { authentication: "none" } } };\n',
+		);
+		await writeFile(
+			join(alternateTestDir, "checkout.spec.ts"),
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(alternateSpecSentinel)}, "imported");\n`,
+		);
 
 		const result = runCli({
-			args: ["doctor", "--config", "shopify-e2e.config.ts"],
+			args: ["doctor", "--config", "alternate-shopify-e2e.config.ts"],
 			cwd: fixture.consumer,
 		});
 
@@ -336,17 +260,25 @@ describe.sequential("built CLI shell", () => {
 			expect(index).toBeGreaterThan(priorIndex);
 			priorIndex = index;
 		}
+		expect(result.stdout).toContain(alternateConfigPath);
+		expect(result.stdout).toContain(alternateTestDir);
+		expect(result.stdout).not.toContain(
+			join(fixture.consumer, "shopify-e2e.config.ts"),
+		);
+		expect(result.stdout).toContain("1 Playwright spec candidate(s) found");
+		expect(result.stdout).not.toContain("checkout.spec.ts");
 		expect(result.stdout).not.toContain("https://shop.example");
 		expect(result.stderr).toBe("");
 		for (const sentinel of [
 			...fixture.importSentinels,
+			alternateSpecSentinel,
 			fixture.launchSentinel,
 		]) {
 			expect(existsSync(sentinel)).toBe(false);
 		}
 	});
 
-	it("prints failures and skips before exiting doctor with code 2", async () => {
+	it("prints doctor failures and skips before exiting with code 2", async () => {
 		const consumer = await makeConsumerFixture();
 
 		const result = runCli({ args: ["doctor"], cwd: consumer });
@@ -357,10 +289,15 @@ describe.sequential("built CLI shell", () => {
 		expect(result.stderr).toBe("");
 	});
 
-	it.skipIf(process.platform === "win32")(
-		"interrupts an in-flight doctor inspection without a partial report",
-		async () => {
-			const fixture = await makeDoctorReadyConsumer();
+	it.skipIf(process.platform === "win32").each([
+		["SIGINT", 130],
+		["SIGTERM", 143],
+	] as const)(
+		"interrupts an in-flight doctor inspection with %s without a partial report",
+		async (signal, expectedExitCode) => {
+			const fixture = await prepareDoctorReadyConsumer(
+				await makeConsumerFixture(),
+			);
 			const inspectionStarted = join(
 				fixture.consumer,
 				"doctor-inspection-started",
@@ -381,7 +318,7 @@ describe.sequential("built CLI shell", () => {
 writeFileSync(${JSON.stringify(inspectionStarted)}, "started");
 await new Promise((resolveSignal) => {
   const keepInspectionPending = setInterval(() => undefined, 1_000);
-  process.once("SIGTERM", () => {
+  process.once(${JSON.stringify(signal)}, () => {
     clearInterval(keepInspectionPending);
     resolveSignal(undefined);
   });
@@ -428,14 +365,14 @@ export const chromium = {
 			try {
 				await waitForPath(inspectionStarted, 5_000);
 				expect(child.pid).toBeTypeOf("number");
-				process.kill(child.pid as number, "SIGTERM");
+				process.kill(child.pid as number, signal);
 				const outcome = await outcomePromise;
 				didExit = true;
 
 				expect(
 					outcome,
 					`interrupted doctor\nstdout:\n${stdout}\nstderr:\n${stderr}`,
-				).toEqual({ code: 143, signal: null });
+				).toEqual({ code: expectedExitCode, signal: null });
 				expect(stderr).toContain("Doctor interrupted; no report completed.");
 				expect(stderr).not.toContain(fixture.consumer);
 				expect(stdout).not.toMatch(/^(?:PASS|FAIL|ERROR|SKIP) /m);
