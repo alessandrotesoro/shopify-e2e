@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveProfileDataRoot } from "../src/profiles/configured-origin.js";
 import {
+	configuredOriginFromEnvironment,
 	configuredOriginKey,
 	normalizeConfiguredOrigin,
-	resolveProfileDataRoot,
-} from "../src/profiles/configured-origin.js";
+} from "../src/role-states/configured-origin.cjs";
 
 const temporaryDirectories: string[] = [];
 
@@ -44,6 +45,27 @@ describe("configured origin", () => {
 		expect(
 			normalizeConfiguredOrigin("https://EXAMPLE.com:443/a/b?token=x#section"),
 		).toBe("https://example.com");
+	});
+
+	it("reads and validates the configured origin from an explicit environment", () => {
+		expect(
+			configuredOriginFromEnvironment({
+				SHOPIFY_STORE_URL: "https://Example.COM/path?secret=value",
+			}),
+		).toBe("https://example.com");
+		expect(() => configuredOriginFromEnvironment({})).toThrow(
+			/SHOPIFY_STORE_URL is required/i,
+		);
+		expect(() =>
+			configuredOriginFromEnvironment({
+				SHOPIFY_STORE_URL: "http://example.com",
+			}),
+		).toThrow(/HTTPS/i);
+	});
+
+	it("reports validation failures through dependency-neutral errors", () => {
+		expect(() => normalizeConfiguredOrigin("shop.example")).toThrow(TypeError);
+		expect(() => configuredOriginFromEnvironment({})).toThrow(TypeError);
 	});
 
 	it("partitions custom and myshopify origins independently", () => {
