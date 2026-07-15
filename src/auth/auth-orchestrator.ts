@@ -18,9 +18,9 @@ import {
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
-import { resolveProfileDataRoot as resolveRoleStateDataRoot } from "../profiles/configured-origin.js";
 import type { PromptFunctions } from "../prompts/inquirer.js";
 import { configuredOriginFromEnvironment } from "../role-states/configured-origin.cjs";
+import { resolveRoleStateDataRoot } from "../role-states/data-root.js";
 import {
 	createRoleStateStore,
 	type RoleStateSelection,

@@ -6,7 +6,6 @@ import {
 	isDefinedShopifyE2EConfig,
 	isShopifyE2EConfigContractError,
 } from "./define-config.cjs";
-import { discoverShopifySpecs } from "./discover-specs.js";
 import { assertReservedExecutionEnvironmentIsClear } from "./execution-environment.cjs";
 import {
 	resolveShopifyConfigPath,
@@ -14,20 +13,12 @@ import {
 } from "./project-boundary.js";
 
 export interface LoadShopifyConfigOptions {
-	/** Transitional input retained until command flags migrate; never selects a file. */
-	readonly configPath?: string;
 	readonly environment: NodeJS.ProcessEnv;
 	readonly projectRoot: string;
 }
 
-/** Transitional adapter for the pre-U2 profile store. */
-export interface ShopifyRoleConfig {
-	readonly authentication: "none" | "required";
-}
-
 export interface LoadedShopifyConfig {
 	readonly configPath: string;
-	readonly legacyRoles: Readonly<Record<string, ShopifyRoleConfig>>;
 	readonly playwrightConfig: DefinedShopifyE2EConfig;
 	readonly projectRoot: string;
 	readonly roles: readonly string[];
@@ -122,14 +113,8 @@ export const loadShopifyConfig = async (
 			configuredTestDir,
 			projectRoot: options.projectRoot,
 		});
-		const legacyRoles = Object.freeze(
-			Object.fromEntries(
-				roles.map((role) => [role, { authentication: "required" as const }]),
-			),
-		);
 		return {
 			configPath,
-			legacyRoles,
 			playwrightConfig,
 			projectRoot: options.projectRoot,
 			roles,
@@ -138,12 +123,4 @@ export const loadShopifyConfig = async (
 	} catch (error) {
 		throw withConfigContext(configPath, error);
 	}
-};
-
-export const loadRunnableShopifyConfig = async (
-	options: LoadShopifyConfigOptions,
-): Promise<LoadedShopifyConfig> => {
-	const config = await loadShopifyConfig(options);
-	await discoverShopifySpecs(config.testDir);
-	return config;
 };

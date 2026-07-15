@@ -1,47 +1,9 @@
-import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
 import { isPathContained } from "../path-boundary.utils.js";
-
-export const normalizeConfiguredOrigin = (input: string): string => {
-	let url: URL;
-	try {
-		url = new URL(input);
-	} catch {
-		throw new ShopifyE2EPreflightError(
-			"SHOPIFY_STORE_URL must be an absolute HTTPS URL. Set it in the consumer .env file or inherited environment.",
-		);
-	}
-	if (url.protocol !== "https:") {
-		throw new ShopifyE2EPreflightError(
-			"SHOPIFY_STORE_URL must use HTTPS. Set it in the consumer .env file or inherited environment.",
-		);
-	}
-	if (url.username.length > 0 || url.password.length > 0) {
-		throw new ShopifyE2EPreflightError(
-			"SHOPIFY_STORE_URL must not contain credentials or URL userinfo. Set it in the consumer .env file or inherited environment.",
-		);
-	}
-	return url.origin;
-};
-
-export const configuredOriginFromEnvironment = (
-	environment: NodeJS.ProcessEnv,
-): string => {
-	const configuredUrl = environment.SHOPIFY_STORE_URL;
-	if (!configuredUrl) {
-		throw new ShopifyE2EPreflightError(
-			"SHOPIFY_STORE_URL is required. Set it in the consumer .env file or inherited environment.",
-		);
-	}
-	return normalizeConfiguredOrigin(configuredUrl);
-};
-
-export const configuredOriginKey = (normalizedOrigin: string): string =>
-	createHash("sha256").update(normalizedOrigin).digest("hex");
 
 const assertNoSymlinkComponents = async (candidate: string): Promise<void> => {
 	const { root } = parse(candidate);
@@ -55,13 +17,13 @@ const assertNoSymlinkComponents = async (candidate: string): Promise<void> => {
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
 			throw new ShopifyE2EPreflightError(
-				"Profile data directory could not be inspected",
+				"Role-state data directory could not be inspected",
 				{ cause: error },
 			);
 		}
 		if (metadata.isSymbolicLink()) {
 			throw new ShopifyE2EPreflightError(
-				"Profile data directory must not contain symbolic links",
+				"Role-state data directory must not contain symbolic links",
 			);
 		}
 	}
@@ -86,20 +48,20 @@ const resolveProspectivePhysicalPath = async (
 	return resolve(physicalExisting, relative(existing, candidate));
 };
 
-export interface ResolveProfileDataRootArgs {
+export interface ResolveRoleStateDataRootArgs {
 	readonly dataDir: string;
 	readonly packageRoot: string;
 	readonly projectRoot: string;
 }
 
-export const resolveProfileDataRoot = async ({
+export const resolveRoleStateDataRoot = async ({
 	dataDir,
 	packageRoot,
 	projectRoot,
-}: ResolveProfileDataRootArgs): Promise<string> => {
+}: ResolveRoleStateDataRootArgs): Promise<string> => {
 	if (!isAbsolute(dataDir)) {
 		throw new ShopifyE2EPreflightError(
-			"Profile data directory must be an absolute path",
+			"Role-state data directory must be an absolute path",
 		);
 	}
 	const candidate = resolve(dataDir);
@@ -115,7 +77,7 @@ export const resolveProfileDataRoot = async ({
 		]);
 	} catch (error) {
 		throw new ShopifyE2EPreflightError(
-			"Profile data directory boundary could not be resolved",
+			"Role-state data directory boundary could not be resolved",
 			{ cause: error },
 		);
 	}
@@ -127,7 +89,7 @@ export const resolveProfileDataRoot = async ({
 		isPathContained({ candidate: physicalCandidate, parent: physicalPackage })
 	) {
 		throw new ShopifyE2EPreflightError(
-			"Profile data directory must resolve outside the consumer project and package installation",
+			"Role-state data directory must resolve outside the consumer project and package installation",
 		);
 	}
 	return physicalCandidate;

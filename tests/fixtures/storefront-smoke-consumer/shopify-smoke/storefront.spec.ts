@@ -15,7 +15,7 @@ const passwordChallenge = (page: Page) =>
 		'form[action="/password"] input[type="password"], input#Password',
 	);
 
-test("saved storefront access profile bypasses the storefront password challenge", {
+test("saved storefront access role bypasses the storefront password challenge", {
 	tag: "@shopify-e2e-role-storefront-access",
 }, async ({ page }) => {
 	const response = await page.goto(configuredStoreOrigin(), {
@@ -27,7 +27,7 @@ test("saved storefront access profile bypasses the storefront password challenge
 	await expect(page.locator("body")).toBeVisible();
 });
 
-test("guest profile reaches the storefront password challenge", {
+test("guest role reaches the storefront password challenge", {
 	tag: "@shopify-e2e-role-guest",
 }, async ({ page }) => {
 	const response = await page.goto(configuredStoreOrigin(), {
