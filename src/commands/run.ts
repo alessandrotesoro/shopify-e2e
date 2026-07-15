@@ -86,6 +86,7 @@ export interface RunCommandDependencies {
 	) => Promise<string>;
 	readonly loadConfig: (options: {
 		readonly configPath?: string;
+		readonly environment: NodeJS.ProcessEnv;
 		readonly projectRoot: string;
 	}) => Promise<LoadedShopifyConfig>;
 	readonly reportSelection: (selection: SelectedShopifyBoundary) => void;
@@ -161,7 +162,7 @@ const resolveRunSelection = async ({
 	throwIfCommandAborted(signal);
 	if (
 		options.profile !== undefined &&
-		loadedConfig.roles[options.profile]?.authentication === "none"
+		loadedConfig.legacyRoles[options.profile]?.authentication === "none"
 	) {
 		return {
 			kind: "unauthenticated",
@@ -187,7 +188,7 @@ const resolveRunSelection = async ({
 	const store = dependencies.createStore({
 		dataRoot,
 		origin,
-		roles: loadedConfig.roles,
+		roles: loadedConfig.legacyRoles,
 	});
 	const profile = options.profile;
 	if (profile !== undefined) {
@@ -325,6 +326,7 @@ export const orchestrateShopifyRun = async ({
 		() =>
 			dependencies.loadConfig({
 				configPath: options.configPath,
+				environment,
 				projectRoot,
 			}),
 		signal,

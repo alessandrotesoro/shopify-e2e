@@ -8,7 +8,7 @@ import {
 import {
 	buildRoleToken,
 	buildRoleTokenPattern,
-} from "../src/roles/role-token.js";
+} from "../src/roles/role-token.cjs";
 
 describe("profile and role names", () => {
 	it.each([

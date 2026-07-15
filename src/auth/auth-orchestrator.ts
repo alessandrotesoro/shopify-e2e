@@ -55,7 +55,7 @@ export interface AuthOrchestratorDependencies {
 	readonly createStore: (options: {
 		readonly dataRoot: string;
 		readonly origin: string;
-		readonly roles: LoadedShopifyConfig["roles"];
+		readonly roles: LoadedShopifyConfig["legacyRoles"];
 	}) => ProfileStore;
 	readonly loadConfig: typeof loadShopifyConfig;
 	readonly loadEnvironment: (
@@ -181,7 +181,7 @@ const runCapture = async (
 	dependencies: AuthOrchestratorDependencies,
 ): Promise<void> => {
 	requireInteractive(options);
-	const authenticatedRoles = Object.entries(config.roles)
+	const authenticatedRoles = Object.entries(config.legacyRoles)
 		.filter(([, role]) => role.authentication === "required")
 		.map(([name]) => name)
 		.sort();
@@ -395,6 +395,7 @@ export const orchestrateAuth = async (
 		() =>
 			dependencies.loadConfig({
 				configPath: options.configPath,
+				environment: options.environment,
 				projectRoot,
 			}),
 		options.signal,
@@ -418,7 +419,7 @@ export const orchestrateAuth = async (
 	const store = dependencies.createStore({
 		dataRoot,
 		origin,
-		roles: config.roles,
+		roles: config.legacyRoles,
 	});
 
 	let action: Exclude<AuthAction, "menu">;
@@ -428,7 +429,7 @@ export const orchestrateAuth = async (
 		requireInteractive(options);
 		summaries = await runWithCommandSignal(() => store.list(), options.signal);
 		removalCandidates = await removableProfiles(store, options);
-		const hasCapture = Object.values(config.roles).some(
+		const hasCapture = Object.values(config.legacyRoles).some(
 			(role) => role.authentication === "required",
 		);
 		const hasRefresh = summaries.some(

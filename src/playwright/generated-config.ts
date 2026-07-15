@@ -11,7 +11,7 @@ import { isPathContained } from "../path-boundary.utils.js";
 import { assertProfileName } from "../profiles/profile-name.js";
 import { serializeStorageState } from "../profiles/profile-schema.js";
 import type { ProfileSelection } from "../profiles/profile-store.js";
-import { buildRoleTokenPattern } from "../roles/role-token.js";
+import { buildRoleTokenPattern } from "../roles/role-token.cjs";
 
 export interface GeneratedPlaywrightConfig {
 	readonly cleanup: () => Promise<void>;

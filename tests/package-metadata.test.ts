@@ -39,7 +39,14 @@ describe("package metadata", () => {
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.bin).toEqual({ "shopify-e2e": "./bin/run.js" });
 		expect(packageJson.files).toEqual(["bin", "dist", "LICENSE"]);
-		expect(packageJson.exports).toEqual({});
+		expect(packageJson.exports).toEqual({
+			"./config": {
+				default: "./dist/config/public.cjs",
+				import: "./dist/config/public.cjs",
+				require: "./dist/config/public.cjs",
+				types: "./dist/config/public.d.cts",
+			},
+		});
 	});
 
 	it("pins the shell dependencies and declares the supported Playwright peer", async () => {
@@ -49,7 +56,7 @@ describe("package metadata", () => {
 			"@inquirer/prompts": "7.10.1",
 			"@oclif/core": "4.11.14",
 			dotenv: "17.4.2",
-			jiti: "^2.6.1",
+			jiti: "2.7.0",
 			semver: "^7.7.4",
 		});
 		expect(packageJson.devDependencies).toMatchObject({
@@ -63,6 +70,13 @@ describe("package metadata", () => {
 		expect(packageJson.peerDependenciesMeta).toEqual({
 			"@playwright/test": { optional: true },
 		});
+	});
+
+	it("pins the package-owned Jiti implementation exactly", async () => {
+		const lockfile = await readPackageLock();
+
+		expect(lockfile.packages[""]?.dependencies?.jiti).toBe("2.7.0");
+		expect(lockfile.packages["node_modules/jiti"]?.version).toBe("2.7.0");
 	});
 
 	it("coordinates the 0.4.0 release and prompt pin in the lockfile", async () => {

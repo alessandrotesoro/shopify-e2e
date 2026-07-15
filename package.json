@@ -4,7 +4,14 @@
 	"description": "CLI-first orchestration for isolated Shopify Playwright E2E tests.",
 	"license": "MIT",
 	"type": "module",
-	"exports": {},
+	"exports": {
+		"./config": {
+			"types": "./dist/config/public.d.cts",
+			"import": "./dist/config/public.cjs",
+			"require": "./dist/config/public.cjs",
+			"default": "./dist/config/public.cjs"
+		}
+	},
 	"bin": {
 		"shopify-e2e": "./bin/run.js"
 	},
@@ -29,7 +36,7 @@
 		"@inquirer/prompts": "7.10.1",
 		"@oclif/core": "4.11.14",
 		"dotenv": "17.4.2",
-		"jiti": "^2.6.1",
+		"jiti": "2.7.0",
 		"semver": "^7.7.4"
 	},
 	"devDependencies": {

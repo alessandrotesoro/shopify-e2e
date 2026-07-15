@@ -1,8 +1,6 @@
-export default {
+import { defineShopifyE2EConfig } from "@sematico/shopify-e2e/config";
+
+export default defineShopifyE2EConfig({
 	testDir: "shopify-passing",
-	roles: {
-		admin: { authentication: "required" },
-		customer: { authentication: "required" },
-		guest: { authentication: "none" },
-	},
-};
+	roles: ["admin", "customer", "guest"],
+});
