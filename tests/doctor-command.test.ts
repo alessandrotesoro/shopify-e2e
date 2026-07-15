@@ -1,4 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import {
+	access,
+	mkdir,
+	mkdtemp,
+	realpath,
+	rm,
+	writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LoadedShopifyConfig } from "../src/config/load-config.js";
 import {
@@ -10,6 +21,7 @@ import { ShopifyE2EPreflightError } from "../src/errors.js";
 import type { CommandSignalError } from "../src/process/command-signals.js";
 
 const projectRoot = "/physical/consumer";
+const temporaryDirectories: string[] = [];
 const loadedConfig: LoadedShopifyConfig = {
 	configPath: `${projectRoot}/shopify-e2e.config.ts`,
 	projectRoot,
@@ -35,6 +47,60 @@ const makeDependencies = (): DoctorDependencies => ({
 	resolveProjectRoot: vi.fn(async () => projectRoot),
 });
 
+const makeReadyConsumer = async (): Promise<{
+	readonly chromiumPath: string;
+	readonly configPath: string;
+	readonly launchSentinel: string;
+	readonly project: string;
+	readonly testDir: string;
+}> => {
+	const project = await realpath(
+		await mkdtemp(join(tmpdir(), "shopify-e2e-doctor-")),
+	);
+	temporaryDirectories.push(project);
+	const configPath = join(project, "shopify-e2e.config.ts");
+	const testDir = join(project, "shopify-tests");
+	const packageRoot = join(project, "node_modules", "@playwright", "test");
+	const chromiumPath = join(packageRoot, "chromium");
+	const launchSentinel = join(project, "browser-launched");
+	await mkdir(testDir, { recursive: true });
+	await mkdir(packageRoot, { recursive: true });
+	await writeFile(join(project, "package.json"), '{"type":"module"}\n');
+	await writeFile(
+		configPath,
+		"export default { testDir: 'shopify-tests', roles: { guest: { authentication: 'none' } } };\n",
+	);
+	await writeFile(join(testDir, "checkout.spec.ts"), "// candidate only\n");
+	await writeFile(chromiumPath, "fake chromium binary\n");
+	await writeFile(join(packageRoot, "cli.js"), "// fake Playwright CLI\n");
+	await writeFile(
+		join(packageRoot, "index.js"),
+		`import { writeFile } from "node:fs/promises";\nexport const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { await writeFile(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
+	);
+	await writeFile(
+		join(packageRoot, "package.json"),
+		JSON.stringify({
+			bin: { playwright: "cli.js" },
+			exports: {
+				".": "./index.js",
+				"./package.json": "./package.json",
+			},
+			name: "@playwright/test",
+			type: "module",
+			version: "1.61.1",
+		}),
+	);
+	return { chromiumPath, configPath, launchSentinel, project, testDir };
+};
+
+afterEach(async () => {
+	await Promise.all(
+		temporaryDirectories
+			.splice(0)
+			.map((directory) => rm(directory, { force: true, recursive: true })),
+	);
+});
+
 const runDoctor = (
 	dependencies = makeDependencies(),
 	environment: NodeJS.ProcessEnv = {
@@ -53,6 +119,13 @@ const runDoctor = (
 describe("doctor orchestration", () => {
 	it("returns seven ordered passes for a ready dependency graph", async () => {
 		const dependencies = makeDependencies();
+		const launch = vi.fn(async () => {
+			throw new Error("doctor must not launch Chromium");
+		});
+		vi.mocked(dependencies.loadChromium).mockResolvedValueOnce({
+			executablePath: () => "/browser/chromium",
+			launch,
+		});
 
 		const report = await runDoctor(dependencies);
 
@@ -72,6 +145,165 @@ describe("doctor orchestration", () => {
 			environment: expect.any(Object),
 			projectRoot,
 		});
+		expect(dependencies.loadConfig).toHaveBeenCalledWith({ projectRoot });
+		expect(dependencies.discoverSpecs).toHaveBeenCalledWith(
+			loadedConfig.testDir,
+		);
+		expect(dependencies.resolvePeer).toHaveBeenCalledWith(projectRoot);
+		expect(dependencies.loadChromium).toHaveBeenCalledOnce();
+		expect(launch).not.toHaveBeenCalled();
+		expect(
+			vi.mocked(dependencies.loadProjectEnvironment).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(
+			vi.mocked(dependencies.loadConfig).mock.invocationCallOrder[0] ?? 0,
+		);
+	});
+
+	it("uses production boundaries for a browserless ready consumer", async () => {
+		const consumer = await makeReadyConsumer();
+		const environment = {
+			SHOPIFY_STORE_URL: "https://shop.example/products?preview=1",
+		};
+
+		const report = await orchestrateDoctor({
+			options: {
+				cwd: consumer.project,
+				environment,
+				signal: new AbortController().signal,
+			},
+		});
+
+		expect(report.checks.map(({ status }) => status)).toEqual(
+			Array.from({ length: 7 }, () => "PASS"),
+		);
+		expect(report.checks[3]?.detail).toContain(consumer.configPath);
+		expect(report.checks[4]?.detail).toContain(consumer.testDir);
+		expect(JSON.stringify(report)).not.toContain(consumer.chromiumPath);
+		expect(JSON.stringify(report)).not.toContain(environment.SHOPIFY_STORE_URL);
+		await expect(access(consumer.launchSentinel)).rejects.toThrow();
+	});
+
+	it("fails config and skips specs while completing the peer branch", async () => {
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.loadConfig).mockRejectedValueOnce(
+			new ShopifyE2EPreflightError("Dedicated Shopify config is missing"),
+		);
+
+		const report = await runDoctor(dependencies);
+
+		expect(report.checks.slice(3).map(({ status }) => status)).toEqual([
+			"FAIL",
+			"SKIP",
+			"PASS",
+			"PASS",
+		]);
+		expect(dependencies.discoverSpecs).not.toHaveBeenCalled();
+		expect(dependencies.resolvePeer).toHaveBeenCalledOnce();
+		expect(dependencies.loadChromium).toHaveBeenCalledOnce();
+	});
+
+	it("fails a removed or changed origin but accepts path and query rewrites", async () => {
+		const removed = makeDependencies();
+		const removedEnvironment: NodeJS.ProcessEnv = {
+			SHOPIFY_STORE_URL: "https://shop.example/initial",
+		};
+		vi.mocked(removed.normalizeOrigin).mockImplementation(
+			(value) => new URL(value).origin,
+		);
+		vi.mocked(removed.loadConfig).mockImplementationOnce(async () => {
+			delete removedEnvironment.SHOPIFY_STORE_URL;
+			return loadedConfig;
+		});
+
+		const removedReport = await runDoctor(removed, removedEnvironment);
+
+		expect(removedReport.checks[2]).toMatchObject({ status: "FAIL" });
+		expect(removedReport.checks[3]).toMatchObject({ status: "PASS" });
+
+		const changed = makeDependencies();
+		const changedEnvironment: NodeJS.ProcessEnv = {
+			SHOPIFY_STORE_URL: "https://shop.example/initial",
+		};
+		vi.mocked(changed.normalizeOrigin).mockImplementation(
+			(value) => new URL(value).origin,
+		);
+		vi.mocked(changed.loadConfig).mockImplementationOnce(async () => {
+			changedEnvironment.SHOPIFY_STORE_URL = "https://other.example/changed";
+			return loadedConfig;
+		});
+
+		const changedReport = await runDoctor(changed, changedEnvironment);
+
+		expect(changedReport.checks[2]).toMatchObject({ status: "FAIL" });
+		expect(JSON.stringify(changedReport)).not.toContain("other.example");
+
+		const stable = makeDependencies();
+		const stableEnvironment: NodeJS.ProcessEnv = {
+			SHOPIFY_STORE_URL: "https://shop.example/initial",
+		};
+		vi.mocked(stable.normalizeOrigin).mockImplementation(
+			(value) => new URL(value).origin,
+		);
+		vi.mocked(stable.loadConfig).mockImplementationOnce(async () => {
+			stableEnvironment.SHOPIFY_STORE_URL =
+				"https://SHOP.example:443/rewritten?preview=1";
+			return loadedConfig;
+		});
+
+		const stableReport = await runDoctor(stable, stableEnvironment);
+
+		expect(stableReport.checks[2]).toMatchObject({ status: "PASS" });
+	});
+
+	it("fails spec discovery without suppressing the peer branch", async () => {
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.discoverSpecs).mockRejectedValueOnce(
+			new ShopifyE2EPreflightError(
+				`Shopify test directory contains no runnable Playwright specs: ${loadedConfig.testDir}`,
+			),
+		);
+
+		const report = await runDoctor(dependencies);
+
+		expect(report.checks[3]).toMatchObject({ status: "PASS" });
+		expect(report.checks[4]).toMatchObject({ status: "FAIL" });
+		expect(report.checks[5]).toMatchObject({ status: "PASS" });
+		expect(report.checks[6]).toMatchObject({ status: "PASS" });
+		expect(dependencies.resolvePeer).toHaveBeenCalledOnce();
+		expect(dependencies.loadChromium).toHaveBeenCalledOnce();
+	});
+
+	it("skips Chromium when the consumer peer is unavailable", async () => {
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.resolvePeer).mockRejectedValueOnce(
+			new ShopifyE2EPreflightError(
+				"Consumer project must install compatible @playwright/test (>=1.61.1 <1.62.0)",
+			),
+		);
+
+		const report = await runDoctor(dependencies);
+
+		expect(report.checks[5]).toMatchObject({ status: "FAIL" });
+		expect(report.checks[6]).toMatchObject({ status: "SKIP" });
+		expect(dependencies.loadChromium).not.toHaveBeenCalled();
+	});
+
+	it("reports Chromium installation failure without calling launch", async () => {
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.loadChromium).mockRejectedValueOnce(
+			new ShopifyE2EPreflightError(
+				"Consumer Chromium is unavailable. Install it from the consumer with `npx playwright install chromium` and retry.",
+			),
+		);
+
+		const report = await runDoctor(dependencies);
+
+		expect(report.checks[5]).toMatchObject({ status: "PASS" });
+		expect(report.checks[6]).toMatchObject({
+			status: "FAIL",
+		});
+		expect(report.checks[6]?.detail).toMatch(/playwright install chromium/i);
 	});
 
 	it("skips environment descendants but still runs the independent peer branch", async () => {

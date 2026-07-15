@@ -1,15 +1,26 @@
-import type { LoadedShopifyConfig } from "../config/load-config.js";
-import type { LoadProjectEnvironmentOptions } from "../environment/load-environment.js";
+import { discoverShopifySpecs } from "../config/discover-specs.js";
+import {
+	type LoadedShopifyConfig,
+	loadShopifyConfig,
+} from "../config/load-config.js";
+import { resolveProjectRoot } from "../config/project-boundary.js";
+import {
+	type LoadProjectEnvironmentOptions,
+	loadProjectEnvironment,
+} from "../environment/load-environment.js";
 import { ShopifyE2EPreflightError } from "../errors.js";
-import type {
-	ConsumerChromiumLauncher,
-	ResolvedPlaywrightPeer,
+import {
+	type ConsumerChromiumLauncher,
+	loadConsumerChromium,
+	type ResolvedPlaywrightPeer,
+	resolvePlaywrightPeer,
 } from "../playwright/peer.js";
 import {
 	CommandSignalError,
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
+import { normalizeConfiguredOrigin } from "../profiles/configured-origin.js";
 
 export const DOCTOR_CHECK_ORDER = [
 	"project",
@@ -60,9 +71,19 @@ export interface DoctorDependencies {
 }
 
 export interface OrchestrateDoctorArgs {
-	readonly dependencies: DoctorDependencies;
+	readonly dependencies?: DoctorDependencies;
 	readonly options: DoctorOptions;
 }
+
+const defaultDoctorDependencies: DoctorDependencies = {
+	discoverSpecs: discoverShopifySpecs,
+	loadChromium: loadConsumerChromium,
+	loadConfig: loadShopifyConfig,
+	loadProjectEnvironment,
+	normalizeOrigin: normalizeConfiguredOrigin,
+	resolvePeer: resolvePlaywrightPeer,
+	resolveProjectRoot,
+};
 
 const pass = (id: DoctorCheckId, detail: string): DoctorCheckResult => ({
 	detail,
@@ -127,7 +148,7 @@ const runAsyncCheck = async <Value>(
 };
 
 export const orchestrateDoctor = async ({
-	dependencies,
+	dependencies = defaultDoctorDependencies,
 	options,
 }: OrchestrateDoctorArgs): Promise<DoctorReport> => {
 	const results = new Map<DoctorCheckId, DoctorCheckResult>();
@@ -208,7 +229,13 @@ export const orchestrateDoctor = async ({
 			results.set("specs", skip("specs", "config"));
 		} else {
 			loadedConfig = config.value;
-			results.set("config", pass("config", "Dedicated Shopify config loaded"));
+			results.set(
+				"config",
+				pass(
+					"config",
+					`Dedicated Shopify config loaded: ${config.value.configPath}`,
+				),
+			);
 		}
 
 		if (configuredOrigin !== undefined) {
@@ -245,7 +272,7 @@ export const orchestrateDoctor = async ({
 				"specs",
 				pass(
 					"specs",
-					`${specs.value.length} Playwright spec candidate(s) found`,
+					`${specs.value.length} Playwright spec candidate(s) found: ${loadedConfig.testDir}`,
 				),
 			);
 		}
