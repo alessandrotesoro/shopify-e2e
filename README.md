@@ -210,8 +210,8 @@ The boundary protects against accidental commits, cross-origin/profile mixups, p
 - `0`: success or a user cancellation with no mutation. For `doctor`, all seven checks passed. For removal, this includes declining the default-no confirmation; a signal after the removal rename also exits `0` if quarantine cleanup completes.
 - `1`: package/browser/filesystem infrastructure failure, Playwright's own test/no-test failure, or an unexpected `doctor` inspection error. A removal failure before rename leaves the active profile unchanged; a cleanup failure after rename leaves it unavailable and means local secret cleanup is incomplete.
 - `2`: usage, config, URL, profile, TTY, boundary, or peer preflight refusal. For `doctor`, at least one expected readiness check failed and no check errored. Removal refusals do not mutate the registry.
-- `130`: terminal Ctrl+C or `SIGINT` before a removal commits, after cleanup of temporary work.
-- `143`: `SIGTERM` before a removal commits, after cleanup of temporary work.
+- `130`: terminal Ctrl+C or `SIGINT` before a removal commits, after cleanup of temporary work; for `doctor`, interruption before a complete report.
+- `143`: `SIGTERM` before a removal commits, after cleanup of temporary work; for `doctor`, interruption before a complete report.
 - Other numeric Playwright child exits pass through unchanged.
 
 ## Verification
