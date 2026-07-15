@@ -1,6 +1,6 @@
 {
 	"name": "@sematico/shopify-e2e",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"description": "CLI-first orchestration for isolated Shopify Playwright E2E tests.",
 	"license": "MIT",
 	"type": "module",
