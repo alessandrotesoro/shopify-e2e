@@ -19,7 +19,6 @@ export interface LoadShopifyConfigOptions {
 
 export interface LoadedShopifyConfig {
 	readonly configPath: string;
-	readonly playwrightConfig: DefinedShopifyE2EConfig;
 	readonly projectRoot: string;
 	readonly roles: readonly string[];
 	readonly testDir: string;
@@ -115,7 +114,6 @@ export const loadShopifyConfig = async (
 		});
 		return {
 			configPath,
-			playwrightConfig,
 			projectRoot: options.projectRoot,
 			roles,
 			testDir,

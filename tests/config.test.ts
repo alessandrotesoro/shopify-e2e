@@ -58,7 +58,7 @@ afterEach(async () => {
 });
 
 describe("dedicated Shopify configuration", () => {
-	it("loads only the marked fixed root and preserves Playwright values", async () => {
+	it("loads only the marked fixed root and returns its derived boundary", async () => {
 		const project = await makeProject();
 		await writeConfig(
 			project,
@@ -72,19 +72,12 @@ describe("dedicated Shopify configuration", () => {
 			projectRoot: project,
 		});
 
-		expect(loaded.configPath).toBe(join(project, "shopify-e2e.config.ts"));
-		expect(loaded.projectRoot).toBe(project);
-		expect(loaded.roles).toEqual(["admin", "customer"]);
-		expect(loaded.testDir).toBe(join(project, "shopify-tests"));
-		expect(loaded.playwrightConfig).toMatchObject({
-			fullyParallel: true,
-			retries: 2,
-			use: {
-				screenshot: "only-on-failure",
-				trace: "retain-on-failure",
-			},
+		expect(loaded).toEqual({
+			configPath: join(project, "shopify-e2e.config.ts"),
+			projectRoot: project,
+			roles: ["admin", "customer"],
+			testDir: join(project, "shopify-tests"),
 		});
-		expect(loaded.playwrightConfig.testMatch).toBeInstanceOf(RegExp);
 	});
 
 	it("ignores alternate and ordinary Playwright configs", async () => {
