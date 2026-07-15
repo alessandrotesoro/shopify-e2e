@@ -26,6 +26,10 @@ const temporaryDirectories: string[] = [];
 
 export interface InstalledCliFixture {
 	readonly consumerRoot: string;
+	readonly doctorMissingChromiumConsumerRoot: string;
+	readonly doctorMissingChromiumLaunchMarker: string;
+	readonly doctorReadyConsumerRoot: string;
+	readonly doctorReadyLaunchMarker: string;
 	readonly missingPeerConsumerRoot: string;
 	readonly profileDataRoot: string;
 	readonly removal: InstalledRemovalFixture;
@@ -54,6 +58,12 @@ interface SeedProfileArgs {
 		readonly cookies: readonly Record<string, unknown>[];
 		readonly origins: readonly Record<string, unknown>[];
 	};
+}
+
+interface PrepareDoctorConsumerArgs {
+	readonly chromiumInstalled: boolean;
+	readonly fixtureRoot: string;
+	readonly tarballPath: string;
 }
 
 interface MarkerArgs {
@@ -213,6 +223,68 @@ const seedProfile = async ({
 	);
 };
 
+const prepareDoctorConsumer = async ({
+	chromiumInstalled,
+	fixtureRoot,
+	tarballPath,
+}: PrepareDoctorConsumerArgs): Promise<{
+	readonly consumerRoot: string;
+	readonly launchMarker: string;
+}> => {
+	const consumerRoot = await makeTemporaryDirectory(
+		chromiumInstalled
+			? "shopify-e2e-doctor-ready-"
+			: "shopify-e2e-doctor-missing-chromium-",
+	);
+	await cp(fixtureRoot, consumerRoot, { recursive: true });
+	await installPackedPackage({
+		consumerRoot,
+		hasPlaywright: false,
+		tarballPath,
+	});
+
+	const peerRoot = join(consumerRoot, "node_modules", "@playwright", "test");
+	const chromiumPath = join(consumerRoot, "controlled-chromium");
+	const launchMarker = join(consumerRoot, "doctor-launch.marker");
+	await mkdir(peerRoot, { recursive: true });
+	await writeFile(
+		join(peerRoot, "package.json"),
+		`${JSON.stringify(
+			{
+				bin: { playwright: "cli.js" },
+				main: "index.js",
+				name: "@playwright/test",
+				type: "module",
+				version: "1.61.1",
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	await writeFile(
+		join(peerRoot, "cli.js"),
+		"// Controlled doctor fixture CLI.\n",
+	);
+	await writeFile(
+		join(peerRoot, "index.js"),
+		`import { writeFile } from "node:fs/promises";
+
+export const chromium = {
+  executablePath: () => ${JSON.stringify(chromiumPath)},
+  launch: async () => {
+    await writeFile(${JSON.stringify(launchMarker)}, "launch attempted\\n");
+    throw new Error("doctor must not launch Chromium");
+  },
+};
+`,
+	);
+	if (chromiumInstalled) {
+		await writeFile(chromiumPath, "controlled Chromium fixture\n");
+	}
+
+	return { consumerRoot, launchMarker };
+};
+
 export const prepareInstalledCliFixture = async ({
 	fixtureRoot,
 	projectRoot,
@@ -233,7 +305,9 @@ export const prepareInstalledCliFixture = async ({
 			"dist/commands.js",
 			"dist/commands/auth.js",
 			"dist/commands/auth/remove.js",
+			"dist/commands/doctor.js",
 			"dist/commands/run.js",
+			"dist/doctor/doctor-orchestrator.js",
 			"package.json",
 		]),
 	);
@@ -242,6 +316,13 @@ export const prepareInstalledCliFixture = async ({
 			/^(?:LICENSE|README\.md|package\.json|bin\/|dist\/)/.test(path),
 		),
 	).toBe(true);
+	expect(
+		publishedPaths.some((path) =>
+			/^(?:profiles|src|tests)(?:\/|$)|(?:^|\/)\.env(?:\.|$)|shopify-e2e-playwright-|\.marker$/.test(
+				path,
+			),
+		),
+	).toBe(false);
 	const executable = packedArtifact.files.find(
 		(file) => file.path === "bin/run.js",
 	);
@@ -256,6 +337,16 @@ export const prepareInstalledCliFixture = async ({
 	await installPackedPackage({
 		consumerRoot,
 		hasPlaywright: true,
+		tarballPath,
+	});
+	const doctorReady = await prepareDoctorConsumer({
+		chromiumInstalled: true,
+		fixtureRoot,
+		tarballPath,
+	});
+	const doctorMissingChromium = await prepareDoctorConsumer({
+		chromiumInstalled: false,
+		fixtureRoot,
 		tarballPath,
 	});
 	const profileDataRoot = await makeTemporaryDirectory(
@@ -364,7 +455,16 @@ export const prepareInstalledCliFixture = async ({
 		tarballPath,
 	});
 
-	return { consumerRoot, missingPeerConsumerRoot, profileDataRoot, removal };
+	return {
+		consumerRoot,
+		doctorMissingChromiumConsumerRoot: doctorMissingChromium.consumerRoot,
+		doctorMissingChromiumLaunchMarker: doctorMissingChromium.launchMarker,
+		doctorReadyConsumerRoot: doctorReady.consumerRoot,
+		doctorReadyLaunchMarker: doctorReady.launchMarker,
+		missingPeerConsumerRoot,
+		profileDataRoot,
+		removal,
+	};
 };
 
 export const cleanupInstalledCliFixture = async (): Promise<void> => {

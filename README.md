@@ -2,7 +2,7 @@
 
 A CLI-first, isolated Playwright lane for Shopify end-to-end tests.
 
-Version 0.3 adds safe local removal of saved browser profiles. The consuming application owns `@playwright/test`, Chromium, its Shopify tests, and its trusted configuration. The CLI owns profile capture and removal, isolated test discovery, one-worker execution, and the allowed run controls.
+Version 0.4 adds a local, read-only readiness doctor. Version 0.3 added safe local removal of saved browser profiles. The consuming application owns `@playwright/test`, Chromium, its Shopify tests, and its trusted configuration. The CLI owns readiness reporting, profile capture and removal, isolated test discovery, one-worker execution, and the allowed run controls.
 
 ## Install
 
@@ -45,7 +45,7 @@ This is a breaking change from 0.1: `{ testDir }` alone is invalid and must be m
 - For each role, either capture a profile for `authentication: "required"` or configure it as `authentication: "none"`.
 - Pass `--profile <name>` to every non-interactive `run` invocation.
 
-Upgrading from 0.2 to 0.3 requires no config or test changes. The only new public surface is `auth remove`.
+Upgrading from 0.2 to 0.3 requires no config or test changes. The only new public surface is `auth remove`. Upgrading from 0.3 to 0.4 also requires no config or test changes; the new public surface is `doctor [--config <path>]`.
 
 The CLI discovers `./shopify-e2e.config.ts` by convention. `--config` may select another contained TypeScript config. Config is trusted consumer code and is not sandboxed.
 
@@ -60,6 +60,33 @@ SHOPIFY_STORE_URL=https://your-store.myshopify.com/
 `auth` and `run` require an absolute HTTPS URL from inherited environment or this one `.env` file. The CLI normalizes it to its origin: user information is rejected, while path, query, and fragment are discarded. It does not search parent directories, load `.env.local`, prompt for the URL, or edit environment files. Inherited values take precedence over `.env`.
 
 Profiles are partitioned by this normalized configured origin. A custom storefront domain and its `.myshopify.com` domain are separate partitions; the CLI does not guess that they represent the same Shopify shop.
+
+## Diagnose local readiness
+
+Inspect the shared pre-profile prerequisites from the intended consumer root:
+
+```sh
+shopify-e2e doctor
+shopify-e2e doctor --config path/to/shopify-e2e.config.ts
+```
+
+The complete surface is `doctor [--config <path>]`. It accepts no positional arguments, aliases, prompts, or other flags. The report is human-facing text in this fixed order:
+
+| Check | `PASS` means |
+|---|---|
+| Project | The physical invocation directory is a usable consumer root. |
+| Environment | The root `.env` was absent or loaded while preserving inherited values. |
+| Store URL | `SHOPIFY_STORE_URL` is an absolute HTTPS URL without user information and trusted config kept its normalized origin stable. |
+| Shopify config | The dedicated config loaded and passed the same path and `{ testDir, roles }` validation used by the other commands. |
+| Shopify spec candidates | Filename-only discovery found Playwright-compatible candidates inside the dedicated `testDir`; no spec was imported. |
+| Playwright peer | The consumer's own public `@playwright/test` entry and declared CLI satisfy `>=1.61.1 <1.62.0`; the package development dependency is never a fallback. |
+| Chromium | `chromium.executablePath()` names a regular file. No browser was launched. |
+
+Each row is `PASS`, `FAIL`, `ERROR`, or `SKIP`. `FAIL` is an expected local setup problem, `ERROR` is a sanitized unexpected inspection failure, and `SKIP` means a prerequisite did not pass. The command prints all independent results before exiting: `0` means all seven checks passed, `2` means at least one expected readiness failure and no internal error, and `1` means an unexpected inspection error took precedence. There is no JSON, quiet, verbose, debug, or repair mode.
+
+Doctor is observational: it does not create profiles or generated Playwright config, run tests, launch or install Chromium, prompt, repair files, or contact Shopify. Loading the dedicated config and the verified consumer Playwright public module does execute trusted consumer-owned code; those modules are not sandboxed and can have their own side effects.
+
+Seven `PASS` rows prove only these inspected local prerequisites. They do not prove spec semantics, test execution, browser launchability, host-library compatibility, Shopify reachability, authenticated-session validity, or live-store health. Profile readiness remains owned by `shopify-e2e auth list`.
 
 ## Tag tests with roles
 
@@ -180,9 +207,9 @@ The boundary protects against accidental commits, cross-origin/profile mixups, p
 
 ## Exit behavior
 
-- `0`: success or a user cancellation with no mutation. For removal, this includes declining the default-no confirmation; a signal after the removal rename also exits `0` if quarantine cleanup completes.
-- `1`: package/browser/filesystem infrastructure failure, or Playwright's own test/no-test failure. A removal failure before rename leaves the active profile unchanged; a cleanup failure after rename leaves it unavailable and means local secret cleanup is incomplete.
-- `2`: usage, config, URL, profile, TTY, boundary, or peer preflight refusal. Removal refusals do not mutate the registry.
+- `0`: success or a user cancellation with no mutation. For `doctor`, all seven checks passed. For removal, this includes declining the default-no confirmation; a signal after the removal rename also exits `0` if quarantine cleanup completes.
+- `1`: package/browser/filesystem infrastructure failure, Playwright's own test/no-test failure, or an unexpected `doctor` inspection error. A removal failure before rename leaves the active profile unchanged; a cleanup failure after rename leaves it unavailable and means local secret cleanup is incomplete.
+- `2`: usage, config, URL, profile, TTY, boundary, or peer preflight refusal. For `doctor`, at least one expected readiness check failed and no check errored. Removal refusals do not mutate the registry.
 - `130`: terminal Ctrl+C or `SIGINT` before a removal commits, after cleanup of temporary work.
 - `143`: `SIGTERM` before a removal commits, after cleanup of temporary work.
 - Other numeric Playwright child exits pass through unchanged.
@@ -194,7 +221,7 @@ npm run test:installed
 npm run verify
 ```
 
-These deterministic gates are browserless and do not contact Shopify or a storefront. Packed consumer installation may use the configured npm registry or cache. No CI workflow is part of this phase.
+These deterministic gates are browserless and do not contact Shopify or a storefront. The installed doctor proof uses a controlled consumer peer and a regular fake Chromium file whose `launch` method fails and leaves a sentinel if called. Packed consumer installation may use the configured npm registry or cache, with Playwright browser download disabled. No CI workflow is part of this phase.
 
 The optional local Chromium isolation probe is separate:
 

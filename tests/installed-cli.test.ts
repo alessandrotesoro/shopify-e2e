@@ -173,6 +173,10 @@ const runInstalledCliWithSimulatedTty = ({
 
 describe.sequential("installed CLI release boundary", () => {
 	let consumerRoot = "";
+	let doctorMissingChromiumConsumerRoot = "";
+	let doctorMissingChromiumLaunchMarker = "";
+	let doctorReadyConsumerRoot = "";
+	let doctorReadyLaunchMarker = "";
 	let missingPeerConsumerRoot = "";
 
 	beforeAll(async () => {
@@ -181,6 +185,12 @@ describe.sequential("installed CLI release boundary", () => {
 			projectRoot,
 		});
 		consumerRoot = fixture.consumerRoot;
+		doctorMissingChromiumConsumerRoot =
+			fixture.doctorMissingChromiumConsumerRoot;
+		doctorMissingChromiumLaunchMarker =
+			fixture.doctorMissingChromiumLaunchMarker;
+		doctorReadyConsumerRoot = fixture.doctorReadyConsumerRoot;
+		doctorReadyLaunchMarker = fixture.doctorReadyLaunchMarker;
 		missingPeerConsumerRoot = fixture.missingPeerConsumerRoot;
 		installedProfileDataRoot = fixture.profileDataRoot;
 		installedRemovalFixture = fixture.removal;
@@ -227,7 +237,19 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(rootHelp.stdout).toMatch(/\brun\b/);
 		expect(rootHelp.stdout).toMatch(/\bauth\b/);
 		expect(rootHelp.stdout).toContain("auth remove");
+		expect(rootHelp.stdout).toMatch(/\bdoctor\b/);
 		expect(rootHelp.stdout).not.toMatch(/\bsetup\b|\btest\b/);
+
+		const doctorHelp = runInstalledCli({
+			args: ["doctor", "--help"],
+			consumerRoot,
+		});
+		expectSuccess({ label: "installed doctor help", result: doctorHelp });
+		expect(doctorHelp.stdout).toContain("shopify-e2e doctor");
+		expect(doctorHelp.stdout).toContain("--config");
+		expect(doctorHelp.stdout).not.toMatch(
+			/--(?:debug|grep|grep-invert|profile|quiet|verbose|workers)\b/,
+		);
 
 		const runHelp = runInstalledCli({ args: ["run", "--help"], consumerRoot });
 		expectSuccess({ label: "installed run help", result: runHelp });
@@ -253,7 +275,73 @@ describe.sequential("installed CLI release boundary", () => {
 
 		const version = runInstalledCli({ args: ["--version"], consumerRoot });
 		expectSuccess({ label: "installed version", result: version });
-		expect(version.stdout).toMatch(/@sematico\/shopify-e2e\/0\.3\.0/);
+		expect(version.stdout).toMatch(/@sematico\/shopify-e2e\/0\.4\.0/);
+	});
+
+	it("proves packed doctor readiness without launching Chromium", async () => {
+		const generatedBefore = await generatedConfigDirectories(
+			doctorReadyConsumerRoot,
+		);
+		const result = runInstalledCli({
+			args: ["doctor"],
+			consumerRoot: doctorReadyConsumerRoot,
+		});
+
+		expectSuccess({ label: "installed ready doctor", result });
+		expect(
+			result.stdout
+				.split("\n")
+				.filter((line) => /^(?:PASS|FAIL|ERROR|SKIP) /.test(line)),
+		).toEqual([
+			expect.stringMatching(/^PASS Project:/),
+			expect.stringMatching(/^PASS Environment:/),
+			expect.stringMatching(/^PASS Store URL:/),
+			expect.stringMatching(/^PASS Shopify config:/),
+			expect.stringMatching(/^PASS Shopify spec candidates:/),
+			expect.stringMatching(/^PASS Playwright peer:/),
+			expect.stringMatching(/^PASS Chromium:/),
+		]);
+		await expect(access(doctorReadyLaunchMarker)).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(
+			generatedConfigDirectories(doctorReadyConsumerRoot),
+		).resolves.toEqual(generatedBefore);
+	});
+
+	it("reports a missing packed consumer peer without package fallback", async () => {
+		await expect(
+			access(
+				join(missingPeerConsumerRoot, "node_modules", "@playwright", "test"),
+			),
+		).rejects.toMatchObject({ code: "ENOENT" });
+
+		const result = runInstalledCli({
+			args: ["doctor"],
+			consumerRoot: missingPeerConsumerRoot,
+		});
+
+		expect(result.status).toBe(2);
+		expect(result.stdout).toMatch(/^FAIL Playwright peer:/m);
+		expect(result.stdout).toMatch(/^SKIP Chromium:/m);
+		expect(result.stdout).not.toMatch(/^PASS Playwright peer:/m);
+	});
+
+	it("reports packed missing Chromium with install guidance and no launch", async () => {
+		const result = runInstalledCli({
+			args: ["doctor"],
+			consumerRoot: doctorMissingChromiumConsumerRoot,
+		});
+
+		expect(result.status).toBe(2);
+		expect(result.stdout).toMatch(/^PASS Playwright peer:/m);
+		expect(result.stdout).toMatch(/^FAIL Chromium:/m);
+		expect(result.stdout).toMatch(/npx playwright install chromium/i);
+		await expect(
+			access(doctorMissingChromiumLaunchMarker),
+		).rejects.toMatchObject({
+			code: "ENOENT",
+		});
 	});
 
 	it("refuses unsafe packed removal without Playwright or registry mutation", async () => {
