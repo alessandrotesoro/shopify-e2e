@@ -3,7 +3,7 @@ import { lstat, realpath, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
-import { isPathContained } from "../path-boundary.utils.js";
+import { isPathContained } from "../path-boundary.utils.cjs";
 
 const conventionalConfigName = "shopify-e2e.config.ts";
 

@@ -3,7 +3,7 @@ import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
-import { isPathContained } from "../path-boundary.utils.js";
+import { isPathContained } from "../path-boundary.utils.cjs";
 
 const assertNoSymlinkComponents = async (candidate: string): Promise<void> => {
 	const { root } = parse(candidate);

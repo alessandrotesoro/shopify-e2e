@@ -19,8 +19,14 @@ import {
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
 import type { PromptFunctions } from "../prompts/inquirer.js";
-import { configuredOriginFromEnvironment } from "../role-states/configured-origin.cjs";
 import { resolveRoleStateDataRoot } from "../role-states/data-root.js";
+import {
+	configuredOriginForCommand,
+	invalidState,
+	missingState,
+	unknownRole,
+	unsafeCollision,
+} from "../role-states/preflight.js";
 import {
 	createRoleStateStore,
 	type RoleStateSelection,
@@ -117,46 +123,15 @@ const validateTerminalMode = (options: AuthOrchestratorOptions): void => {
 	}
 };
 
-const configuredOrigin = (environment: NodeJS.ProcessEnv): string => {
-	try {
-		return configuredOriginFromEnvironment(environment);
-	} catch (cause) {
-		throw new ShopifyE2EPreflightError(
-			cause instanceof Error ? cause.message : "SHOPIFY_STORE_URL is invalid",
-			{ cause },
-		);
-	}
-};
-
 const roleSummary = (
 	summaries: readonly RoleStateSummary[],
 	role: string,
 ): RoleStateSummary | undefined =>
 	summaries.find((summary) => summary.role === role);
 
-const unknownRole = (role: string): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError(
-		`Role ${role} is not configured. Run \`shopify-e2e auth list\` or omit --role in an interactive terminal.`,
-	);
-
-const missingState = (role: string): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError(
-		`Role ${role} has no saved state. Run \`shopify-e2e auth capture --role ${role}\`.`,
-	);
-
 const readyCapture = (role: string): ShopifyE2EPreflightError =>
 	new ShopifyE2EPreflightError(
 		`Role ${role} already has saved state. Run \`shopify-e2e auth refresh --role ${role}\`.`,
-	);
-
-const invalidState = (role: string): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError(
-		`Role ${role} has invalid saved state. Run \`shopify-e2e auth remove --role ${role}\`, then \`shopify-e2e auth capture --role ${role}\`.`,
-	);
-
-const unsafeCollision = (role: string): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError(
-		`Role ${role} has an unsafe filesystem collision. Manual cleanup is required; the CLI will not follow or remove it.`,
 	);
 
 const classifyInvalidState = async (
@@ -467,7 +442,7 @@ export const orchestrateAuth = async (
 		options.signal,
 	);
 	throwIfCommandAborted(options.signal);
-	const origin = configuredOrigin(options.environment);
+	const origin = configuredOriginForCommand(options.environment);
 	const config = await runWithCommandSignal(
 		() =>
 			dependencies.loadConfig({
@@ -476,7 +451,7 @@ export const orchestrateAuth = async (
 			}),
 		options.signal,
 	);
-	const liveOrigin = configuredOrigin(options.environment);
+	const liveOrigin = configuredOriginForCommand(options.environment);
 	if (liveOrigin !== origin) {
 		throw new ShopifyE2EPreflightError(
 			"SHOPIFY_STORE_URL must not change while loading the dedicated Shopify config. Set it in the consumer .env file or inherited environment.",

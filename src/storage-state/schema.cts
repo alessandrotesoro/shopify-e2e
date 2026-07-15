@@ -279,13 +279,16 @@ const serializeBoundedJson = (value: unknown): string => {
 	return serialized;
 };
 
-export const serializeStorageState = (value: unknown): string => {
+const normalizeStorageState = (
+	value: unknown,
+): { readonly parsed: PlaywrightStorageState; readonly serialized: string } => {
 	const serialized = serializeBoundedJson(value);
-	validateParsedStorageState(JSON.parse(serialized) as unknown);
-	return serialized;
+	const parsed = validateParsedStorageState(JSON.parse(serialized) as unknown);
+	return { parsed, serialized };
 };
 
+export const serializeStorageState = (value: unknown): string =>
+	normalizeStorageState(value).serialized;
+
 export const validateStorageState = (value: unknown): PlaywrightStorageState =>
-	validateParsedStorageState(
-		JSON.parse(serializeStorageState(value)) as unknown,
-	);
+	normalizeStorageState(value).parsed;

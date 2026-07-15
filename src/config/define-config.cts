@@ -139,7 +139,7 @@ const validateInput = (
 ): {
 	readonly input: Record<PropertyKey, unknown>;
 	readonly roles: readonly string[];
-	readonly testDir: string;
+	readonly use: Record<PropertyKey, unknown> | undefined;
 } => {
 	if (!isPlainRecord(input)) {
 		throw new TypeError("Shopify config must be a plain object");
@@ -159,8 +159,7 @@ const validateInput = (
 	const roles = validateRoleList(
 		readDataProperty(input, "roles", "Shopify config roles"),
 	);
-	validateUse(input);
-	return { input, roles, testDir };
+	return { input, roles, use: validateUse(input) };
 };
 
 export const isDefinedShopifyE2EConfig = (
@@ -181,7 +180,6 @@ export const defineShopifyE2EConfig = <TestArgs = object, WorkerArgs = object>(
 ): DefinedShopifyE2EConfig<TestArgs, WorkerArgs> => {
 	try {
 		const validated = validateInput(input);
-		const use = validateUse(validated.input);
 		const executionContext = Object.hasOwn(
 			process.env,
 			SHOPIFY_E2E_EXECUTION_CONTEXT_ENV,
@@ -199,17 +197,19 @@ export const defineShopifyE2EConfig = <TestArgs = object, WorkerArgs = object>(
 		const config = {
 			...validated.input,
 			roles: validated.roles,
-			...(executionContext === undefined
-				? use === undefined
-					? {}
-					: { use: { ...use } }
-				: {
-						grep: buildRoleTokenPattern(executionContext.role),
-						testDir: executionContext.testDir,
-						use: { ...use, storageState: executionContext.state },
-						workers: 1,
-					}),
+			...(validated.use === undefined ? {} : { use: { ...validated.use } }),
 		} as DefinedShopifyE2EConfig<TestArgs, WorkerArgs>;
+		if (executionContext !== undefined) {
+			Object.assign(config, {
+				grep: buildRoleTokenPattern(executionContext.role),
+				testDir: executionContext.testDir,
+				use: {
+					...validated.use,
+					storageState: executionContext.state,
+				},
+				workers: 1,
+			});
+		}
 		Object.defineProperty(config, CONFIG_BRAND, {
 			configurable: false,
 			enumerable: false,
