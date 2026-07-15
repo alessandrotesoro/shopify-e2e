@@ -124,6 +124,7 @@ describe("package metadata", () => {
 			"auth:list",
 			"auth:refresh",
 			"auth:remove",
+			"doctor",
 			"run",
 		];
 		expect(Object.keys(sourceMap.default)).toEqual(expectedCommands);

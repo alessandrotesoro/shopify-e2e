@@ -3,6 +3,7 @@ import { AuthList } from "./commands/auth/list.js";
 import { AuthRefresh } from "./commands/auth/refresh.js";
 import { AuthRemove } from "./commands/auth/remove.js";
 import { Auth } from "./commands/auth.js";
+import { Doctor } from "./commands/doctor.js";
 import { Run } from "./commands/run.js";
 
 const commands = {
@@ -11,6 +12,7 @@ const commands = {
 	"auth:list": AuthList,
 	"auth:refresh": AuthRefresh,
 	"auth:remove": AuthRemove,
+	doctor: Doctor,
 	run: Run,
 };
 
