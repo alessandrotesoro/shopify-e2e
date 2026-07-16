@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -21,7 +21,54 @@ const origin = "https://shop.example";
 interface InstalledConsumer {
 	readonly dataRoot: string;
 	readonly root: string;
+	readonly runtimeTempRoot: string;
 }
+
+const isProcessAlive = (pid: number): boolean => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+		throw error;
+	}
+};
+
+const waitForProcessToExit = async (
+	pid: number,
+	timeout: number,
+): Promise<void> => {
+	await expect
+		.poll(() => isProcessAlive(pid), { interval: 25, timeout })
+		.toBe(false);
+};
+
+const waitForChildToExit = async (
+	child: ChildProcess,
+	timeout: number,
+): Promise<void> => {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	await Promise.race([
+		new Promise<void>((resolveExit, rejectExit) => {
+			child.once("error", rejectExit);
+			child.once("exit", () => resolveExit());
+		}),
+		new Promise<never>((_resolve, rejectTimeout) => {
+			setTimeout(
+				() => rejectTimeout(new Error("Installed CLI did not exit")),
+				timeout,
+			);
+		}),
+	]);
+};
+
+const signalProcess = (pid: number, signal: NodeJS.Signals): void => {
+	try {
+		process.kill(pid, signal);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+	}
+};
 
 const findAvailablePort = async (): Promise<number> =>
 	new Promise((resolvePort, reject) => {
@@ -55,6 +102,9 @@ const runCli = (
 			SHOPIFY_E2E_DATA_DIR: consumer.dataRoot,
 			SHOPIFY_STORE_URL: origin,
 			...overrides,
+			TEMP: consumer.runtimeTempRoot,
+			TMP: consumer.runtimeTempRoot,
+			TMPDIR: consumer.runtimeTempRoot,
 		},
 		killSignal: "SIGKILL",
 		maxBuffer: 10 * 1024 * 1024,
@@ -98,6 +148,9 @@ const prepareEsmConsumer = async (
 	const webServerUrl = `http://127.0.0.1:${webServerPort}`;
 	const dataRoot = await makeTemporaryDirectory(
 		"shopify-e2e-installed-role-states-",
+	);
+	const runtimeTempRoot = await makeTemporaryDirectory(
+		"shopify-e2e-installed-runtime-",
 	);
 	await writeFile(
 		join(root, "package.json"),
@@ -186,7 +239,7 @@ process.on("SIGTERM", () => server.close(() => process.exit(0)));
 	await writeFile(
 		join(root, "shopify-tests", "roles.spec.ts"),
 		`import { appendFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 test("admin packed lane", { tag: "@shopify-e2e-role-admin" }, async ({}, testInfo) => {
   expect(testInfo.config.metadata.installed).toBe(true);
@@ -216,10 +269,18 @@ test("admin packed lane", { tag: "@shopify-e2e-role-admin" }, async ({}, testInf
   appendFileSync("repeat.marker", String(testInfo.repeatEachIndex) + "\\n");
   writeFileSync("admin-body.marker", "ran");
 });
+test("admin interrupt lane", { tag: "@shopify-e2e-role-admin" }, async () => {
+  test.skip(process.env.SHOPIFY_E2E_INTERRUPT_ACTIVE !== "1", "interrupt fixture only");
+  test.setTimeout(15_000);
+  const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
+  if (!markerDirectory) throw new Error("SHOPIFY_E2E_MARKER_DIR is required");
+  writeFileSync(join(markerDirectory, "interrupt-started.marker"), JSON.stringify({ pid: process.pid, ppid: process.ppid }));
+  await new Promise(() => undefined);
+});
 test("customer packed lane", { tag: "@shopify-e2e-role-customer" }, () => writeFileSync("customer-body.marker", "ran"));
 `,
 	);
-	const consumer = { dataRoot, root };
+	const consumer = { dataRoot, root, runtimeTempRoot };
 	await seedRole(consumer, "admin", "admin-state");
 	await seedRole(consumer, "customer", "customer-state");
 	return consumer;
@@ -231,6 +292,9 @@ const prepareCjsConsumer = async (
 	const root = await makeTemporaryDirectory("shopify-e2e-installed-cjs-");
 	const dataRoot = await makeTemporaryDirectory(
 		"shopify-e2e-installed-cjs-role-states-",
+	);
+	const runtimeTempRoot = await makeTemporaryDirectory(
+		"shopify-e2e-installed-cjs-runtime-",
 	);
 	await writeFile(
 		join(root, "package.json"),
@@ -281,7 +345,7 @@ test("cjs admin", { tag: "@shopify-e2e-role-admin" }, ({}, testInfo) => {
 });
 `,
 	);
-	const consumer = { dataRoot, root };
+	const consumer = { dataRoot, root, runtimeTempRoot };
 	await createRoleStateStore({ dataRoot, origin, roles: ["admin"] }).capture({
 		role: "admin",
 		state: { cookies: [], origins: [] },
@@ -354,6 +418,106 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(report.config.workers).toBe(1);
 	});
 
+	it.skipIf(process.platform === "win32")(
+		"forwards real SIGTERM through the packed CLI and cleans descendants and context",
+		async () => {
+			const markerDirectory = await makeTemporaryDirectory(
+				"shopify-e2e-installed-signal-",
+			);
+			const child = spawn(
+				installedCliPath(esm.root),
+				["run", "--role", "admin", "--grep", "admin interrupt lane"],
+				{
+					cwd: esm.root,
+					detached: true,
+					env: {
+						...process.env,
+						NO_COLOR: "1",
+						SHOPIFY_E2E_DATA_DIR: esm.dataRoot,
+						SHOPIFY_E2E_INTERRUPT_ACTIVE: "1",
+						SHOPIFY_E2E_MARKER_DIR: markerDirectory,
+						SHOPIFY_STORE_URL: origin,
+						TEMP: esm.runtimeTempRoot,
+						TMP: esm.runtimeTempRoot,
+						TMPDIR: esm.runtimeTempRoot,
+					},
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
+			let stdout = "";
+			let stderr = "";
+			child.stdout?.setEncoding("utf8");
+			child.stderr?.setEncoding("utf8");
+			child.stdout?.on("data", (chunk: string) => {
+				stdout += chunk;
+			});
+			child.stderr?.on("data", (chunk: string) => {
+				stderr += chunk;
+			});
+			const outcome = new Promise<{
+				readonly code: number | null;
+				readonly signal: NodeJS.Signals | null;
+			}>((resolveOutcome, rejectOutcome) => {
+				child.once("error", rejectOutcome);
+				child.once("exit", (code, signal) => resolveOutcome({ code, signal }));
+			});
+			let descendants: readonly number[] = [];
+			let verified = false;
+
+			try {
+				const markerPath = join(markerDirectory, "interrupt-started.marker");
+				await expect
+					.poll(
+						async () =>
+							access(markerPath).then(
+								() => true,
+								() => false,
+							),
+						{ interval: 25, timeout: 10_000 },
+					)
+					.toBe(true);
+				const active = JSON.parse(await readFile(markerPath, "utf8")) as {
+					readonly pid: number;
+					readonly ppid: number;
+				};
+				descendants = [...new Set([active.pid, active.ppid])];
+				expect(child.pid).toBeTypeOf("number");
+				signalProcess(child.pid as number, "SIGTERM");
+
+				expect(
+					await outcome,
+					`interrupted installed CLI\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+				).toEqual({ code: 143, signal: null });
+				expect(stderr).toContain("Command interrupted by SIGTERM");
+				await Promise.all(
+					descendants.map((pid) => waitForProcessToExit(pid, 5_000)),
+				);
+				expect(
+					(await readdir(esm.runtimeTempRoot)).some((entry) =>
+						entry.startsWith("shopify-e2e-context-"),
+					),
+				).toBe(false);
+				verified = true;
+			} finally {
+				if (!verified) {
+					for (const pid of descendants) signalProcess(pid, "SIGKILL");
+					if (
+						child.pid &&
+						child.exitCode === null &&
+						child.signalCode === null
+					) {
+						child.kill("SIGKILL");
+					}
+					await Promise.allSettled([
+						...descendants.map((pid) => waitForProcessToExit(pid, 1_000)),
+						waitForChildToExit(child, 1_000),
+					]);
+				}
+			}
+		},
+		20_000,
+	);
+
 	it("loads and runs the packed helper from a CommonJS consumer", () => {
 		const helper = spawnSync(
 			process.execPath,
@@ -387,9 +551,11 @@ describe.sequential("installed CLI release boundary", () => {
 	});
 
 	it("leaves no package-created execution context after packed runs", async () => {
-		const entries = await readdir(resolve(process.env.TMPDIR ?? "/tmp"));
-		expect(
-			entries.some((entry) => entry.startsWith("shopify-e2e-context-")),
-		).toBe(false);
+		for (const consumer of [esm, cjs]) {
+			const entries = await readdir(consumer.runtimeTempRoot);
+			expect(
+				entries.some((entry) => entry.startsWith("shopify-e2e-context-")),
+			).toBe(false);
+		}
 	});
 });
