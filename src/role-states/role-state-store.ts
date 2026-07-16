@@ -603,7 +603,6 @@ export class RoleStateStore {
 			if (replacementCommitted && rollbackPrepared) {
 				try {
 					await rename(rollbackState, statePath);
-					replacementCommitted = false;
 					rollbackPrepared = false;
 				} catch (rollbackError) {
 					throw new ShopifyE2EInfrastructureError(

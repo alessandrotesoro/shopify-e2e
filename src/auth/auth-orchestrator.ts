@@ -21,8 +21,9 @@ import {
 import type { PromptFunctions } from "../prompts/inquirer.js";
 import { resolveRoleStateDataRoot } from "../role-states/data-root.js";
 import {
+	assertConfiguredRole,
 	configuredOriginForCommand,
-	invalidState,
+	invalidStateForRole,
 	missingState,
 	unknownRole,
 	unsafeCollision,
@@ -33,7 +34,6 @@ import {
 	type RoleStateStore,
 	type RoleStateSummary,
 } from "../role-states/role-state-store.js";
-import { assertRoleName } from "../roles/role-name.cjs";
 import type { PlaywrightStorageState } from "../storage-state/schema.cjs";
 import { captureBrowserRoleState } from "./capture-role-state.js";
 
@@ -138,26 +138,16 @@ const classifyInvalidState = async (
 	store: RoleStateStore,
 	role: string,
 ): Promise<ShopifyE2EPreflightError> =>
-	(await store.removableRoles()).includes(role)
-		? invalidState(role)
-		: unsafeCollision(role);
+	invalidStateForRole(role, await store.removableRoles());
 
 const resolveConfiguredSummary = async (
 	config: LoadedShopifyConfig,
 	store: RoleStateStore,
 	role: string,
 ): Promise<RoleStateSummary> => {
-	try {
-		assertRoleName(role);
-	} catch (cause) {
-		throw new ShopifyE2EPreflightError(
-			"Role is invalid. Run `shopify-e2e auth list` or omit --role in an interactive terminal.",
-			{ cause },
-		);
-	}
-	if (!config.roles.includes(role)) throw unknownRole(role);
-	const summary = roleSummary(await store.list(), role);
-	if (!summary) throw unknownRole(role);
+	const selectedRole = assertConfiguredRole(config.roles, role);
+	const summary = roleSummary(await store.list(), selectedRole);
+	if (!summary) throw unknownRole(selectedRole);
 	return summary;
 };
 
