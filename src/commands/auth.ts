@@ -2,6 +2,7 @@ import { Command } from "@oclif/core";
 
 import {
 	type AuthAction,
+	AuthMutationCommittedSignalError,
 	defaultAuthDependencies,
 	orchestrateAuth,
 } from "../auth/auth-orchestrator.js";
@@ -33,6 +34,9 @@ export const classifyAuthCommandFailure = (
 	signalExitCode?: 130 | 143,
 ): AuthCommandFailure => {
 	if (error instanceof ShopifyE2EInfrastructureError) {
+		return { exitCode: error.exitCode, message: error.message };
+	}
+	if (error instanceof AuthMutationCommittedSignalError) {
 		return { exitCode: error.exitCode, message: error.message };
 	}
 	if (signalExitCode !== undefined || error instanceof CommandSignalError) {

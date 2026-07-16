@@ -19,7 +19,10 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "../config/execution-environment.cjs";
-import { isPathContained } from "../path-boundary.utils.cjs";
+import {
+	isPathContained,
+	isPathStrictlyContained,
+} from "../path-boundary.utils.cjs";
 import { normalizeConfiguredOrigin } from "../role-states/configured-origin.cjs";
 import { assertRoleName } from "../roles/role-name.cjs";
 import {
@@ -117,9 +120,6 @@ const assertOwnerOnly = (
 	}
 };
 
-const isStrictlyContained = (candidate: string, parent: string): boolean =>
-	candidate !== parent && isPathContained({ candidate, parent });
-
 const assertPhysicalPath = async (
 	selectedPath: string,
 	kind: "directory" | "file",
@@ -180,10 +180,14 @@ export const createPlaywrightExecutionContext = async ({
 			realpath(packageRoot),
 			realpath(tmpdir()),
 		]);
-	if (!isStrictlyContained(config.path, project.path)) {
+	if (
+		!isPathStrictlyContained({ candidate: config.path, parent: project.path })
+	) {
 		throw invalidContext("config path must be inside the project root");
 	}
-	if (!isStrictlyContained(tests.path, project.path)) {
+	if (
+		!isPathStrictlyContained({ candidate: tests.path, parent: project.path })
+	) {
 		throw invalidContext("test directory must be inside the project root");
 	}
 	if (
@@ -491,10 +495,12 @@ const readPlaywrightExecutionContextUnchecked = ({
 		"directory",
 		"test directory",
 	);
-	if (!isStrictlyContained(configPath, projectRoot)) {
+	if (
+		!isPathStrictlyContained({ candidate: configPath, parent: projectRoot })
+	) {
 		throw invalidContext("config path escaped the project root");
 	}
-	if (!isStrictlyContained(testDir, projectRoot)) {
+	if (!isPathStrictlyContained({ candidate: testDir, parent: projectRoot })) {
 		throw invalidContext("test directory escaped the project root");
 	}
 	if (

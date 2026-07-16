@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+	AuthMutationCommittedSignalError,
 	defaultAuthDependencies,
 	orchestrateAuth,
 } from "../src/auth/auth-orchestrator.js";
@@ -254,6 +255,39 @@ describe("role-only auth remove matrix", () => {
 		expect(report).toHaveBeenCalledWith(
 			"Authentication role-state removal cancelled; no role state changed.",
 		);
+	});
+
+	it("reports a signal after removal commit without claiming state was preserved", async () => {
+		const fixture = await makeFixture();
+		const store = await seedRoleState(fixture, "admin");
+		const removeRoleState = store.remove.bind(store);
+		const controller = new AbortController();
+		const report = vi.fn();
+		vi.spyOn(store, "remove").mockImplementation(async (options) => {
+			await removeRoleState(options);
+			controller.abort("SIGTERM");
+		});
+		const dependencies = defaultAuthDependencies(makePrompts(), report);
+
+		const error = await orchestrateAuth(
+			authOptions(fixture, {
+				action: "remove",
+				role: "admin",
+				signal: controller.signal,
+				yes: true,
+			}),
+			{ ...dependencies, createStore: () => store },
+		).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(AuthMutationCommittedSignalError);
+		expect(error).toMatchObject({ exitCode: 143, signal: "SIGTERM" });
+		expect(String(error)).toContain("the change completed");
+		expect(String(error)).not.toContain("no role state changed");
+		expect(await store.list()).toContainEqual({
+			role: "admin",
+			status: "missing",
+		});
+		expect(report).not.toHaveBeenCalled();
 	});
 
 	it("revalidates a stale prompted target at the store mutation boundary", async () => {

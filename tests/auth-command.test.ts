@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+	AuthMutationCommittedSignalError,
 	defaultAuthDependencies,
 	orchestrateAuth,
 } from "../src/auth/auth-orchestrator.js";
@@ -435,6 +436,18 @@ describe("role-only auth command orchestration", () => {
 });
 
 describe("auth command failure mapping", () => {
+	it("preserves truthful post-commit interruption details", () => {
+		const error = new AuthMutationCommittedSignalError(
+			"SIGTERM",
+			"Authentication interrupted after the role state changed.",
+		);
+
+		expect(classifyAuthCommandFailure(error, 143)).toEqual({
+			exitCode: 143,
+			message: "Authentication interrupted after the role state changed.",
+		});
+	});
+
 	it.each([
 		{ error: new CaptureSignalError("SIGINT"), expected: 130 },
 		{ error: new CaptureSignalError("SIGTERM"), expected: 143 },

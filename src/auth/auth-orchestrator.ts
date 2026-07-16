@@ -15,6 +15,8 @@ import {
 	resolvePlaywrightPeer,
 } from "../playwright/peer.js";
 import {
+	CommandSignalError,
+	commandSignalFromReason,
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
@@ -38,6 +40,8 @@ import type { PlaywrightStorageState } from "../storage-state/schema.cjs";
 import { captureBrowserRoleState } from "./capture-role-state.js";
 
 export type AuthAction = "capture" | "list" | "menu" | "refresh" | "remove";
+
+export class AuthMutationCommittedSignalError extends CommandSignalError {}
 
 export interface AuthOrchestratorOptions {
 	readonly action: AuthAction;
@@ -81,6 +85,18 @@ const createPromptContext = (options: AuthOrchestratorOptions) => ({
 	output: options.output,
 	signal: options.signal,
 });
+
+const throwIfMutationCommittedDuringSignal = (
+	signal: AbortSignal,
+	role: string,
+	action: "captured" | "refreshed" | "removed",
+): void => {
+	if (!signal.aborted) return;
+	throw new AuthMutationCommittedSignalError(
+		commandSignalFromReason(signal.reason),
+		`Authentication interrupted after role state for ${role} was ${action}; the change completed. Run \`auth list\` to verify the current state.`,
+	);
+};
 
 const requireInteractive = (
 	options: AuthOrchestratorOptions,
@@ -285,6 +301,7 @@ const runCapture = async (
 	if (!state) return;
 	throwIfCommandAborted(options.signal);
 	await store.capture({ role, signal: options.signal, state });
+	throwIfMutationCommittedDuringSignal(options.signal, role, "captured");
 	dependencies.report(
 		`Saved role state for ${role}. Run \`shopify-e2e run --role ${role}\`.`,
 	);
@@ -348,6 +365,7 @@ const runRefresh = async (
 	if (!state) return;
 	throwIfCommandAborted(options.signal);
 	await store.refresh({ role, signal: options.signal, state });
+	throwIfMutationCommittedDuringSignal(options.signal, role, "refreshed");
 	dependencies.report(`Refreshed role state for ${role}.`);
 };
 
@@ -401,6 +419,7 @@ const runRemove = async (
 	}
 
 	await store.remove({ role, signal: options.signal });
+	throwIfMutationCommittedDuringSignal(options.signal, role, "removed");
 	dependencies.report(`Removed role state for ${role}.`);
 };
 
