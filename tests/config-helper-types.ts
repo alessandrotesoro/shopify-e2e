@@ -11,6 +11,20 @@ defineShopifyE2EConfig({
 defineShopifyE2EConfig({
 	roles: ["admin"],
 	testDir: "shopify-tests",
+	// @ts-expect-error Shopify execution owns grep.
+	grep: /checkout/,
+});
+
+defineShopifyE2EConfig({
+	roles: ["admin"],
+	testDir: "shopify-tests",
+	// @ts-expect-error Shopify execution owns grepInvert.
+	grepInvert: /draft/,
+});
+
+defineShopifyE2EConfig({
+	roles: ["admin"],
+	testDir: "shopify-tests",
 	// @ts-expect-error Shopify execution owns workers.
 	workers: 2,
 });

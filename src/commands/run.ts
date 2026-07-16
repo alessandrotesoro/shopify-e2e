@@ -38,11 +38,11 @@ import { inquirerPrompts } from "../prompts/inquirer.js";
 import { normalizeConfiguredOrigin } from "../role-states/configured-origin.cjs";
 import { resolveRoleStateDataRoot } from "../role-states/data-root.js";
 import {
+	assertConfiguredRole,
 	configuredOriginForCommand,
-	invalidState,
+	invalidStateForRole,
 	missingState,
 	unknownRole,
-	unsafeCollision,
 } from "../role-states/preflight.js";
 import {
 	createRoleStateStore,
@@ -50,7 +50,6 @@ import {
 	type RoleStateStatus,
 	type RoleStateStore,
 } from "../role-states/role-state-store.js";
-import { assertRoleName } from "../roles/role-name.cjs";
 
 export interface RunCommandOptions {
 	readonly cwd: string;
@@ -139,24 +138,6 @@ const parseNonEmptyFilter = async (input: string): Promise<string> => {
 	return input;
 };
 
-const assertConfiguredRole = (
-	loadedConfig: LoadedShopifyConfig,
-	role: string,
-): string => {
-	let selectedRole: string;
-	try {
-		selectedRole = assertRoleName(role);
-	} catch (cause) {
-		throw new ShopifyE2EPreflightError(
-			"Role is invalid. Run `shopify-e2e auth list` or omit --role in an interactive terminal.",
-			{ cause },
-		);
-	}
-	if (!loadedConfig.roles.includes(selectedRole))
-		throw unknownRole(selectedRole);
-	return selectedRole;
-};
-
 const throwForUnavailableState = async (
 	store: RoleStateStore,
 	role: string,
@@ -169,8 +150,7 @@ const throwForUnavailableState = async (
 			() => store.removableRoles(),
 			signal,
 		);
-		if (removableRoles.includes(role)) throw invalidState(role);
-		throw unsafeCollision(role);
+		throw invalidStateForRole(role, removableRoles);
 	}
 	throw unknownRole(role);
 };
@@ -224,7 +204,7 @@ const resolveRunSelection = async ({
 	const explicitRole =
 		options.role === undefined
 			? undefined
-			: assertConfiguredRole(loadedConfig, options.role);
+			: assertConfiguredRole(loadedConfig.roles, options.role);
 	const dataDir = options.dataDir;
 	if (!dataDir) {
 		throw new ShopifyE2EPreflightError(
