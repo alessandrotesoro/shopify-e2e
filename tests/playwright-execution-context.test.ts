@@ -92,6 +92,56 @@ describe("Playwright execution context", () => {
 			buildPlaywrightChildEnvironment(parent, "relative-context.json"),
 		).toThrow(/absolute/i);
 	});
+
+	it("injects only the active native endpoint and rejects inherited connection controls", () => {
+		const endpoint = "ws://127.0.0.1:4321/active-secret";
+		const parent = { PATH: "/usr/bin" };
+		const child = buildPlaywrightChildEnvironment(
+			parent,
+			"/tmp/fresh.json",
+			endpoint,
+		);
+
+		expect(child).toEqual({
+			PATH: "/usr/bin",
+			PW_TEST_CONNECT_WS_ENDPOINT: endpoint,
+			SHOPIFY_E2E_EXECUTION_CONTEXT: "/tmp/fresh.json",
+		});
+		expect(parent).toEqual({ PATH: "/usr/bin" });
+
+		for (const key of [
+			"PW_TEST_CONNECT_WS_ENDPOINT",
+			"PW_TEST_CONNECT_HEADERS",
+			"PW_TEST_CONNECT_EXPOSE_NETWORK",
+		]) {
+			const inherited = "inherited-secret";
+			let error: unknown;
+			try {
+				buildPlaywrightChildEnvironment(
+					{ [key]: inherited },
+					"/tmp/fresh.json",
+					endpoint,
+				);
+			} catch (cause) {
+				error = cause;
+			}
+			expect(error).toBeInstanceOf(Error);
+			expect((error as Error).message).toMatch(new RegExp(key));
+			expect((error as Error).message).not.toContain(inherited);
+		}
+	});
+
+	it("keeps the native endpoint out of the immutable execution artifact", async () => {
+		const { artifact } = await createContext();
+		temporaryDirectories.push(dirname(artifact.contextPath));
+		const endpoint = "ws://127.0.0.1:4321/artifact-secret";
+
+		buildPlaywrightChildEnvironment({}, artifact.contextPath, endpoint);
+
+		expect(await readFile(artifact.contextPath, "utf8")).not.toContain(
+			endpoint,
+		);
+	});
 	it("writes owner-only non-executable JSON outside project and package roots", async () => {
 		const { artifact, project } = await createContext();
 		temporaryDirectories.push(dirname(artifact.contextPath));

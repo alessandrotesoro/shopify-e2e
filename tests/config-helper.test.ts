@@ -115,6 +115,50 @@ describe("defineShopifyE2EConfig", () => {
 		).toThrow(/use\.storageState/i);
 	});
 
+	it("rejects consumer-owned native connections", () => {
+		const endpoint = "ws://127.0.0.1:1234/consumer-secret";
+		const error = (() => {
+			try {
+				defineShopifyE2EConfig({
+					roles: ["admin"],
+					testDir: "shopify-tests",
+					use: { connectOptions: { wsEndpoint: endpoint } },
+				} as never);
+			} catch (cause) {
+				return cause;
+			}
+		})();
+
+		expect(error).toBeInstanceOf(Error);
+		expect((error as Error).message).toMatch(
+			/use\.connectOptions.*controlled/i,
+		);
+		expect((error as Error).message).not.toContain(endpoint);
+	});
+
+	it.each([
+		"firefox",
+		"webkit",
+	])("rejects the non-Chromium browserName %s", (browserName) => {
+		expect(() =>
+			defineShopifyE2EConfig({
+				roles: ["admin"],
+				testDir: "shopify-tests",
+				use: { browserName },
+			} as never),
+		).toThrow(/use\.browserName.*chromium/i);
+	});
+
+	it("accepts an explicit Chromium browserName", () => {
+		const config = defineShopifyE2EConfig({
+			roles: ["admin"],
+			testDir: "shopify-tests",
+			use: { browserName: "chromium" },
+		});
+
+		expect(config.use?.browserName).toBe("chromium");
+	});
+
 	it.each([
 		["empty", []],
 		["duplicate", ["admin", "admin"]],
@@ -212,16 +256,31 @@ describe("defineShopifyE2EConfig", () => {
 			const expectSettings = { timeout: 9_000 };
 			const testMatch = /checkout\.spec\.ts$/;
 			const runtimeFunction = () => undefined;
+			const globalSetup = "./global-setup.ts";
+			const globalTeardown = "./global-teardown.ts";
 			const config = defineShopifyE2EConfig({
 				customRuntimeFunction: runtimeFunction,
 				expect: expectSettings,
 				fullyParallel: true,
+				globalSetup,
+				globalTeardown,
 				metadata,
+				outputDir: "artifacts/output",
 				reporter,
+				repeatEach: 2,
+				retries: 3,
 				roles: ["admin", "customer"],
 				testDir: "different-on-repeat",
+				testIgnore: /draft/,
 				testMatch,
-				use: { screenshot: "only-on-failure", trace: "retain-on-failure" },
+				timeout: 45_000,
+				use: {
+					browserName: "chromium",
+					headless: true,
+					screenshot: "only-on-failure",
+					trace: "retain-on-failure",
+					video: "on-first-retry",
+				},
 				webServer,
 			} as never);
 
@@ -236,14 +295,26 @@ describe("defineShopifyE2EConfig", () => {
 			expect(config.metadata).toBe(metadata);
 			expect(config.expect).toBe(expectSettings);
 			expect(config.testMatch).toBe(testMatch);
+			expect(config).toMatchObject({
+				globalSetup,
+				globalTeardown,
+				outputDir: "artifacts/output",
+				repeatEach: 2,
+				retries: 3,
+				testIgnore: /draft/,
+				timeout: 45_000,
+			});
 			expect(
 				(config as unknown as Record<string, unknown>).customRuntimeFunction,
 			).toBe(runtimeFunction);
 			expect(config.grep).toEqual(/(?:^|\s)@shopify-e2e-role-admin(?=$|\s)/);
 			expect(config.use).toEqual({
+				browserName: "chromium",
+				headless: true,
 				screenshot: "only-on-failure",
 				storageState: { cookies: [], origins: [] },
 				trace: "retain-on-failure",
+				video: "on-first-retry",
 			});
 			expect(config.use?.storageState).not.toBe(context.contextPath);
 			expect(() =>

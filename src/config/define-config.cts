@@ -31,7 +31,12 @@ export type ShopifyE2EConfig<TestArgs = object, WorkerArgs = object> = Omit<
 	readonly projects?: never;
 	readonly roles: readonly string[];
 	readonly testDir: string;
-	readonly use?: Omit<PlaywrightUse<TestArgs, WorkerArgs>, "storageState"> & {
+	readonly use?: Omit<
+		PlaywrightUse<TestArgs, WorkerArgs>,
+		"browserName" | "connectOptions" | "storageState"
+	> & {
+		readonly browserName?: "chromium";
+		readonly connectOptions?: never;
 		readonly storageState?: never;
 	};
 	readonly workers?: never;
@@ -119,6 +124,9 @@ const validateUse = (
 		throw new TypeError("Shopify config use must be a plain object");
 	}
 	assertNoSymbolProperties(use, "Shopify config use");
+	for (const key of Object.getOwnPropertyNames(use)) {
+		readDataProperty(use, key, `Shopify config use.${key}`);
+	}
 	if (Object.hasOwn(use, "storageState")) {
 		const storageState = readDataProperty(
 			use,
@@ -128,6 +136,30 @@ const validateUse = (
 		if (storageState !== undefined) {
 			throw new TypeError(
 				"Shopify config use.storageState is controlled by @sematico/shopify-e2e and must not be set",
+			);
+		}
+	}
+	if (Object.hasOwn(use, "connectOptions")) {
+		const connectOptions = readDataProperty(
+			use,
+			"connectOptions",
+			"Shopify config use.connectOptions",
+		);
+		if (connectOptions !== undefined) {
+			throw new TypeError(
+				"Shopify config use.connectOptions is controlled by @sematico/shopify-e2e and must not be set",
+			);
+		}
+	}
+	if (Object.hasOwn(use, "browserName")) {
+		const browserName = readDataProperty(
+			use,
+			"browserName",
+			"Shopify config use.browserName",
+		);
+		if (browserName !== undefined && browserName !== "chromium") {
+			throw new TypeError(
+				"Shopify config use.browserName must be chromium when set",
 			);
 		}
 	}
