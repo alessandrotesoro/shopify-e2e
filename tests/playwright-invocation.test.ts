@@ -162,6 +162,27 @@ describe("owned Playwright invocation", () => {
 		});
 	});
 
+	it("passes the pinned native endpoint only through the child environment", async () => {
+		const project = await makeProject();
+		const peer = await resolvePlaywrightPeer(process.cwd());
+		const endpoint = "ws://127.0.0.1:4321/invocation-secret";
+		const environment = buildPlaywrightChildEnvironment(
+			{ PATH: "/usr/bin" },
+			"/tmp/context.json",
+			endpoint,
+		);
+
+		const invocation = buildPlaywrightInvocation({
+			configPath: project.configPath,
+			environment,
+			peer,
+		});
+
+		expect(invocation.environment?.PW_TEST_CONNECT_WS_ENDPOINT).toBe(endpoint);
+		expect(invocation.args.join(" ")).not.toContain(endpoint);
+		expect(invocation.executable).not.toContain(endpoint);
+	});
+
 	it.each([
 		{ controls: { grep: "" }, label: "empty grep" },
 		{ controls: { grepInvert: "   " }, label: "blank grep-invert" },
