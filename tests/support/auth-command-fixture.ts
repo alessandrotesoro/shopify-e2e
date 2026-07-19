@@ -80,6 +80,9 @@ export const makePrompts = ({
 	confirmValue = true,
 	selectValues = [],
 }: MakePromptsOptions = {}): PromptFunctions => ({
+	checkbox: vi.fn(async () =>
+		selectValues.shift(),
+	) as PromptFunctions["checkbox"],
 	confirm: vi.fn(async () => confirmValue),
 	select: vi.fn(async () => selectValues.shift()) as PromptFunctions["select"],
 });

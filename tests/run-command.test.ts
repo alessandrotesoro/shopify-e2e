@@ -122,7 +122,7 @@ const makeDependencies = (
 			modulePath: "/consumer/playwright/index.js",
 		})),
 		runChild: vi.fn(async () => options.exitCode ?? 0),
-		selectRole: vi.fn(async () => "admin"),
+		selectRoles: vi.fn(async () => ["admin"]),
 	};
 };
 
@@ -134,7 +134,7 @@ const runOptions = (
 ) => ({
 	cwd: projectRoot,
 	dataDir: join(projectRoot, "data"),
-	role: "admin",
+	role: ["admin"],
 	...overrides,
 });
 
@@ -156,6 +156,71 @@ describe("role-only run orchestration", () => {
 			"grep-invert",
 			"role",
 		]);
+		expect(Run.flags.role.multiple).toBe(true);
+	});
+
+	it("deduplicates repeated explicit roles and freezes them in config order before peer work", async () => {
+		const consumer = await makeConsumer(["admin", "customer", "staff"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "ready" },
+				{ role: "staff", status: "ready" },
+			],
+		});
+		const dependencies = makeDependencies({ store });
+		const events: string[] = [];
+		vi.mocked(store.resolve).mockImplementation(async (role) => {
+			events.push(`resolve:${role}`);
+			return selected(role);
+		});
+		vi.mocked(dependencies.resolvePeer).mockImplementation(async () => {
+			events.push("peer");
+			return {
+				executablePath: "/consumer/playwright/cli.js",
+				modulePath: "/consumer/playwright/index.js",
+			};
+		});
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					role: ["staff", "admin", "staff"],
+				}),
+			}),
+		).resolves.toBe(0);
+
+		expect(events.slice(0, 3)).toEqual([
+			"resolve:admin",
+			"resolve:staff",
+			"peer",
+		]);
+	});
+
+	it("preflights every explicit role before peer or Playwright work", async () => {
+		const consumer = await makeConsumer(["admin", "customer"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "missing" },
+			],
+		});
+		const dependencies = makeDependencies({ store });
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					role: ["admin", "customer"],
+				}),
+			}),
+		).rejects.toThrow(/auth capture --role customer/i);
+
+		expect(store.resolve).toHaveBeenCalledWith("admin");
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+		expect(dependencies.createExecutionContext).not.toHaveBeenCalled();
+		expect(dependencies.runChild).not.toHaveBeenCalled();
 	});
 
 	it("runs one explicit role through the real config and pointer-only context", async () => {
@@ -190,7 +255,7 @@ describe("role-only run orchestration", () => {
 			}),
 		).resolves.toBe(0);
 
-		expect(dependencies.selectRole).not.toHaveBeenCalled();
+		expect(dependencies.selectRoles).not.toHaveBeenCalled();
 		expect(dependencies.createExecutionContext).toHaveBeenCalledWith({
 			configPath: consumer.configPath,
 			normalizedOrigin: "https://shop.example",
@@ -224,7 +289,7 @@ describe("role-only run orchestration", () => {
 		expect(dependencies.runChild).toHaveBeenCalledOnce();
 	});
 
-	it("prompts once from ready configured roles and revalidates the answer", async () => {
+	it("prompts once for a ready-role subset and resolves it in config order", async () => {
 		const consumer = await makeConsumer(["admin", "customer", "staff"]);
 		const store = makeStore({
 			list: [
@@ -235,7 +300,7 @@ describe("role-only run orchestration", () => {
 			readyRoles: ["admin", "staff"],
 		});
 		const dependencies = makeDependencies({ store });
-		vi.mocked(dependencies.selectRole).mockResolvedValue("staff");
+		vi.mocked(dependencies.selectRoles).mockResolvedValue(["staff", "admin"]);
 
 		await expect(
 			orchestrateShopifyRun({
@@ -247,8 +312,8 @@ describe("role-only run orchestration", () => {
 			}),
 		).resolves.toBe(0);
 
-		expect(dependencies.selectRole).toHaveBeenCalledOnce();
-		expect(dependencies.selectRole).toHaveBeenCalledWith(
+		expect(dependencies.selectRoles).toHaveBeenCalledOnce();
+		expect(dependencies.selectRoles).toHaveBeenCalledWith(
 			expect.objectContaining({
 				choices: [
 					{ name: "admin", value: "admin" },
@@ -256,7 +321,8 @@ describe("role-only run orchestration", () => {
 				],
 			}),
 		);
-		expect(store.resolve).toHaveBeenCalledWith("staff");
+		expect(store.resolve).toHaveBeenNthCalledWith(1, "admin");
+		expect(store.resolve).toHaveBeenNthCalledWith(2, "staff");
 	});
 
 	it("rejects omitted non-interactive role before state or Playwright work", async () => {
@@ -284,7 +350,7 @@ describe("role-only run orchestration", () => {
 
 		const error = await orchestrateShopifyRun({
 			dependencies,
-			options: runOptions(consumer.projectRoot, { role: unsafeRole }),
+			options: runOptions(consumer.projectRoot, { role: [unsafeRole] }),
 		}).catch((cause: unknown) => cause);
 
 		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
@@ -301,7 +367,7 @@ describe("role-only run orchestration", () => {
 		await expect(
 			orchestrateShopifyRun({
 				dependencies,
-				options: runOptions(consumer.projectRoot, { role: "merchant" }),
+				options: runOptions(consumer.projectRoot, { role: ["merchant"] }),
 			}),
 		).rejects.toThrow(/merchant.*auth list/i);
 		expect(store.list).not.toHaveBeenCalled();
@@ -365,7 +431,26 @@ describe("role-only run orchestration", () => {
 				}),
 			}),
 		).rejects.toThrow(/auth capture --role <role>/i);
-		expect(dependencies.selectRole).not.toHaveBeenCalled();
+		expect(dependencies.selectRoles).not.toHaveBeenCalled();
+	});
+
+	it("rejects an empty interactive selection before peer or Playwright work", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.selectRoles).mockResolvedValue([]);
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					interactive: true,
+					role: undefined,
+				}),
+			}),
+		).rejects.toThrow(/at least one role/i);
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+		expect(dependencies.createExecutionContext).not.toHaveBeenCalled();
+		expect(dependencies.runChild).not.toHaveBeenCalled();
 	});
 
 	it("revalidates a stale prompt result and returns state remediation", async () => {
@@ -385,7 +470,7 @@ describe("role-only run orchestration", () => {
 				}),
 			}),
 		).rejects.toThrow(/auth capture --role admin/i);
-		expect(dependencies.selectRole).toHaveBeenCalledOnce();
+		expect(dependencies.selectRoles).toHaveBeenCalledOnce();
 		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
 	});
 
@@ -613,7 +698,7 @@ describe("role-only run orchestration", () => {
 		const store = makeStore();
 		const dependencies = makeDependencies({ store });
 		const abort = () => controller.abort("SIGTERM");
-		let role: string | undefined = "admin";
+		let role: readonly string[] | undefined = ["admin"];
 		let interactive = false;
 		if (checkpoint === "data-root") {
 			vi.mocked(dependencies.resolveDataRoot).mockImplementationOnce(
@@ -634,9 +719,9 @@ describe("role-only run orchestration", () => {
 			});
 		}
 		if (checkpoint === "role-prompt") {
-			vi.mocked(dependencies.selectRole).mockImplementationOnce(async () => {
+			vi.mocked(dependencies.selectRoles).mockImplementationOnce(async () => {
 				abort();
-				return "admin";
+				return ["admin"];
 			});
 		}
 		if (checkpoint === "state-resolve") {
