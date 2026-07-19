@@ -100,6 +100,10 @@ describe("Playwright child lifecycle", () => {
 			exitCode: expected,
 			signal,
 		});
+		expect(fake.forwarded).toEqual([
+			{ pid: -fake.child.pid, signal },
+			{ pid: -fake.child.pid, signal: "SIGKILL" },
+		]);
 	});
 
 	it("uses direct-child signaling off POSIX", async () => {
