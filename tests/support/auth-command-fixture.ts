@@ -113,6 +113,7 @@ export const withStubbedBrowser = (
 	loadChromium: vi.fn(async () => ({
 		executablePath: vi.fn(() => "/consumer/chromium"),
 		launch: vi.fn(),
+		launchServer: vi.fn(),
 	})),
 	resolvePeer: vi.fn(async () => ({
 		executablePath: "/consumer/cli.js",

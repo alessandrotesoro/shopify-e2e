@@ -24,6 +24,14 @@ const projectRoot = "/physical/consumer";
 const configHelperPath = join(import.meta.dirname, "../src/config/public.cts");
 const temporaryDirectories: string[] = [];
 const loadedConfig: LoadedShopifyConfig = {
+	browserLaunchOptions: {
+		handleSIGHUP: true,
+		handleSIGINT: false,
+		handleSIGTERM: false,
+		headless: false,
+		host: "127.0.0.1",
+		port: 0,
+	},
 	configPath: `${projectRoot}/shopify-e2e.config.ts`,
 	projectRoot,
 	roles: ["guest"],
@@ -38,6 +46,7 @@ const makeDependencies = (): DoctorDependencies => ({
 	loadChromium: vi.fn(async () => ({
 		executablePath: () => "/browser/chromium",
 		launch: vi.fn(),
+		launchServer: vi.fn(),
 	})),
 	loadConfig: vi.fn(async () => loadedConfig),
 	loadProjectEnvironment: vi.fn(async () => undefined),
@@ -84,7 +93,7 @@ export default defineShopifyE2EConfig({
 	await writeFile(join(packageRoot, "cli.js"), "// fake Playwright CLI\n");
 	await writeFile(
 		join(packageRoot, "index.js"),
-		`import { writeFile } from "node:fs/promises";\nexport const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { await writeFile(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
+		`import { writeFile } from "node:fs/promises";\nexport const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { await writeFile(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); }, async launchServer() { await writeFile(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
 	);
 	await writeFile(
 		join(packageRoot, "package.json"),
@@ -134,6 +143,7 @@ describe("doctor orchestration", () => {
 		vi.mocked(dependencies.loadChromium).mockResolvedValueOnce({
 			executablePath: () => "/browser/chromium",
 			launch,
+			launchServer: vi.fn(),
 		});
 
 		const report = await runDoctor(dependencies);
