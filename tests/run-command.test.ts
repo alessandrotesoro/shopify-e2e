@@ -115,7 +115,23 @@ const makeDependencies = (
 		createStore: vi.fn(() => options.store ?? makeStore()),
 		loadConfig: vi.fn(loadShopifyConfig),
 		loadEnvironment: vi.fn(async ({ cwd }) => realpath(cwd)),
+		launchBrowser: vi.fn(async () => ({
+			close: vi.fn(async () => undefined),
+			unexpectedClose: new Promise<ShopifyE2EInfrastructureError>(
+				() => undefined,
+			),
+			wsEndpoint: "ws://127.0.0.1/playwright-test-endpoint",
+		})),
+		loadChromium: vi.fn(
+			async () =>
+				({
+					executablePath: () => "/consumer/chromium",
+					launch: vi.fn(),
+					launchServer: vi.fn(),
+				}) as never,
+		),
 		reportSelection: vi.fn(),
+		reportSummary: vi.fn(),
 		resolveDataRoot: vi.fn(async () => "/external/role-state-data"),
 		resolvePeer: vi.fn(async () => ({
 			executablePath: "/consumer/playwright/cli.js",
@@ -270,6 +286,8 @@ describe("role-only run orchestration", () => {
 				configPath: consumer.configPath,
 				controls: { grep: "account", grepInvert: "draft" },
 				environment: {
+					PW_TEST_CONNECT_WS_ENDPOINT:
+						"ws://127.0.0.1/playwright-test-endpoint",
 					SHOPIFY_E2E_EXECUTION_CONTEXT: join(
 						tmpdir(),
 						"shopify-e2e-context-test.json",
@@ -323,6 +341,104 @@ describe("role-only run orchestration", () => {
 		);
 		expect(store.resolve).toHaveBeenNthCalledWith(1, "admin");
 		expect(store.resolve).toHaveBeenNthCalledWith(2, "staff");
+	});
+
+	it("runs selected roles serially against one browser and cleans between them", async () => {
+		const consumer = await makeConsumer(["admin", "customer"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "ready" },
+			],
+		});
+		const dependencies = makeDependencies({ store });
+		const events: string[] = [];
+		vi.mocked(dependencies.createExecutionContext).mockImplementation(
+			async ({ role }) => ({
+				cleanup: vi.fn(async () => {
+					events.push(`cleanup:${role}`);
+				}),
+				contextPath: join(tmpdir(), `shopify-e2e-${role}.json`),
+			}),
+		);
+		vi.mocked(dependencies.runChild).mockImplementation(async (invocation) => {
+			const contextPath = invocation.environment?.SHOPIFY_E2E_EXECUTION_CONTEXT;
+			events.push(
+				`child:${contextPath?.includes("admin") ? "admin" : "customer"}`,
+			);
+			return 0;
+		});
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					role: ["customer", "admin"],
+				}),
+			}),
+		).resolves.toBe(0);
+
+		expect(dependencies.launchBrowser).toHaveBeenCalledOnce();
+		expect(events).toEqual([
+			"child:admin",
+			"cleanup:admin",
+			"child:customer",
+			"cleanup:customer",
+		]);
+		expect(dependencies.reportSummary).toHaveBeenCalledWith([
+			{ role: "admin", status: "passed" },
+			{ role: "customer", status: "passed" },
+		]);
+	});
+
+	it("stops after the first failing role and reports later roles not run", async () => {
+		const consumer = await makeConsumer(["admin", "customer", "guest"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "ready" },
+				{ role: "guest", status: "ready" },
+			],
+		});
+		const dependencies = makeDependencies({ store });
+		vi.mocked(dependencies.runChild)
+			.mockResolvedValueOnce(0)
+			.mockResolvedValueOnce(1);
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					role: ["admin", "customer", "guest"],
+				}),
+			}),
+		).resolves.toBe(1);
+
+		expect(dependencies.runChild).toHaveBeenCalledTimes(2);
+		expect(dependencies.reportSummary).toHaveBeenCalledWith([
+			{ role: "admin", status: "passed" },
+			{ exitCode: 1, role: "customer", status: "failed" },
+			{ role: "guest", status: "not-run" },
+		]);
+	});
+
+	it("gives final browser cleanup failure precedence over successful roles", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.launchBrowser).mockResolvedValueOnce({
+			close: vi.fn(async () => {
+				throw new ShopifyE2EInfrastructureError("browser cleanup failed");
+			}),
+			unexpectedClose: new Promise(() => undefined),
+			wsEndpoint: "ws://127.0.0.1/playwright-test-endpoint",
+		});
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot),
+			}),
+		).rejects.toThrow(/browser cleanup failed/);
 	});
 
 	it("rejects omitted non-interactive role before state or Playwright work", async () => {

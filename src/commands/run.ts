@@ -15,6 +15,10 @@ import {
 } from "../errors.js";
 import { PACKAGE_ROOT } from "../package-root.js";
 import {
+	launchConsumerBrowserServer,
+	type ManagedBrowserServer,
+} from "../playwright/browser-server.js";
+import {
 	createPlaywrightExecutionContext,
 	type PlaywrightExecutionContextArtifact,
 } from "../playwright/execution-context.cjs";
@@ -23,14 +27,22 @@ import {
 	buildPlaywrightInvocation,
 	type PlaywrightInvocation,
 } from "../playwright/invocation.js";
+import type { ConsumerChromiumLauncher } from "../playwright/peer.js";
 import {
+	loadConsumerChromium,
 	type ResolvedPlaywrightPeer,
 	resolvePlaywrightPeer,
 } from "../playwright/peer.js";
 import {
+	type RoleRunOutcome,
+	runRolesSerially,
+} from "../playwright/serial-role-runner.js";
+import {
 	CommandSignalError,
 	createCommandSignalScope,
+	runWithAbortSignal,
 	runWithCommandSignal,
+	throwIfAborted,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
 import { runChild } from "../process/run-child.js";
@@ -90,10 +102,22 @@ export interface RunCommandDependencies {
 		readonly environment: NodeJS.ProcessEnv;
 		readonly projectRoot: string;
 	}) => Promise<LoadedShopifyConfig>;
+	readonly launchBrowser: (options: {
+		readonly chromium: ConsumerChromiumLauncher;
+		readonly launchOptions: LoadedShopifyConfig["browserLaunchOptions"];
+		readonly signal: AbortSignal;
+	}) => Promise<ManagedBrowserServer>;
+	readonly loadChromium: (
+		peer: ResolvedPlaywrightPeer,
+	) => Promise<ConsumerChromiumLauncher>;
 	readonly reportSelection: (selection: SelectedShopifyBoundary) => void;
+	readonly reportSummary: (outcomes: readonly RoleRunOutcome[]) => void;
 	readonly resolveDataRoot: typeof resolveRoleStateDataRoot;
 	readonly resolvePeer: (cwd: string) => Promise<ResolvedPlaywrightPeer>;
-	readonly runChild: (invocation: PlaywrightInvocation) => Promise<number>;
+	readonly runChild: (
+		invocation: PlaywrightInvocation,
+		signal: AbortSignal,
+	) => Promise<number>;
 	readonly selectRoles: (options: {
 		readonly choices: readonly {
 			readonly name: string;
@@ -111,14 +135,24 @@ const defaultDependencies: RunCommandDependencies = {
 	createStore: createRoleStateStore,
 	loadConfig: loadShopifyConfig,
 	loadEnvironment,
+	launchBrowser: launchConsumerBrowserServer,
+	loadChromium: loadConsumerChromium,
 	reportSelection: (selection) => {
 		process.stderr.write(`Shopify config: ${selection.configPath}\n`);
 		process.stderr.write(`Shopify test directory: ${selection.testDir}\n`);
 		process.stderr.write(`Shopify role: ${selection.role}\n`);
 	},
+	reportSummary: (outcomes) => {
+		process.stderr.write("Shopify role summary:\n");
+		for (const outcome of outcomes) {
+			const exit =
+				outcome.exitCode === undefined ? "" : ` (exit ${outcome.exitCode})`;
+			process.stderr.write(`  ${outcome.role}: ${outcome.status}${exit}\n`);
+		}
+	},
 	resolveDataRoot: resolveRoleStateDataRoot,
 	resolvePeer: resolvePlaywrightPeer,
-	runChild: (invocation) => runChild({ invocation }),
+	runChild: (invocation, signal) => runChild({ invocation, signal }),
 	selectRoles: ({ choices, input, output, signal }) =>
 		inquirerPrompts.checkbox({
 			choices,
@@ -296,12 +330,12 @@ const createExecutionContextWithSignal = async (
 	options: Parameters<typeof createPlaywrightExecutionContext>[0],
 	signal: AbortSignal,
 ): Promise<PlaywrightExecutionContextArtifact> => {
-	throwIfCommandAborted(signal);
+	throwIfAborted(signal);
 	const creation = dependencies.createExecutionContext(options);
 	try {
-		return await runWithCommandSignal(() => creation, signal);
+		return await runWithAbortSignal(() => creation, signal);
 	} catch (error) {
-		if (error instanceof CommandSignalError) {
+		if (signal.aborted) {
 			let artifact: PlaywrightExecutionContextArtifact;
 			try {
 				artifact = await creation;
@@ -311,7 +345,12 @@ const createExecutionContextWithSignal = async (
 			try {
 				await artifact.cleanup();
 			} catch {
-				await retryExecutionContextCleanupAfterInterruption(artifact, error);
+				if (error instanceof CommandSignalError) {
+					await retryExecutionContextCleanupAfterInterruption(artifact, error);
+				}
+				throw new ShopifyE2EInfrastructureError(
+					"Temporary Playwright cleanup could not complete",
+				);
 			}
 		}
 		throw error;
@@ -364,6 +403,103 @@ export interface OrchestrateShopifyRunArgs {
 	readonly options: RunCommandOptions;
 }
 
+interface RunSelectedRoleArgs {
+	readonly dependencies: RunCommandDependencies;
+	readonly environment: NodeJS.ProcessEnv;
+	readonly loadedConfig: LoadedShopifyConfig;
+	readonly options: RunCommandOptions;
+	readonly origin: string;
+	readonly peer: ResolvedPlaywrightPeer;
+	readonly selection: RoleStateSelection;
+	readonly signal: AbortSignal;
+	readonly wsEndpoint: string;
+}
+
+const runSelectedRole = async ({
+	dependencies,
+	environment,
+	loadedConfig,
+	options,
+	origin,
+	peer,
+	selection,
+	signal,
+	wsEndpoint,
+}: RunSelectedRoleArgs): Promise<number> => {
+	const executionContext = await createExecutionContextWithSignal(
+		dependencies,
+		{
+			configPath: loadedConfig.configPath,
+			normalizedOrigin: origin,
+			packageRoot: options.packageRoot ?? PACKAGE_ROOT,
+			projectRoot: loadedConfig.projectRoot,
+			role: selection.role,
+			state: selection.state,
+			testDir: loadedConfig.testDir,
+		},
+		signal,
+	);
+
+	let roleError: unknown;
+	let exitCode: number | undefined;
+	try {
+		throwIfAborted(signal);
+		const invocation = dependencies.buildInvocation({
+			configPath: loadedConfig.configPath,
+			controls: {
+				...(options.grep === undefined ? {} : { grep: options.grep }),
+				...(options.grepInvert === undefined
+					? {}
+					: { grepInvert: options.grepInvert }),
+			},
+			environment: buildPlaywrightChildEnvironment(
+				environment,
+				executionContext.contextPath,
+				wsEndpoint,
+			),
+			peer,
+		});
+		throwIfAborted(signal);
+		exitCode = await dependencies.runChild(invocation, signal);
+	} catch (error) {
+		roleError = error;
+	}
+
+	let cleanupError: unknown;
+	try {
+		await executionContext.cleanup();
+	} catch (error) {
+		cleanupError = error;
+	}
+	if (signal.aborted && signal.reason === "SIGINT") {
+		if (cleanupError !== undefined) {
+			await retryExecutionContextCleanupAfterInterruption(
+				executionContext,
+				new CommandSignalError("SIGINT"),
+			);
+		}
+		throw new CommandSignalError("SIGINT");
+	}
+	if (signal.aborted && signal.reason === "SIGTERM") {
+		if (cleanupError !== undefined) {
+			await retryExecutionContextCleanupAfterInterruption(
+				executionContext,
+				new CommandSignalError("SIGTERM"),
+			);
+		}
+		throw new CommandSignalError("SIGTERM");
+	}
+	if (cleanupError !== undefined) throw cleanupError;
+	throwIfAborted(signal);
+	if (roleError !== undefined) throw roleError;
+	if (exitCode === undefined) {
+		throw new ShopifyE2EInfrastructureError(
+			"Playwright execution completed without an exit code",
+		);
+	}
+	return exitCode;
+};
+
 export const orchestrateShopifyRun = async ({
 	dependencies = defaultDependencies,
 	options,
@@ -398,77 +534,75 @@ export const orchestrateShopifyRun = async ({
 		signal,
 	);
 	throwIfCommandAborted(signal);
-	const executionContext = await createExecutionContextWithSignal(
-		dependencies,
-		{
-			configPath: loadedConfig.configPath,
-			normalizedOrigin: origin,
-			packageRoot: options.packageRoot ?? PACKAGE_ROOT,
-			projectRoot: loadedConfig.projectRoot,
-			role: selection.role,
-			state: selection.state,
-			testDir: loadedConfig.testDir,
-		},
+	const chromium = await runWithCommandSignal(
+		() => dependencies.loadChromium(peer),
 		signal,
 	);
-
-	let childError: unknown;
-	let childExitCode: number | undefined;
-	try {
-		throwIfCommandAborted(signal);
-		const invocation = dependencies.buildInvocation({
-			configPath: loadedConfig.configPath,
-			controls: {
-				...(options.grep === undefined ? {} : { grep: options.grep }),
-				...(options.grepInvert === undefined
-					? {}
-					: { grepInvert: options.grepInvert }),
-			},
-			environment: buildPlaywrightChildEnvironment(
-				environment,
-				executionContext.contextPath,
-			),
-			peer,
-		});
-		throwIfCommandAborted(signal);
-		dependencies.reportSelection({
-			configPath: loadedConfig.configPath,
-			role: selection.role,
-			testDir: loadedConfig.testDir,
-		});
-		throwIfCommandAborted(signal);
-		childExitCode = await dependencies.runChild(invocation);
-	} catch (error) {
-		childError = error;
-	}
-	let cleanupError: unknown;
-	try {
-		await executionContext.cleanup();
-	} catch (error) {
-		cleanupError = error;
-	}
-	if (cleanupError !== undefined && signal.aborted) {
-		try {
-			throwIfCommandAborted(signal);
-		} catch (error) {
-			if (error instanceof CommandSignalError) {
-				await retryExecutionContextCleanupAfterInterruption(
-					executionContext,
-					error,
-				);
-			}
-			throw error;
-		}
-	}
 	throwIfCommandAborted(signal);
-	if (cleanupError !== undefined) throw cleanupError;
-	if (childError !== undefined) throw childError;
-	if (childExitCode === undefined) {
+	const browser = await dependencies.launchBrowser({
+		chromium,
+		launchOptions: loadedConfig.browserLaunchOptions,
+		signal,
+	});
+
+	let runError: unknown;
+	let runExitCode: number | undefined;
+	try {
+		runExitCode = await runRolesSerially({
+			browserUnexpectedClose: browser.unexpectedClose,
+			reportActiveRole: (role) => {
+				dependencies.reportSelection({
+					configPath: loadedConfig.configPath,
+					role,
+					testDir: loadedConfig.testDir,
+				});
+			},
+			reportSummary: dependencies.reportSummary,
+			roles: selections.map(({ role }) => role),
+			runRole: async (role, roleSignal) => {
+				const selectedRole = selections.find(
+					(candidate) => candidate.role === role,
+				);
+				if (!selectedRole) {
+					throw new ShopifyE2EInfrastructureError(
+						"Selected role state became unavailable",
+					);
+				}
+				return runSelectedRole({
+					dependencies,
+					environment,
+					loadedConfig,
+					options,
+					origin,
+					peer,
+					selection: selectedRole,
+					signal: roleSignal,
+					wsEndpoint: browser.wsEndpoint,
+				});
+			},
+			signal,
+		});
+	} catch (error) {
+		runError = error;
+	}
+	let browserCleanupError: unknown;
+	try {
+		await browser.close();
+	} catch (error) {
+		browserCleanupError = error;
+	}
+	if (signal.aborted) {
+		if (runError instanceof CommandSignalError) throw runError;
+		throwIfCommandAborted(signal);
+	}
+	if (browserCleanupError !== undefined) throw browserCleanupError;
+	if (runError !== undefined) throw runError;
+	if (runExitCode === undefined) {
 		throw new ShopifyE2EInfrastructureError(
 			"Playwright execution completed without an exit code",
 		);
 	}
-	return childExitCode;
+	return runExitCode;
 };
 
 export class Run extends Command {
