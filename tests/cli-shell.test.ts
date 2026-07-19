@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { createRoleStateStore } from "../src/role-states/role-state-store.js";
 
 import {
 	prepareDoctorReadyConsumer,
@@ -22,10 +23,12 @@ import {
 } from "./support/doctor-cli-shell.js";
 
 const projectRoot = resolve(import.meta.dirname, "..");
+const configHelperPath = resolve(projectRoot, "src/config/public.cts");
 const binPath = resolve(projectRoot, "bin/run.js");
 const unrelatedCommandPath = resolve(projectRoot, "dist/commands/unrelated.js");
 const importSentinelPath = resolve(projectRoot, "dist/unrelated-imported");
 const temporaryDirectories: string[] = [];
+const consumerDataRoots = new Map<string, string>();
 let sharedConsumerPeerRoot: string;
 const dotenvOutputPattern =
 	/injected env|failed to load|no encoding is specified/i;
@@ -47,6 +50,9 @@ const runCli = ({
 		env: {
 			...process.env,
 			NO_COLOR: "1",
+			...(consumerDataRoots.get(cwd) === undefined
+				? {}
+				: { SHOPIFY_E2E_DATA_DIR: consumerDataRoots.get(cwd) }),
 			SHOPIFY_STORE_URL: "https://shop.example",
 			...environmentOverrides,
 		},
@@ -63,7 +69,7 @@ const makeConsumerFixture = async (consumerRoot?: string): Promise<string> => {
 	await writeFile(join(consumer, "package.json"), '{"type":"module"}\n');
 	await writeFile(
 		join(consumer, "shopify-e2e.config.ts"),
-		'export default { testDir: "shopify-tests", roles: { admin: { authentication: "required" }, guest: { authentication: "none" } } };\n',
+		`import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)}; export default defineShopifyE2EConfig({ testDir: "shopify-tests", roles: ["admin", "guest"] });\n`,
 	);
 	await writeFile(
 		join(testDir, "checkout.spec.ts"),
@@ -74,6 +80,13 @@ const makeConsumerFixture = async (consumerRoot?: string): Promise<string> => {
 
 const makeRunnableConsumer = async (consumerRoot?: string): Promise<string> => {
 	const consumer = await makeConsumerFixture(consumerRoot);
+	const dataRoot = await realpath(
+		await mkdtemp(join(tmpdir(), "shopify-e2e-cli-role-states-")),
+	);
+	temporaryDirectories.push(dataRoot);
+	consumerDataRoots.set(consumer, dataRoot);
+	await seedRole(consumer, dataRoot);
+	await writeFile(join(consumer, ".env"), `SHOPIFY_E2E_DATA_DIR=${dataRoot}\n`);
 	await mkdir(join(consumer, "node_modules", "@playwright"), {
 		recursive: true,
 	});
@@ -89,7 +102,7 @@ const makeDotenvAwareConsumer = async (): Promise<string> => {
 	const consumer = await makeRunnableConsumer();
 	await writeFile(
 		join(consumer, "shopify-e2e.config.ts"),
-		`const isExpected = process.env.SHOPIFY_E2E_DOTENV_SENTINEL === process.env.SHOPIFY_E2E_DOTENV_EXPECTED && process.env.DOTENV_CONFIG_DEBUG === process.env.SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG && process.env.DOTENV_CONFIG_QUIET === process.env.SHOPIFY_E2E_DOTENV_EXPECTED_QUIET; export default { testDir: isExpected ? "shopify-tests" : "missing-tests", roles: { guest: { authentication: "none" } } };\n`,
+		`import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)}; const isExpected = process.env.SHOPIFY_E2E_DOTENV_SENTINEL === process.env.SHOPIFY_E2E_DOTENV_EXPECTED && process.env.DOTENV_CONFIG_DEBUG === process.env.SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG && process.env.DOTENV_CONFIG_QUIET === process.env.SHOPIFY_E2E_DOTENV_EXPECTED_QUIET; export default defineShopifyE2EConfig({ testDir: isExpected ? "shopify-tests" : "missing-tests", roles: ["guest"] });\n`,
 	);
 	await writeFile(
 		join(consumer, "shopify-tests", "checkout.spec.ts"),
@@ -98,10 +111,29 @@ const makeDotenvAwareConsumer = async (): Promise<string> => {
 	return consumer;
 };
 
+const seedRole = async (
+	_consumer: string,
+	dataRoot: string,
+	role = "guest",
+): Promise<void> => {
+	await createRoleStateStore({
+		dataRoot,
+		origin: "https://shop.example",
+		roles: ["admin", "guest"],
+	}).capture({ role, state: { cookies: [], origins: [] } });
+};
+
 const makeConsumerWithExitingPlaywright = async (
 	exitCode: number,
 ): Promise<string> => {
 	const consumer = await makeConsumerFixture();
+	const dataRoot = await realpath(
+		await mkdtemp(join(tmpdir(), "shopify-e2e-cli-role-states-")),
+	);
+	temporaryDirectories.push(dataRoot);
+	consumerDataRoots.set(consumer, dataRoot);
+	await seedRole(consumer, dataRoot);
+	await writeFile(join(consumer, ".env"), `SHOPIFY_E2E_DATA_DIR=${dataRoot}\n`);
 	const peerRoot = join(consumer, "node_modules", "@playwright", "test");
 	await mkdir(peerRoot, { recursive: true });
 	await writeFile(
@@ -124,7 +156,18 @@ const makeConsumerWithExitingPlaywright = async (
 	await writeFile(join(peerRoot, "cli.js"), `process.exit(${exitCode});\n`);
 	await writeFile(
 		join(peerRoot, "index.js"),
-		"export const chromium = { launch() {} };\n",
+		`import { EventEmitter } from "node:events";
+class Server extends EventEmitter {
+  async close() { this.emit("close"); }
+  async kill() { this.emit("close"); }
+  wsEndpoint() { return "ws://127.0.0.1/fake-playwright-server"; }
+}
+export const chromium = {
+  executablePath() { return process.execPath; },
+  launch() {},
+  async launchServer() { return new Server(); },
+};
+`,
 	);
 	return consumer;
 };
@@ -194,13 +237,15 @@ describe.sequential("built CLI shell", () => {
 			.split("\n")
 			.filter((line) => /^ {2}--/.test(line))
 			.map((line) => line.trim().split(/\s+/)[0]);
-		expect(flagNames).toEqual(["--config=<value>"]);
+		expect(flagNames).toEqual([]);
+		expect(result.stdout).not.toContain("--config");
 		expect(result.stderr).toBe("");
 	});
 
 	it.each([
 		["doctor", "unexpected"],
 		["doctor", "--unknown"],
+		["doctor", "--config", "alternate-shopify-e2e.config.ts"],
 		["doctor", "--", "unexpected"],
 	])("rejects unsupported doctor input before orchestration: %s", async (...args) => {
 		const consumer = await makeConsumerFixture();
@@ -216,31 +261,16 @@ describe.sequential("built CLI shell", () => {
 		expect(result.stderr).not.toMatch(/consumer \.env could not be read/i);
 	});
 
-	it("prints the complete ordered doctor report from an alternate config without importing tests", async () => {
+	it("prints the complete fixed-config doctor report without importing tests", async () => {
 		const fixture = await prepareDoctorReadyConsumer(
 			await makeConsumerFixture(),
 		);
-		const alternateConfigPath = join(
-			fixture.consumer,
-			"alternate-shopify-e2e.config.ts",
-		);
-		const alternateTestDir = join(fixture.consumer, "alternate-shopify-tests");
-		const alternateSpecSentinel = join(
-			fixture.consumer,
-			"alternate-shopify-spec-imported",
-		);
-		await mkdir(alternateTestDir);
-		await writeFile(
-			alternateConfigPath,
-			'export default { testDir: "alternate-shopify-tests", roles: { guest: { authentication: "none" } } };\n',
-		);
-		await writeFile(
-			join(alternateTestDir, "checkout.spec.ts"),
-			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(alternateSpecSentinel)}, "imported");\n`,
-		);
+		const physicalConsumer = await realpath(fixture.consumer);
+		const configPath = join(physicalConsumer, "shopify-e2e.config.ts");
+		const testDir = join(physicalConsumer, "shopify-tests");
 
 		const result = runCli({
-			args: ["doctor", "--config", "alternate-shopify-e2e.config.ts"],
+			args: ["doctor"],
 			cwd: fixture.consumer,
 		});
 
@@ -250,7 +280,7 @@ describe.sequential("built CLI shell", () => {
 			"Environment",
 			"Store URL",
 			"Shopify config",
-			"Shopify spec candidates",
+			"Shopify test directory",
 			"Playwright peer",
 			"Chromium",
 		];
@@ -260,18 +290,20 @@ describe.sequential("built CLI shell", () => {
 			expect(index).toBeGreaterThan(priorIndex);
 			priorIndex = index;
 		}
-		expect(result.stdout).toContain(alternateConfigPath);
-		expect(result.stdout).toContain(alternateTestDir);
-		expect(result.stdout).not.toContain(
-			join(fixture.consumer, "shopify-e2e.config.ts"),
+		expect(result.stdout).toContain(configPath);
+		expect(result.stdout).toContain(testDir);
+		expect(result.stdout).toContain(
+			"Package-owned Shopify config checks passed",
 		);
-		expect(result.stdout).toContain("1 Playwright spec candidate(s) found");
+		expect(result.stdout).toContain(
+			"1 JavaScript/TypeScript file candidate(s) found",
+		);
+		expect(result.stdout).not.toMatch(/runnable Playwright specs/i);
 		expect(result.stdout).not.toContain("checkout.spec.ts");
 		expect(result.stdout).not.toContain("https://shop.example");
 		expect(result.stderr).toBe("");
 		for (const sentinel of [
 			...fixture.importSentinels,
-			alternateSpecSentinel,
 			fixture.launchSentinel,
 		]) {
 			expect(existsSync(sentinel)).toBe(false);
@@ -315,6 +347,7 @@ describe.sequential("built CLI shell", () => {
 			await writeFile(
 				join(fixture.consumer, "shopify-e2e.config.ts"),
 				`import { writeFileSync } from "node:fs";
+import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)};
 writeFileSync(${JSON.stringify(inspectionStarted)}, "started");
 await new Promise((resolveSignal) => {
   const keepInspectionPending = setInterval(() => undefined, 1_000);
@@ -323,7 +356,7 @@ await new Promise((resolveSignal) => {
     resolveSignal(undefined);
   });
 });
-export default { testDir: "shopify-tests", roles: { guest: { authentication: "none" } } };
+export default defineShopifyE2EConfig({ testDir: "shopify-tests", roles: ["guest"] });
 `,
 			);
 			await writeFile(
@@ -389,26 +422,28 @@ export const chromium = {
 	);
 
 	it.each([
-		{ args: ["auth", "--help"], flags: ["--config"] },
+		{ args: ["auth", "--help"], flags: [] },
 		{
 			args: ["auth", "capture", "--help"],
-			flags: ["--config", "--role", "--profile"],
+			flags: ["--role"],
 		},
 		{
 			args: ["auth", "refresh", "--help"],
-			flags: ["--config", "--profile"],
+			flags: ["--role"],
 		},
 		{
 			args: ["auth", "remove", "--help"],
-			flags: ["--config", "--profile", "--yes"],
+			flags: ["--role", "--yes"],
 		},
-		{ args: ["auth", "list", "--help"], flags: ["--config"] },
+		{ args: ["auth", "list", "--help"], flags: [] },
 	])("prints auth help for $args", ({ args, flags }) => {
 		const result = runCli({ args });
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("USAGE");
 		for (const flag of flags) expect(result.stdout).toContain(flag);
+		expect(result.stdout).not.toContain("--profile");
+		expect(result.stdout).not.toContain("--config");
 		expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
 			/password.*prompt/i,
 		);
@@ -422,28 +457,24 @@ export const chromium = {
 			.split("\n")
 			.filter((line) => /^ {2}--/.test(line))
 			.map((line) => line.trim().split(/\s+/)[0]);
-		expect(flagNames).toEqual([
-			"--config=<value>",
-			"--profile=<value>",
-			"--yes",
-		]);
+		expect(flagNames).toEqual(["--role=<value>", "--yes"]);
 		expect(result.stdout).toMatch(/--yes.*skip confirmation/is);
 		expect(result.stdout).toMatch(
-			/non-interactive removal requires\s+--profile and --yes/i,
+			/non-interactive removal requires\s+--role and\s+--yes/i,
 		);
-		expect(result.stdout).not.toContain("--role");
+		expect(result.stdout).not.toContain("--profile");
+		expect(result.stdout).not.toContain("--config");
 	});
 
-	it("documents capture role and profile naming constraints", () => {
+	it("documents capture's sole role selector", () => {
 		const result = runCli({ args: ["auth", "capture", "--help"] });
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toMatch(
-			/--profile.*ASCII lower-kebab, max 64 UTF-8 bytes/s,
-		);
-		expect(result.stdout).toMatch(
 			/--role.*ASCII lower-kebab, max 64 UTF-8 bytes/s,
 		);
+		expect(result.stdout).not.toContain("--profile");
+		expect(result.stdout).not.toContain("--config");
 	});
 
 	it("lists the exact auth command vocabulary", () => {
@@ -466,8 +497,15 @@ export const chromium = {
 		["auth", "refresh", "unexpected"],
 		["auth", "list", "unexpected"],
 		["auth", "--profile", "admin-primary"],
+		["auth", "--config", "other.ts"],
+		["auth", "capture", "--profile", "admin-primary"],
+		["auth", "capture", "--config", "other.ts"],
 		["auth", "list", "--role", "admin"],
-		["auth", "refresh", "--role", "admin"],
+		["auth", "list", "--config", "other.ts"],
+		["auth", "refresh", "--profile", "admin-primary"],
+		["auth", "refresh", "--config", "other.ts"],
+		["auth", "remove", "--profile", "admin-primary"],
+		["auth", "remove", "--config", "other.ts"],
 		["auth", "capture", "--unknown"],
 	])("rejects unsupported auth input before preflight: %s", (...args) => {
 		const result = runCli({ args });
@@ -513,7 +551,7 @@ export const chromium = {
 
 	it.each([
 		[],
-		["--profile", "admin-primary"],
+		["--role", "admin"],
 		["--yes"],
 	])("requires the non-interactive removal flag pair for %s", async (...flags) => {
 		const consumer = await makeConsumerFixture();
@@ -524,7 +562,7 @@ export const chromium = {
 		});
 
 		expect(result.status).toBe(2);
-		expect(result.stderr).toMatch(/--profile.*--yes/i);
+		expect(result.stderr).toMatch(/--role.*--yes/i);
 		expect(result.stderr).not.toMatch(
 			/inquirer|exitprompterror|abortprompterror/i,
 		);
@@ -541,14 +579,13 @@ export const chromium = {
 			args: ["auth", "list"],
 			cwd: consumer,
 			environmentOverrides: {
-				SHOPIFY_E2E_DATA_DIR: join(dataParent, "profiles"),
+				SHOPIFY_E2E_DATA_DIR: join(dataParent, "role-states"),
 			},
 		});
 
 		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout).toContain(
-			"No saved profiles for the configured store.",
-		);
+		expect(result.stdout).toContain("admin\tmissing");
+		expect(result.stdout).toContain("guest\tmissing");
 	});
 
 	it("rejects an auth data-directory override inside the consumer before persistence", async () => {
@@ -559,15 +596,15 @@ export const chromium = {
 			args: ["auth", "list"],
 			cwd: consumer,
 			environmentOverrides: {
-				SHOPIFY_E2E_DATA_DIR: join(physicalConsumer, ".profiles"),
+				SHOPIFY_E2E_DATA_DIR: join(physicalConsumer, ".role-states"),
 			},
 		});
 
 		expect(result.status).toBe(2);
 		expect(result.stderr).toMatch(
-			/profile data directory.*outside the consumer project/i,
+			/role-state data directory.*outside the consumer project/i,
 		);
-		expect(existsSync(join(physicalConsumer, ".profiles"))).toBe(false);
+		expect(existsSync(join(physicalConsumer, ".role-states"))).toBe(false);
 	});
 
 	it("prints run command help", () => {
@@ -579,12 +616,16 @@ export const chromium = {
 		expect(result.stdout).toContain(
 			"arbitrary Playwright arguments are not accepted",
 		);
-		expect(result.stdout).toContain("--config");
+		expect(result.stdout).not.toContain("--config");
 		expect(result.stdout).toContain("--grep");
 		expect(result.stdout).toContain("-g");
 		expect(result.stdout).toContain("--grep-invert");
-		expect(result.stdout).toContain("--profile");
+		expect(result.stdout).toContain("--role");
+		expect(result.stdout).toMatch(/repeatable.*omit.*select roles/is);
+		expect(result.stdout).not.toContain("--profile");
 		expect(result.stdout).toMatch(/workers.*unavailable/i);
+		expect(result.stdout).toMatch(/reporter overrides.*unavailable/i);
+		expect(result.stdout).not.toMatch(/file selectors, reporters,/i);
 		expect(result.stderr).toBe("");
 	});
 
@@ -608,7 +649,7 @@ export const chromium = {
 	it("runs a browserless Shopify spec and reports the selected boundary", async () => {
 		const consumer = await makeRunnableConsumer();
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 		});
 
@@ -618,10 +659,10 @@ export const chromium = {
 		expect(result.stderr).toContain("shopify-e2e.config.ts");
 		expect(result.stderr).toContain("Shopify test directory:");
 		expect(result.stderr).toContain("shopify-tests");
-		expect(result.stderr).toContain("Shopify profile: guest - guest");
+		expect(result.stderr).toContain("Shopify role: guest");
 	});
 
-	it("requires --profile when run is non-interactive", async () => {
+	it("requires --role when run is non-interactive", async () => {
 		const consumer = await makeRunnableConsumer();
 		const dataParent = await realpath(
 			await mkdtemp(join(tmpdir(), "shopify-e2e-run-data-")),
@@ -631,34 +672,38 @@ export const chromium = {
 			args: ["run"],
 			cwd: consumer,
 			environmentOverrides: {
-				SHOPIFY_E2E_DATA_DIR: join(dataParent, "profiles"),
+				SHOPIFY_E2E_DATA_DIR: join(dataParent, "role-states"),
 			},
 		});
 
 		expect(result.status).toBe(2);
 		expect(result.stdout).toBe("");
-		expect(result.stderr).toMatch(/profile is required.*--profile/i);
+		expect(result.stderr).toMatch(/role is required.*--role/i);
 	});
 
-	it("resolves explicit guest without validating the unused data directory", async () => {
+	it("rejects an in-project role-state data directory", async () => {
 		const consumer = await makeRunnableConsumer();
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 			environmentOverrides: {
-				SHOPIFY_E2E_DATA_DIR: join(consumer, ".forbidden-profile-data"),
+				SHOPIFY_E2E_DATA_DIR: join(consumer, ".forbidden-role-state-data"),
 			},
 		});
 
-		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout).toMatch(/1 passed/i);
-		expect(existsSync(join(consumer, ".forbidden-profile-data"))).toBe(false);
+		expect(result.status).toBe(2);
+		expect(result.stderr).toMatch(
+			/role-state data directory.*(?:outside|symbolic)/i,
+		);
+		expect(existsSync(join(consumer, ".forbidden-role-state-data"))).toBe(
+			false,
+		);
 	});
 
 	it("rejects a missing store URL before resolving the consumer peer", async () => {
 		const consumer = await makeConsumerFixture();
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 			environmentOverrides: { SHOPIFY_STORE_URL: undefined },
 		});
@@ -673,10 +718,10 @@ export const chromium = {
 		const consumer = await makeDotenvAwareConsumer();
 		await writeFile(
 			join(consumer, ".env"),
-			"SHOPIFY_E2E_DOTENV_SENTINEL=from-consumer-dotenv\nDOTENV_CONFIG_DEBUG=1\nDOTENV_CONFIG_QUIET=false\n",
+			`SHOPIFY_E2E_DATA_DIR=${consumerDataRoots.get(consumer)}\nSHOPIFY_E2E_DOTENV_SENTINEL=from-consumer-dotenv\nDOTENV_CONFIG_DEBUG=1\nDOTENV_CONFIG_QUIET=false\n`,
 		);
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 			environmentOverrides: {
 				DOTENV_CONFIG_DEBUG: undefined,
@@ -702,10 +747,10 @@ export const chromium = {
 		const consumer = await makeDotenvAwareConsumer();
 		await writeFile(
 			join(consumer, ".env"),
-			"SHOPIFY_E2E_DOTENV_SENTINEL=from-consumer-dotenv\n",
+			`SHOPIFY_E2E_DATA_DIR=${consumerDataRoots.get(consumer)}\nSHOPIFY_E2E_DOTENV_SENTINEL=from-consumer-dotenv\n`,
 		);
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 			environmentOverrides: {
 				DOTENV_CONFIG_DEBUG: undefined,
@@ -724,13 +769,14 @@ export const chromium = {
 	it("reports an unreadable .env as one sanitized preflight error before config", async () => {
 		const consumer = await makeRunnableConsumer();
 		const configMarker = join(consumer, "private-config-marker");
+		await rm(join(consumer, ".env"), { force: true });
 		await mkdir(join(consumer, ".env"));
 		await writeFile(
 			join(consumer, "shopify-e2e.config.ts"),
-			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(configMarker)}, "loaded"); export default { testDir: "shopify-tests", roles: { guest: { authentication: "none" } } };\n`,
+			`import { writeFileSync } from "node:fs"; import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)}; writeFileSync(${JSON.stringify(configMarker)}, "loaded"); export default defineShopifyE2EConfig({ testDir: "shopify-tests", roles: ["guest"] });\n`,
 		);
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 			environmentOverrides: {
 				DOTENV_CONFIG_DEBUG: "1",
@@ -772,7 +818,7 @@ export const chromium = {
 		);
 	});
 
-	it("keeps dotenv discovery at the invocation root with nested --config", async () => {
+	it("rejects nested --config selection before execution", async () => {
 		const parent = await mkdtemp(join(tmpdir(), "shopify-e2e-cli-parent-"));
 		temporaryDirectories.push(parent);
 		await writeFile(
@@ -797,7 +843,7 @@ export const chromium = {
 		);
 		await writeFile(
 			join(nested, "shopify-e2e.config.ts"),
-			`export default { testDir: process.env.SHOPIFY_E2E_DOTENV_SENTINEL === "invocation-root" ? "shopify-tests" : "missing-tests", roles: { guest: { authentication: "none" } } };\n`,
+			`import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)}; export default defineShopifyE2EConfig({ testDir: process.env.SHOPIFY_E2E_DOTENV_SENTINEL === "invocation-root" ? "shopify-tests" : "missing-tests", roles: ["guest"] });\n`,
 		);
 		await writeFile(
 			join(nestedTests, "dotenv.spec.ts"),
@@ -808,21 +854,21 @@ export const chromium = {
 				"run",
 				"--config",
 				"nested/shopify-e2e.config.ts",
-				"--profile",
+				"--role",
 				"guest",
 			],
 			cwd: consumer,
 			environmentOverrides: { SHOPIFY_E2E_DOTENV_SENTINEL: undefined },
 		});
 
-		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout).toMatch(/1 passed/i);
+		expect(result.status).toBe(2);
+		expect(result.stderr).toMatch(/nonexistent flag.*config/i);
 	});
 
 	it("preserves Playwright's exit when an allowed filter selects no tests", async () => {
 		const consumer = await makeRunnableConsumer();
 		const result = runCli({
-			args: ["run", "--profile", "guest", "--grep", "does not match"],
+			args: ["run", "--role", "guest", "--grep", "does not match"],
 			cwd: consumer,
 		});
 
@@ -834,7 +880,7 @@ export const chromium = {
 	it("preserves a representative nonstandard Playwright child exit", async () => {
 		const consumer = await makeConsumerWithExitingPlaywright(17);
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 		});
 
@@ -843,7 +889,7 @@ export const chromium = {
 		expect(result.stderr).toContain("Shopify test directory:");
 	});
 
-	it("reports package infrastructure failures as one safe generic error", async () => {
+	it("reports browser startup failures as one safe infrastructure error", async () => {
 		const consumer = await makeRunnableConsumer();
 		const missingTemporaryRoot = join(
 			consumer,
@@ -851,7 +897,7 @@ export const chromium = {
 			"private-value",
 		);
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 			environmentOverrides: {
 				TEMP: missingTemporaryRoot,
@@ -862,9 +908,7 @@ export const chromium = {
 
 		expect(result.status).toBe(1);
 		expect(result.stdout).toBe("");
-		expect(result.stderr).toMatch(
-			/^\s*›?\s*Error: shopify-e2e could not complete Playwright execution\s*$/,
-		);
+		expect(result.stderr).toMatch(/consumer chromium server could not launch/i);
 		expect(result.stderr.match(/Error:/g)).toHaveLength(1);
 		expect(result.stderr).not.toContain("private-value");
 	});
@@ -873,7 +917,7 @@ export const chromium = {
 		const consumer = await mkdtemp(join(tmpdir(), "shopify-e2e-cli-"));
 		temporaryDirectories.push(consumer);
 		const result = runCli({
-			args: ["run", "--profile", "guest"],
+			args: ["run", "--role", "guest"],
 			cwd: consumer,
 		});
 

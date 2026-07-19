@@ -4,8 +4,18 @@
 		"declaration": false,
 		"declarationMap": false,
 		"noEmit": true,
+		"baseUrl": ".",
+		"paths": {
+			"@sematico/shopify-e2e/config": ["./src/config/public.cts"]
+		},
 		"rootDir": ".",
 		"types": ["node", "vitest/globals"]
 	},
-	"include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+	"include": [
+		"src/**/*.ts",
+		"src/**/*.cts",
+		"tests/**/*.ts",
+		"tests/**/*.cts",
+		"vitest.config.ts"
+	]
 }

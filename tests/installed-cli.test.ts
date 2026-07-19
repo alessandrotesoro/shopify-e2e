@@ -1,912 +1,604 @@
-import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-	access,
-	mkdir,
-	readdir,
-	readFile,
-	realpath,
-	rm,
-	writeFile,
-} from "node:fs/promises";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createRoleStateStore } from "../src/role-states/role-state-store.js";
 import {
 	cleanupInstalledCliFixture,
-	expectMarkersAbsent,
-	expectOrdinaryLaneFixturesPresent,
-	generatedConfigDirectories,
-	type InstalledRemovalFixture,
 	makeTemporaryDirectory,
-	markerExists,
-	prepareInstalledCliFixture,
-	terminateAndAwaitProcesses,
-	waitForMarker,
-	waitForProcessToExit,
+	packVerifiedPackage,
 } from "./support/installed-cli-harness.js";
-import { installedCliPath } from "./support/installed-consumer.js";
+import {
+	installedCliPath,
+	installPackedPackage,
+} from "./support/installed-consumer.js";
 
 const projectRoot = resolve(import.meta.dirname, "..");
-const fixtureRoot = resolve(import.meta.dirname, "fixtures/consumer");
-let installedProfileDataRoot = "";
-let installedRemovalFixture: InstalledRemovalFixture;
-const dotenvOutputPattern =
-	/injected env|failed to load|no encoding is specified/i;
+const origin = "https://shop.example";
 
-interface CommandResult {
-	readonly error?: Error;
-	readonly status: number | null;
-	readonly stderr: string;
-	readonly stdout: string;
+interface InstalledConsumer {
+	readonly dataRoot: string;
+	readonly root: string;
+	readonly runtimeTempRoot: string;
 }
 
-const digestFiles = async (
-	files: readonly string[],
-): Promise<readonly string[]> =>
-	Promise.all(
-		files.map(async (file) =>
-			createHash("sha256")
-				.update(await readFile(file))
-				.digest("hex"),
-		),
-	);
+const isProcessAlive = (pid: number): boolean => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+		throw error;
+	}
+};
 
-const profileFiles = (directory: string): readonly string[] => [
-	join(directory, "profile.json"),
-	join(directory, "storage-state.json"),
-];
-
-interface RunCommandArgs {
-	readonly args: readonly string[];
-	readonly command: string;
-	readonly cwd: string;
-	readonly env?: NodeJS.ProcessEnv;
-	readonly timeoutMs?: number;
-}
-
-const runCommand = ({
-	args,
-	command,
-	cwd,
-	env,
-	timeoutMs,
-}: RunCommandArgs): CommandResult => {
-	const result = spawnSync(command, args, {
-		cwd,
+const descendantPids = (rootPid: number): readonly number[] => {
+	const listing = spawnSync("ps", ["-axo", "pid=,ppid="], {
 		encoding: "utf8",
-		env: env ?? process.env,
+	});
+	if (listing.status !== 0) {
+		throw new Error(`Could not inspect descendants: ${listing.stderr}`);
+	}
+	const children = new Map<number, number[]>();
+	for (const line of listing.stdout.trim().split("\n")) {
+		const [pidText, parentText] = line.trim().split(/\s+/);
+		const pid = Number(pidText);
+		const parent = Number(parentText);
+		if (!Number.isInteger(pid) || !Number.isInteger(parent)) continue;
+		const selected = children.get(parent) ?? [];
+		selected.push(pid);
+		children.set(parent, selected);
+	}
+	const descendants: number[] = [];
+	const pending = [...(children.get(rootPid) ?? [])];
+	while (pending.length > 0) {
+		const pid = pending.shift();
+		if (pid === undefined || descendants.includes(pid)) continue;
+		descendants.push(pid);
+		pending.push(...(children.get(pid) ?? []));
+	}
+	return descendants;
+};
+
+const processCommand = (pid: number): string =>
+	spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+		encoding: "utf8",
+	}).stdout.trim();
+
+const waitForProcessToExit = async (
+	pid: number,
+	timeout: number,
+): Promise<void> => {
+	try {
+		await expect
+			.poll(() => isProcessAlive(pid), { interval: 25, timeout })
+			.toBe(false);
+	} catch (error) {
+		const processState = spawnSync(
+			"ps",
+			["-p", String(pid), "-o", "pid=,ppid=,command="],
+			{ encoding: "utf8" },
+		).stdout.trim();
+		throw new Error(`Process ${pid} remained alive: ${processState}`, {
+			cause: error,
+		});
+	}
+};
+
+const waitForChildToExit = async (
+	child: ChildProcess,
+	timeout: number,
+): Promise<void> => {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	await new Promise<void>((resolveExit, rejectExit) => {
+		let timer: NodeJS.Timeout;
+		const cleanup = (): void => {
+			clearTimeout(timer);
+			child.off("error", onError);
+			child.off("exit", onExit);
+		};
+		const onError = (error: Error): void => {
+			cleanup();
+			rejectExit(error);
+		};
+		const onExit = (): void => {
+			cleanup();
+			resolveExit();
+		};
+		child.once("error", onError);
+		child.once("exit", onExit);
+		timer = setTimeout(() => {
+			cleanup();
+			rejectExit(new Error("Installed CLI did not exit"));
+		}, timeout);
+		timer.unref();
+	});
+};
+
+const signalProcess = (pid: number, signal: NodeJS.Signals): void => {
+	try {
+		process.kill(pid, signal);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+	}
+};
+
+const findAvailablePort = async (): Promise<number> =>
+	new Promise((resolvePort, reject) => {
+		const server = createServer();
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				server.close();
+				reject(new Error("Could not allocate a web server fixture port"));
+				return;
+			}
+			server.close((error) => {
+				if (error) reject(error);
+				else resolvePort(address.port);
+			});
+		});
+	});
+
+const runCli = (
+	consumer: InstalledConsumer,
+	args: readonly string[],
+	overrides: NodeJS.ProcessEnv = {},
+) =>
+	spawnSync(installedCliPath(consumer.root), args, {
+		cwd: consumer.root,
+		encoding: "utf8",
+		env: {
+			...process.env,
+			NO_COLOR: "1",
+			SHOPIFY_E2E_DATA_DIR: consumer.dataRoot,
+			SHOPIFY_STORE_URL: origin,
+			...overrides,
+			TEMP: consumer.runtimeTempRoot,
+			TMP: consumer.runtimeTempRoot,
+			TMPDIR: consumer.runtimeTempRoot,
+		},
 		killSignal: "SIGKILL",
 		maxBuffer: 10 * 1024 * 1024,
-		timeout: timeoutMs ?? 30_000,
+		timeout: 30_000,
 	});
-	return {
-		...(result.error === undefined ? {} : { error: result.error }),
-		status: result.status,
-		stderr: result.stderr,
-		stdout: result.stdout,
-	};
+
+const seedRole = async (
+	consumer: InstalledConsumer,
+	role: string,
+	value: string,
+): Promise<void> => {
+	await createRoleStateStore({
+		dataRoot: consumer.dataRoot,
+		origin,
+		roles: ["admin", "customer"],
+	}).capture({
+		role,
+		state: {
+			cookies: [
+				{
+					domain: "shop.example",
+					expires: -1,
+					httpOnly: true,
+					name: "installed-role-sentinel",
+					path: "/",
+					sameSite: "Lax",
+					secure: true,
+					value,
+				},
+			],
+			origins: [],
+		},
+	});
 };
 
-interface ExpectSuccessArgs {
-	readonly label: string;
-	readonly result: CommandResult;
-}
-
-const expectSuccess = ({ label, result }: ExpectSuccessArgs): void => {
-	expect(
-		result.status,
-		`${label} failed\nerror: ${result.error?.message ?? "none"}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-	).toBe(0);
-};
-
-interface RunInstalledCliArgs {
-	readonly args: readonly string[];
-	readonly consumerRoot: string;
-	readonly environmentOverrides?: NodeJS.ProcessEnv;
-	readonly markerDirectory?: string;
-}
-
-const createInstalledCliEnvironment = (
-	environmentOverrides: NodeJS.ProcessEnv,
-	markerDirectory?: string,
-): NodeJS.ProcessEnv => ({
-	...process.env,
-	SHOPIFY_E2E_DATA_DIR: installedProfileDataRoot,
-	SHOPIFY_STORE_URL: "https://shop.example",
-	...environmentOverrides,
-	NO_COLOR: "1",
-	...(markerDirectory === undefined
-		? {}
-		: { SHOPIFY_E2E_MARKER_DIR: markerDirectory }),
+const prepareEsmConsumer = async (
+	tarballPath: string,
+): Promise<InstalledConsumer> => {
+	const root = await makeTemporaryDirectory("shopify-e2e-installed-esm-");
+	const webServerPort = await findAvailablePort();
+	const webServerUrl = `http://127.0.0.1:${webServerPort}`;
+	const dataRoot = await makeTemporaryDirectory(
+		"shopify-e2e-installed-role-states-",
+	);
+	const runtimeTempRoot = await makeTemporaryDirectory(
+		"shopify-e2e-installed-runtime-",
+	);
+	await writeFile(
+		join(root, "package.json"),
+		'{"name":"installed-esm-consumer","private":true,"type":"module"}\n',
+	);
+	await installPackedPackage({
+		consumerRoot: root,
+		hasPlaywright: true,
+		tarballPath,
+	});
+	await mkdir(join(root, "node_modules", "fixture-dependency"));
+	await writeFile(
+		join(root, "node_modules", "fixture-dependency", "package.json"),
+		'{"name":"fixture-dependency","type":"module","exports":"./index.js"}\n',
+	);
+	await writeFile(
+		join(root, "node_modules", "fixture-dependency", "index.js"),
+		"export const retryCount = 1;\n",
+	);
+	await mkdir(join(root, "shopify-tests"));
+	await mkdir(join(root, "ordinary-tests"));
+	await writeFile(
+		join(root, "config-helper.ts"),
+		`import type { PlaywrightTestConfig } from "@playwright/test";
+import { devices } from "@playwright/test";
+import { retryCount } from "fixture-dependency";
+export const normalSettings = {
+  expect: { timeout: 150 },
+  metadata: { installed: true, webServerUrl: ${JSON.stringify(webServerUrl)} },
+  repeatEach: 2,
+  retries: retryCount,
+  timeout: 2_000,
+  use: { ...devices["Desktop Chrome"], screenshot: "off", trace: "off", video: "off" },
+} satisfies PlaywrightTestConfig;
+`,
+	);
+	await writeFile(
+		join(root, "shopify-e2e.config.ts"),
+		`import { defineShopifyE2EConfig } from "@sematico/shopify-e2e/config";
+import { normalSettings } from "./config-helper.ts";
+export default defineShopifyE2EConfig({
+  ...normalSettings,
+  globalSetup: "./setup.ts",
+  globalTeardown: "./teardown.ts",
+  outputDir: "artifacts/output",
+  reporter: [["json", { outputFile: "artifacts/results.json" }]],
+  roles: ["admin", "customer"],
+  testDir: "shopify-tests",
+  webServer: {
+    command: "node ./web-server.mjs",
+    reuseExistingServer: false,
+    timeout: 10_000,
+    url: ${JSON.stringify(`${webServerUrl}/ready`)},
+  },
 });
-
-const runInstalledCli = ({
-	args,
-	consumerRoot,
-	environmentOverrides = {},
-	markerDirectory,
-}: RunInstalledCliArgs): CommandResult => {
-	return runCommand({
-		args,
-		command: installedCliPath(consumerRoot),
-		cwd: consumerRoot,
-		env: createInstalledCliEnvironment(environmentOverrides, markerDirectory),
-	});
+`,
+	);
+	await writeFile(
+		join(root, "web-server.mjs"),
+		`import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+const server = createServer((_request, response) => {
+  response.writeHead(200, { "content-type": "text/plain" });
+  response.end("ready");
+});
+server.listen(${webServerPort}, "127.0.0.1", () => writeFileSync("web-server.marker", "started"));
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+`,
+	);
+	await writeFile(
+		join(root, "setup.ts"),
+		'import { appendFile, writeFile } from "node:fs/promises"; export default async () => { await writeFile("setup.marker", "setup"); await appendFile("lifecycle.marker", "setup\\n"); };\n',
+	);
+	await writeFile(
+		join(root, "teardown.ts"),
+		'import { appendFile, writeFile } from "node:fs/promises"; export default async () => { await writeFile("teardown.marker", "teardown"); await appendFile("lifecycle.marker", "teardown\\n"); };\n',
+	);
+	await writeFile(
+		join(root, "playwright.config.ts"),
+		'import { writeFileSync } from "node:fs"; writeFileSync("ordinary-config.marker", "loaded"); export default { testDir: "ordinary-tests" };\n',
+	);
+	await writeFile(
+		join(root, "ordinary-tests", "ordinary.spec.ts"),
+		'import { writeFileSync } from "node:fs"; writeFileSync("ordinary-spec.marker", "loaded");\n',
+	);
+	await writeFile(
+		join(root, "shopify-tests", "roles.spec.ts"),
+		`import { appendFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { expect, test } from "@playwright/test";
+test("admin packed lane", { tag: "@shopify-e2e-role-admin" }, async ({}, testInfo) => {
+  expect(testInfo.config.metadata.installed).toBe(true);
+  expect(testInfo.project.outputDir).toBe(resolve("artifacts/output"));
+  expect(testInfo.project.repeatEach).toBe(2);
+  expect(testInfo.project.retries).toBe(1);
+  expect(testInfo.project.testDir).toBe(resolve("shopify-tests"));
+  expect(testInfo.project.timeout).toBe(2_000);
+  expect(testInfo.project.use.screenshot).toBe("off");
+  expect(testInfo.project.use.trace).toBe("off");
+  expect(testInfo.project.use.video).toBe("off");
+  expect(testInfo.project.use.viewport).toEqual({ height: 720, width: 1280 });
+  const state = testInfo.project.use.storageState;
+  expect(typeof state).toBe("object");
+  expect(state.cookies[0].value).toBe("admin-state");
+  const response = await fetch(testInfo.config.metadata.webServerUrl);
+  expect(await response.text()).toBe("ready");
+  const expectStartedAt = Date.now();
+  let expectTimedOut = false;
+  try {
+    await expect.poll(() => false).toBe(true);
+  } catch {
+    expectTimedOut = true;
+  }
+  expect(expectTimedOut).toBe(true);
+  expect(Date.now() - expectStartedAt).toBeLessThan(1_000);
+  appendFileSync("repeat.marker", String(testInfo.repeatEachIndex) + "\\n");
+  appendFileSync("lifecycle.marker", "admin\\n");
+  writeFileSync("admin-body.marker", "ran");
+});
+test("admin interrupt lane", { tag: "@shopify-e2e-role-admin" }, async () => {
+  test.skip(process.env.SHOPIFY_E2E_INTERRUPT_ACTIVE !== "1", "interrupt fixture only");
+  test.setTimeout(15_000);
+  const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
+  if (!markerDirectory) throw new Error("SHOPIFY_E2E_MARKER_DIR is required");
+  writeFileSync(join(markerDirectory, "interrupt-started.marker"), JSON.stringify({ pid: process.pid, ppid: process.ppid }));
+  await new Promise(() => undefined);
+});
+test("admin fail-fast lane", { tag: "@shopify-e2e-role-admin" }, async () => {
+  test.skip(process.env.SHOPIFY_E2E_FAIL_FAST_ACTIVE !== "1", "fail-fast fixture only");
+  writeFileSync("admin-fail-fast.marker", "ran");
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  expect(false).toBe(true);
+});
+test("customer packed lane", { tag: "@shopify-e2e-role-customer" }, ({}, testInfo) => {
+  const state = testInfo.project.use.storageState;
+  expect(typeof state).toBe("object");
+  expect(state.cookies[0].value).toBe("customer-state");
+  appendFileSync("lifecycle.marker", "customer\\n");
+  writeFileSync("customer-body.marker", "ran");
+});
+test("customer after failure lane", { tag: "@shopify-e2e-role-customer" }, () => {
+  test.skip(process.env.SHOPIFY_E2E_FAIL_FAST_ACTIVE !== "1", "fail-fast fixture only");
+  writeFileSync("customer-after-failure.marker", "ran");
+});
+`,
+	);
+	const consumer = { dataRoot, root, runtimeTempRoot };
+	await seedRole(consumer, "admin", "admin-state");
+	await seedRole(consumer, "customer", "customer-state");
+	return consumer;
 };
 
-const simulatedTtyBootstrap = `import { pathToFileURL } from "node:url";
-const [cliPath, ...cliArgs] = process.argv.slice(1);
-Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
-Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-Object.defineProperty(process.stdout, "getWindowSize", { configurable: true, value: () => [80, 24] });
-process.argv = [process.execPath, cliPath, ...cliArgs];
-await import(pathToFileURL(cliPath).href);
-`;
-
-const runInstalledCliWithSimulatedTty = ({
-	args,
-	consumerRoot,
-	environmentOverrides = {},
-	markerDirectory,
-}: RunInstalledCliArgs): CommandResult => {
-	return runCommand({
-		args: [
-			"--input-type=module",
-			"--eval",
-			simulatedTtyBootstrap,
-			join(
-				consumerRoot,
-				"node_modules",
-				"@sematico",
-				"shopify-e2e",
-				"bin",
-				"run.js",
-			),
-			...args,
-		],
-		command: process.execPath,
-		cwd: consumerRoot,
-		env: createInstalledCliEnvironment(environmentOverrides, markerDirectory),
+const prepareCjsConsumer = async (
+	tarballPath: string,
+): Promise<InstalledConsumer> => {
+	const root = await makeTemporaryDirectory("shopify-e2e-installed-cjs-");
+	const dataRoot = await makeTemporaryDirectory(
+		"shopify-e2e-installed-cjs-role-states-",
+	);
+	const runtimeTempRoot = await makeTemporaryDirectory(
+		"shopify-e2e-installed-cjs-runtime-",
+	);
+	await writeFile(
+		join(root, "package.json"),
+		'{"name":"installed-cjs-consumer","private":true,"type":"commonjs"}\n',
+	);
+	await installPackedPackage({
+		consumerRoot: root,
+		hasPlaywright: true,
+		tarballPath,
 	});
+	await mkdir(join(root, "node_modules", "fixture-dependency"));
+	await writeFile(
+		join(root, "node_modules", "fixture-dependency", "package.json"),
+		'{"name":"fixture-dependency","type":"commonjs","main":"index.cjs"}\n',
+	);
+	await writeFile(
+		join(root, "node_modules", "fixture-dependency", "index.cjs"),
+		'module.exports = { dependencyMarker: "commonjs-dependency", retryCount: 0 };\n',
+	);
+	await mkdir(join(root, "shopify-tests"));
+	await writeFile(
+		join(root, "config-helper.ts"),
+		`import type { PlaywrightTestConfig } from "@playwright/test";
+const { devices } = require("@playwright/test");
+const { dependencyMarker, retryCount } = require("fixture-dependency");
+export const settings = {
+  metadata: { dependencyMarker },
+  retries: retryCount,
+  use: { ...devices["Desktop Chrome"], trace: "off" },
+} satisfies PlaywrightTestConfig;
+`,
+	);
+	await writeFile(
+		join(root, "shopify-e2e.config.ts"),
+		`const { defineShopifyE2EConfig } = require("@sematico/shopify-e2e/config");
+const { settings } = require("./config-helper.ts");
+export default defineShopifyE2EConfig({ ...settings, roles: ["admin"], testDir: "shopify-tests" });
+`,
+	);
+	await writeFile(
+		join(root, "shopify-tests", "admin.spec.ts"),
+		`const { expect, test } = require("@playwright/test");
+test("cjs admin", { tag: "@shopify-e2e-role-admin" }, ({}, testInfo) => {
+  expect(testInfo.config.metadata.dependencyMarker).toBe("commonjs-dependency");
+  expect(testInfo.project.retries).toBe(0);
+  expect(testInfo.project.use.trace).toBe("off");
+  expect(testInfo.project.use.viewport).toEqual({ height: 720, width: 1280 });
+});
+`,
+	);
+	const consumer = { dataRoot, root, runtimeTempRoot };
+	await createRoleStateStore({ dataRoot, origin, roles: ["admin"] }).capture({
+		role: "admin",
+		state: { cookies: [], origins: [] },
+	});
+	return consumer;
 };
 
 describe.sequential("installed CLI release boundary", () => {
-	let consumerRoot = "";
-	let missingPeerConsumerRoot = "";
+	let esm: InstalledConsumer;
+	let cjs: InstalledConsumer;
 
 	beforeAll(async () => {
-		const fixture = await prepareInstalledCliFixture({
-			fixtureRoot,
-			projectRoot,
-		});
-		consumerRoot = fixture.consumerRoot;
-		missingPeerConsumerRoot = fixture.missingPeerConsumerRoot;
-		installedProfileDataRoot = fixture.profileDataRoot;
-		installedRemovalFixture = fixture.removal;
+		const tarballPath = await packVerifiedPackage(projectRoot);
+		[esm, cjs] = await Promise.all([
+			prepareEsmConsumer(tarballPath),
+			prepareCjsConsumer(tarballPath),
+		]);
 	}, 240_000);
 
 	afterAll(cleanupInstalledCliFixture);
 
-	it("provides auth/run help, bundled prompts, version, and explicit command discovery", async () => {
-		const installedPackageRoot = await realpath(
-			join(consumerRoot, "node_modules", "@sematico", "shopify-e2e"),
-		);
-		expect(installedPackageRoot).not.toBe(projectRoot);
-		expect(installedPackageRoot.startsWith(`${projectRoot}/`)).toBe(false);
-
-		const bundledPrompts = runCommand({
-			args: [
-				"--input-type=module",
-				"--eval",
-				'const prompts = await import("@inquirer/prompts"); if (typeof prompts.select !== "function") process.exit(1);',
-			],
-			command: process.execPath,
-			cwd: consumerRoot,
-		});
-		expectSuccess({
-			label: "installed bundled Inquirer import",
-			result: bundledPrompts,
-		});
-
-		const deepImport = runCommand({
-			args: [
-				"--input-type=module",
-				"--eval",
-				'await import("@sematico/shopify-e2e/dist/errors.js");',
-			],
-			command: process.execPath,
-			cwd: consumerRoot,
-		});
-		expect(deepImport.status).not.toBe(0);
-		expect(deepImport.stderr).toContain("ERR_PACKAGE_PATH_NOT_EXPORTED");
-
-		const rootHelp = runInstalledCli({ args: ["--help"], consumerRoot });
-		expectSuccess({ label: "installed root help", result: rootHelp });
-		expect(rootHelp.stdout).toContain("COMMANDS");
-		expect(rootHelp.stdout).toMatch(/\brun\b/);
-		expect(rootHelp.stdout).toMatch(/\bauth\b/);
-		expect(rootHelp.stdout).toContain("auth remove");
-		expect(rootHelp.stdout).toMatch(/\bdoctor\b/);
-		expect(rootHelp.stdout).not.toMatch(/\bsetup\b|\btest\b/);
-
-		const doctorHelp = runInstalledCli({
-			args: ["doctor", "--help"],
-			consumerRoot,
-		});
-		expectSuccess({ label: "installed doctor help", result: doctorHelp });
-		expect(doctorHelp.stdout).toContain("shopify-e2e doctor");
-		expect(doctorHelp.stdout).toContain("--config");
-		expect(doctorHelp.stdout).not.toMatch(
-			/--(?:debug|grep|grep-invert|profile|quiet|verbose|workers)\b/,
-		);
-
-		const runHelp = runInstalledCli({ args: ["run", "--help"], consumerRoot });
-		expectSuccess({ label: "installed run help", result: runHelp });
-		expect(runHelp.stdout).toContain("shopify-e2e run");
-		expect(runHelp.stdout).toContain("--config");
-		expect(runHelp.stdout).toContain("--grep");
-		expect(runHelp.stdout).toContain("--grep-invert");
-		expect(runHelp.stdout).toContain("--profile");
-
-		for (const args of [
-			["auth", "--help"],
-			["auth", "capture", "--help"],
-			["auth", "refresh", "--help"],
-			["auth", "list", "--help"],
-			["auth", "remove", "--help"],
-		]) {
-			const authHelp = runInstalledCli({ args, consumerRoot });
-			expectSuccess({
-				label: `installed ${args.join(" ")} help`,
-				result: authHelp,
-			});
+	it("publishes one role-only CLI surface", () => {
+		const rootHelp = runCli(esm, ["--help"]);
+		const runHelp = runCli(esm, ["run", "--help"]);
+		const authHelp = runCli(esm, ["auth", "--help"]);
+		const version = runCli(esm, ["--version"]);
+		for (const result of [rootHelp, runHelp, authHelp, version]) {
+			expect(result.status, result.stderr).toBe(0);
 		}
-
-		const version = runInstalledCli({ args: ["--version"], consumerRoot });
-		expectSuccess({ label: "installed version", result: version });
-		expect(version.stdout).toMatch(/@sematico\/shopify-e2e\/0\.4\.0/);
+		expect(runHelp.stdout).toContain("--role");
+		expect(runHelp.stdout).toMatch(/repeatable.*omit.*select roles/is);
+		expect(runHelp.stdout).not.toContain("--profile");
+		expect(runHelp.stdout).not.toContain("--config");
+		expect(authHelp.stdout).not.toContain("--profile");
+		expect(version.stdout).toContain("0.6.0");
 	});
 
-	it("refuses unsafe packed removal without Playwright or registry mutation", async () => {
-		const pathsThatMustRemain = [
-			installedRemovalFixture.currentOriginDirectory,
-			installedRemovalFixture.currentProfileDirectory,
-			...installedRemovalFixture.currentSiblingProfileDirectories,
-			installedRemovalFixture.otherOriginDirectory,
-			installedRemovalFixture.otherOriginProfileDirectory,
-		];
-		const registryFiles = [
-			join(installedRemovalFixture.currentOriginDirectory, "origin.json"),
-			...profileFiles(installedRemovalFixture.currentProfileDirectory),
-			...installedRemovalFixture.currentSiblingProfileDirectories.flatMap(
-				profileFiles,
-			),
-			join(installedRemovalFixture.otherOriginDirectory, "origin.json"),
-			...profileFiles(installedRemovalFixture.otherOriginProfileDirectory),
-		];
-		const registryBefore = await digestFiles(registryFiles);
-		for (const args of [
-			["auth", "remove", "--profile", "guest", "--yes"],
-			["auth", "remove", "--profile", "unknown-profile", "--yes"],
-			["auth", "remove", "--profile", installedRemovalFixture.profileName],
-		] as const) {
-			const result = runInstalledCli({
-				args,
-				consumerRoot: missingPeerConsumerRoot,
-			});
-			expect(result.status, `${args.join(" ")}\n${result.stderr}`).toBe(2);
-			expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/playwright/i);
-			for (const path of pathsThatMustRemain) {
-				await expect(access(path), path).resolves.toBeUndefined();
-			}
-			await expect(digestFiles(registryFiles)).resolves.toEqual(registryBefore);
-		}
-	});
-
-	it("lists and removes only the disposable current-origin profile from the packed no-peer consumer", async () => {
-		await expect(
-			access(
-				join(missingPeerConsumerRoot, "node_modules", "@playwright", "test"),
-			),
-		).rejects.toMatchObject({ code: "ENOENT" });
-
-		const before = runInstalledCli({
-			args: ["auth", "list"],
-			consumerRoot: missingPeerConsumerRoot,
-		});
-		expectSuccess({
-			label: "installed auth list before removal",
-			result: before,
-		});
-		expect(before.stdout).toMatch(
-			new RegExp(
-				`${installedRemovalFixture.profileName}\\s+customer\\s+runnable`,
-			),
+	it("runs packed ESM roles serially in one CLI browser lifecycle", async () => {
+		const result = runCli(esm, [
+			"run",
+			"--role",
+			"customer",
+			"--role",
+			"admin",
+		]);
+		expect(result.status, result.stderr).toBe(0);
+		expect(result.stderr).toMatch(/admin: passed[\s\S]*customer: passed/);
+		expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
+			/admin-state|customer-state|PW_TEST_CONNECT|ws:\/\/|shopify-e2e-context-/,
 		);
-		const preservedRegistryFiles = [
-			join(installedRemovalFixture.currentOriginDirectory, "origin.json"),
-			...installedRemovalFixture.currentSiblingProfileDirectories.flatMap(
-				profileFiles,
-			),
-			join(installedRemovalFixture.otherOriginDirectory, "origin.json"),
-			...profileFiles(installedRemovalFixture.otherOriginProfileDirectory),
-		];
-		const preservedRegistryBefore = await digestFiles(preservedRegistryFiles);
-
-		const remove = runInstalledCli({
-			args: [
-				"auth",
-				"remove",
-				"--profile",
-				installedRemovalFixture.profileName,
-				"--yes",
-			],
-			consumerRoot: missingPeerConsumerRoot,
-		});
-		expectSuccess({
-			label: "installed auth remove without peer",
-			result: remove,
-		});
-		expect(remove.stdout).toContain(
-			`Removed saved profile ${installedRemovalFixture.profileName}.`,
-		);
-		expect(`${remove.stdout}\n${remove.stderr}`).not.toMatch(
-			/which profile|remove .*\?|playwright/i,
-		);
-
-		const after = runInstalledCli({
-			args: ["auth", "list"],
-			consumerRoot: missingPeerConsumerRoot,
-		});
-		expectSuccess({
-			label: "installed auth list after removal",
-			result: after,
-		});
-		expect(after.stdout).not.toContain(installedRemovalFixture.profileName);
-		expect(after.stdout).toMatch(/admin-primary\s+admin\s+runnable/i);
-		expect(after.stdout).toMatch(/customer-primary\s+customer\s+runnable/i);
-
 		await expect(
-			access(installedRemovalFixture.currentProfileDirectory),
-		).rejects.toMatchObject({ code: "ENOENT" });
-		await expect(
-			access(installedRemovalFixture.currentOriginDirectory),
-		).resolves.toBeUndefined();
-		for (const path of installedRemovalFixture.currentSiblingProfileDirectories) {
-			await expect(access(path), path).resolves.toBeUndefined();
-		}
-		await expect(
-			access(installedRemovalFixture.otherOriginDirectory),
+			access(join(esm.root, "admin-body.marker")),
 		).resolves.toBeUndefined();
 		await expect(
-			access(installedRemovalFixture.otherOriginProfileDirectory),
+			access(join(esm.root, "customer-body.marker")),
 		).resolves.toBeUndefined();
-		await expect(digestFiles(preservedRegistryFiles)).resolves.toEqual(
-			preservedRegistryBefore,
-		);
-		const currentProfileEntries = await readdir(
-			join(installedRemovalFixture.currentOriginDirectory, "profiles"),
-		);
-		expect(currentProfileEntries).not.toContain(
-			installedRemovalFixture.profileName,
-		);
-		expect(currentProfileEntries).not.toEqual(
-			expect.arrayContaining([expect.stringMatching(/^\.tmp-remove-/)]),
-		);
-	});
-
-	it.each([
-		"admin-primary",
-		"customer-primary",
-	])("embeds only the selected %s state object in the generated config", async (profile) => {
-		const markers = await makeTemporaryDirectory("shopify-e2e-saved-state-");
-		const result = runInstalledCli({
-			args: [
-				"run",
-				"--profile",
-				profile,
-				"--grep",
-				"generated saved state is embedded by value",
-			],
-			consumerRoot,
-			environmentOverrides: {
-				SHOPIFY_E2E_PROFILE_DATA_ROOT_EXPECTED: installedProfileDataRoot,
-				SHOPIFY_E2E_STATE_EXPECTED: profile,
-			},
-			markerDirectory: markers,
-		});
-
-		expectSuccess({ label: `installed ${profile} state run`, result });
-		expect(result.stdout).toMatch(/1 passed/i);
-		expect(`${result.stdout}\n${result.stderr}`).not.toContain(
-			installedProfileDataRoot,
-		);
 		await expect(
-			markerExists({
-				markerDirectory: markers,
-				name: `saved-state-${profile}.marker`,
-			}),
-		).resolves.toBe(true);
-		const otherProfile =
-			profile === "admin-primary" ? "customer-primary" : "admin-primary";
+			access(join(esm.root, "ordinary-config.marker")),
+		).rejects.toThrow();
 		await expect(
-			markerExists({
-				markerDirectory: markers,
-				name: `saved-state-${otherProfile}.marker`,
-			}),
-		).resolves.toBe(false);
-	});
-
-	it("embeds explicit empty state for the synthetic guest profile", async () => {
-		const markers = await makeTemporaryDirectory("shopify-e2e-guest-state-");
-		const result = runInstalledCli({
-			args: [
-				"run",
-				"--profile",
-				"guest",
-				"--grep",
-				"generated guest state is explicitly empty",
-			],
-			consumerRoot,
-			environmentOverrides: {
-				SHOPIFY_E2E_EMPTY_STATE_PROBE: "1",
-				SHOPIFY_E2E_PROFILE_DATA_ROOT_EXPECTED: installedProfileDataRoot,
-			},
-			markerDirectory: markers,
-		});
-
-		expectSuccess({ label: "installed guest empty-state run", result });
-		expect(result.stdout).toMatch(/1 passed/i);
-		expect(`${result.stdout}\n${result.stderr}`).not.toContain(
-			installedProfileDataRoot,
-		);
+			access(join(esm.root, "ordinary-spec.marker")),
+		).rejects.toThrow();
 		await expect(
-			markerExists({
-				markerDirectory: markers,
-				name: "guest-empty-state.marker",
-			}),
-		).resolves.toBe(true);
-	});
-
-	it("rejects a runtime temp directory inside the consumer before writing generated state", async () => {
-		const containedTemp = join(consumerRoot, "consumer-runtime-temp");
-		await mkdir(containedTemp);
-		const before = await generatedConfigDirectories(containedTemp);
-		const result = runInstalledCli({
-			args: ["run", "--profile", "guest"],
-			consumerRoot,
-			environmentOverrides: {
-				TEMP: containedTemp,
-				TMP: containedTemp,
-				TMPDIR: containedTemp,
-			},
-		});
-
-		expect(result.status).toBe(2);
-		expect(result.stderr).toMatch(/temporary directory.*outside/i);
-		expect(await generatedConfigDirectories(containedTemp)).toEqual(before);
-	});
-
-	it("runs only the conventional guest lane in one worker", async () => {
-		const markers = await makeTemporaryDirectory("shopify-e2e-markers-");
-		const result = runInstalledCli({
-			args: ["run", "--profile", "guest"],
-			consumerRoot,
-			markerDirectory: markers,
-		});
-
-		expectSuccess({ label: "installed conventional run", result });
-		expect(result.stdout).toMatch(/3 passed/i);
-		expect(result.stderr).toContain("shopify-e2e.config.ts");
-		expect(result.stderr).toContain("shopify-passing");
-		const firstPid = await readFile(join(markers, "first.marker"), "utf8");
-		const secondPid = await readFile(join(markers, "second.marker"), "utf8");
-		expect(firstPid).toBe(secondPid);
+			access(join(esm.root, "setup.marker")),
+		).resolves.toBeUndefined();
 		await expect(
-			markerExists({ markerDirectory: markers, name: "guest-role.marker" }),
-		).resolves.toBe(true);
+			access(join(esm.root, "teardown.marker")),
+		).resolves.toBeUndefined();
 		await expect(
-			markerExists({
-				markerDirectory: markers,
-				name: "wrong-role-module-loaded.marker",
-			}),
-		).resolves.toBe(true);
-		await expectOrdinaryLaneFixturesPresent(consumerRoot);
-		await expectMarkersAbsent({
-			markerDirectory: markers,
-			names: [
-				"alternate.marker",
-				"failing.marker",
-				"ordinary-config-loaded.marker",
-				"ordinary-spec-loaded.marker",
-				"admin-role.marker",
-				"customer-role.marker",
-				"multi-role.marker",
-				"untagged-role.marker",
-				"wrong-role-body.marker",
-			],
-		});
-	});
-
-	it.each([
-		{
-			absent: [
-				"customer-role.marker",
-				"guest-role.marker",
-				"untagged-role.marker",
-				"wrong-role-body.marker",
-			],
-			passed: 2,
-			present: ["admin-role.marker", "multi-role.marker"],
-			profile: "admin-primary",
-		},
-		{
-			absent: [
-				"admin-role.marker",
-				"guest-role.marker",
-				"untagged-role.marker",
-			],
-			passed: 3,
-			present: [
-				"customer-role.marker",
-				"multi-role.marker",
-				"wrong-role-body.marker",
-			],
-			profile: "customer-primary",
-		},
-	])("runs only the saved $profile role lane", async ({
-		absent,
-		passed,
-		present,
-		profile,
-	}) => {
-		const markers = await makeTemporaryDirectory("shopify-e2e-role-markers-");
-		const result = runInstalledCli({
-			args: ["run", "--profile", profile],
-			consumerRoot,
-			markerDirectory: markers,
-		});
-
-		expectSuccess({ label: `installed ${profile} run`, result });
-		expect(result.stdout).toMatch(new RegExp(`${passed} passed`, "i"));
-		for (const name of present) {
-			await expect(
-				markerExists({ markerDirectory: markers, name }),
-				name,
-			).resolves.toBe(true);
-		}
-		await expectMarkersAbsent({ markerDirectory: markers, names: absent });
-		await expectMarkersAbsent({
-			markerDirectory: markers,
-			names: ["ordinary-config-loaded.marker", "ordinary-spec-loaded.marker"],
-		});
-	});
-
-	it("intersects the mandatory admin lane with allowed title filters", async () => {
-		const narrowed = await makeTemporaryDirectory("shopify-e2e-narrowed-");
-		const grepResult = runInstalledCli({
-			args: ["run", "--profile", "admin-primary", "--grep", "multi role"],
-			consumerRoot,
-			markerDirectory: narrowed,
-		});
-		expectSuccess({ label: "installed role grep", result: grepResult });
-		expect(grepResult.stdout).toMatch(/1 passed/i);
-		await expect(
-			markerExists({ markerDirectory: narrowed, name: "multi-role.marker" }),
-		).resolves.toBe(true);
-		await expectMarkersAbsent({
-			markerDirectory: narrowed,
-			names: ["admin-role.marker", "customer-role.marker", "guest-role.marker"],
-		});
-
-		const inverted = await makeTemporaryDirectory("shopify-e2e-inverted-");
-		const invertResult = runInstalledCli({
-			args: [
-				"run",
-				"--profile",
-				"admin-primary",
-				"--grep-invert",
-				"multi role",
-			],
-			consumerRoot,
-			markerDirectory: inverted,
-		});
-		expectSuccess({
-			label: "installed role grep-invert",
-			result: invertResult,
-		});
-		expect(invertResult.stdout).toMatch(/1 passed/i);
-		await expect(
-			markerExists({ markerDirectory: inverted, name: "admin-role.marker" }),
-		).resolves.toBe(true);
-		await expectMarkersAbsent({
-			markerDirectory: inverted,
-			names: ["multi-role.marker", "customer-role.marker", "guest-role.marker"],
-		});
-	});
-
-	it("keeps auth help and listing independent from a Playwright peer", () => {
-		const list = runInstalledCli({
-			args: ["auth", "list"],
-			consumerRoot: missingPeerConsumerRoot,
-		});
-		expectSuccess({ label: "installed auth list without peer", result: list });
-		expect(list.stdout).toMatch(/admin-primary\s+admin\s+runnable/i);
-		expect(list.stderr).not.toMatch(/playwright/i);
-
-		const menu = runInstalledCli({
-			args: ["auth"],
-			consumerRoot: missingPeerConsumerRoot,
-		});
-		expect(menu.status).toBe(2);
-		expect(menu.stderr).toMatch(/interactive terminal/i);
-		expect(menu.stderr).not.toMatch(/install compatible @playwright/i);
-	});
-
-	it.each([
-		["run", "ordinary.spec.ts"],
-		["run", "--workers", "2"],
-		["run", "--project", "ordinary"],
-		["run", "--reporter", "html"],
-		["run", "--ui"],
-		["run", "--debug"],
-		["run", "--headed"],
-		["run", "--trace", "on"],
-	])("rejects installed unrestricted input before execution: %s", (...args) => {
-		const result = runInstalledCli({ args, consumerRoot });
-		expect(result.status).toBe(2);
-	});
-
-	it("loads consumer .env in the packed CLI and preserves shell precedence", async () => {
-		const dotenvPath = join(consumerRoot, ".env");
-		await writeFile(
-			dotenvPath,
-			"SHOPIFY_E2E_DOTENV_SENTINEL=from-installed-dotenv\nDOTENV_CONFIG_DEBUG=1\nDOTENV_CONFIG_QUIET=false\n",
-		);
-
-		try {
-			const dotenvResult = runInstalledCli({
-				args: [
-					"run",
-					"--profile",
-					"guest",
-					"--config",
-					"dotenv-shopify-e2e.config.ts",
-				],
-				consumerRoot,
-				environmentOverrides: {
-					DOTENV_CONFIG_DEBUG: undefined,
-					DOTENV_CONFIG_QUIET: undefined,
-					SHOPIFY_E2E_DOTENV_EXPECTED: "from-installed-dotenv",
-					SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG: "1",
-					SHOPIFY_E2E_DOTENV_EXPECTED_QUIET: "false",
-					SHOPIFY_E2E_DOTENV_SENTINEL: undefined,
-				},
-			});
-			expectSuccess({ label: "installed dotenv run", result: dotenvResult });
-			expect(dotenvResult.stdout).toMatch(/1 passed/i);
-			expect(`${dotenvResult.stdout}\n${dotenvResult.stderr}`).not.toMatch(
-				dotenvOutputPattern,
-			);
-
-			const shellResult = runInstalledCli({
-				args: [
-					"run",
-					"--profile",
-					"guest",
-					"--config",
-					"dotenv-shopify-e2e.config.ts",
-				],
-				consumerRoot,
-				environmentOverrides: {
-					DOTENV_CONFIG_DEBUG: "1",
-					DOTENV_CONFIG_QUIET: "false",
-					SHOPIFY_E2E_DOTENV_EXPECTED: "",
-					SHOPIFY_E2E_DOTENV_EXPECTED_DEBUG: "1",
-					SHOPIFY_E2E_DOTENV_EXPECTED_QUIET: "false",
-					SHOPIFY_E2E_DOTENV_SENTINEL: "",
-				},
-			});
-			expectSuccess({
-				label: "installed dotenv shell precedence run",
-				result: shellResult,
-			});
-			expect(shellResult.stdout).toMatch(/1 passed/i);
-			expect(`${shellResult.stdout}\n${shellResult.stderr}`).not.toMatch(
-				dotenvOutputPattern,
-			);
-		} finally {
-			await rm(dotenvPath, { force: true });
-		}
-	});
-
-	it("uses --config to run only the alternate Shopify lane", async () => {
-		const markers = await makeTemporaryDirectory("shopify-e2e-markers-");
-		const result = runInstalledCli({
-			args: [
-				"run",
-				"--profile",
-				"guest",
-				"--config",
-				"alternate-shopify-e2e.config.ts",
-			],
-			consumerRoot,
-			markerDirectory: markers,
-		});
-
-		expectSuccess({ label: "installed alternate run", result });
-		expect(result.stdout).toMatch(/1 passed/i);
-		await expect(
-			markerExists({ markerDirectory: markers, name: "alternate.marker" }),
-		).resolves.toBe(true);
-		await expectOrdinaryLaneFixturesPresent(consumerRoot);
-		await expectMarkersAbsent({
-			markerDirectory: markers,
-			names: [
-				"first.marker",
-				"second.marker",
-				"failing.marker",
-				"ordinary-config-loaded.marker",
-				"ordinary-spec-loaded.marker",
-			],
-		});
-	});
-
-	it.each([
-		{
-			args: ["auth", "capture", "--role", "admin", "--profile", "new-admin"],
-			label: "capture",
-			tty: true,
-		},
-		{
-			args: ["auth", "refresh", "--profile", "admin-primary"],
-			label: "refresh",
-			tty: true,
-		},
-		{
-			args: ["run", "--profile", "guest"],
-			label: "run",
-			tty: false,
-		},
-	])("fails installed $label at the consumer-owned peer boundary", async ({
-		args,
-		label,
-		tty,
-	}) => {
-		const markers = await makeTemporaryDirectory("shopify-e2e-no-peer-");
-		const result = (tty ? runInstalledCliWithSimulatedTty : runInstalledCli)({
-			args,
-			consumerRoot: missingPeerConsumerRoot,
-			markerDirectory: markers,
-		});
-
+			access(join(esm.root, "web-server.marker")),
+		).resolves.toBeUndefined();
 		expect(
-			result.status,
-			`installed ${label} peer failure\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-		).toBe(2);
-		expect(result.stderr).toMatch(
-			/consumer project must install compatible @playwright\/test/i,
-		);
-		expect(result.stderr).not.toMatch(/node_modules.*(?:\.js|\.ts):\d+/i);
-		await expectMarkersAbsent({
-			markerDirectory: markers,
-			names: ["first.marker", "second.marker"],
-		});
-	});
-
-	it("rejects an incompatible installed consumer peer before execution", async () => {
-		const markers = await makeTemporaryDirectory(
-			"shopify-e2e-incompatible-peer-",
-		);
-		const metadataPath = join(
-			consumerRoot,
-			"node_modules",
-			"@playwright",
-			"test",
-			"package.json",
-		);
-		const originalMetadata = await readFile(metadataPath, "utf8");
-		const metadata = JSON.parse(originalMetadata) as Record<string, unknown>;
-		await writeFile(
-			metadataPath,
-			`${JSON.stringify({ ...metadata, version: "1.62.0" }, null, 2)}\n`,
-		);
-
-		try {
-			const result = runInstalledCli({
-				args: ["run", "--profile", "guest"],
-				consumerRoot,
-				markerDirectory: markers,
-			});
-
-			expect(
-				result.status,
-				`installed incompatible peer failure\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-			).toBe(2);
-			expect(result.stderr).toMatch(
-				/@playwright\/test version must satisfy >=1\.61\.1 <1\.62\.0/i,
-			);
-			expect(result.stderr).not.toMatch(/node_modules.*(?:\.js|\.ts):\d+/i);
-		} finally {
-			await writeFile(metadataPath, originalMetadata);
-		}
-
-		await expectMarkersAbsent({
-			markerDirectory: markers,
-			names: ["first.marker", "second.marker"],
-		});
-	});
-
-	it("force-stops a hung release-gate subprocess at its deadline", () => {
-		const startedAt = Date.now();
-		const result = runCommand({
-			args: ["--input-type=module", "--eval", "setInterval(() => {}, 1_000);"],
-			command: process.execPath,
-			cwd: projectRoot,
-			timeoutMs: 100,
-		});
-
-		expect(result.status).toBeNull();
-		expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(
-			"ETIMEDOUT",
-		);
-		expect(Date.now() - startedAt).toBeLessThan(5_000);
-	});
-
-	it("preserves the failing Shopify lane result without touching other lanes", async () => {
-		const markers = await makeTemporaryDirectory("shopify-e2e-markers-");
-		const result = runInstalledCli({
-			args: [
-				"run",
-				"--profile",
-				"guest",
-				"--config",
-				"failing-shopify-e2e.config.ts",
-			],
-			consumerRoot,
-			markerDirectory: markers,
-		});
-
-		expect(result.status).toBe(1);
-		expect(result.stdout).toMatch(/1 failed/i);
-		await expect(
-			markerExists({ markerDirectory: markers, name: "failing.marker" }),
-		).resolves.toBe(true);
-		await expectOrdinaryLaneFixturesPresent(consumerRoot);
-		await expectMarkersAbsent({
-			markerDirectory: markers,
-			names: [
-				"first.marker",
-				"second.marker",
-				"alternate.marker",
-				"ordinary-config-loaded.marker",
-				"ordinary-spec-loaded.marker",
-			],
-		});
+			(await readFile(join(esm.root, "repeat.marker"), "utf8"))
+				.trim()
+				.split("\n")
+				.sort(),
+		).toEqual(["0", "1"]);
+		expect(
+			(await readFile(join(esm.root, "lifecycle.marker"), "utf8"))
+				.trim()
+				.split("\n"),
+		).toEqual([
+			"setup",
+			"admin",
+			"admin",
+			"teardown",
+			"setup",
+			"customer",
+			"customer",
+			"teardown",
+		]);
+		const report = JSON.parse(
+			await readFile(join(esm.root, "artifacts", "results.json"), "utf8"),
+		) as { config: { workers: number } };
+		expect(report.config.workers).toBe(1);
 	});
 
 	it.skipIf(process.platform === "win32")(
-		"forwards a real SIGTERM, returns 143, and cleans the generated config and child tree",
+		"fails fast in the packed CLI and closes every browser descendant",
 		async () => {
-			const markers = await makeTemporaryDirectory("shopify-e2e-markers-");
-			const runtimeTemp = await makeTemporaryDirectory("shopify-e2e-runtime-");
-			const generatedBefore = await generatedConfigDirectories(runtimeTemp);
 			const child = spawn(
-				installedCliPath(consumerRoot),
-				["run", "--profile", "guest"],
+				installedCliPath(esm.root),
+				[
+					"run",
+					"--role",
+					"admin",
+					"--role",
+					"customer",
+					"--grep",
+					"fail-fast lane|after failure lane",
+				],
 				{
-					cwd: consumerRoot,
+					cwd: esm.root,
+					env: {
+						...process.env,
+						NO_COLOR: "1",
+						SHOPIFY_E2E_DATA_DIR: esm.dataRoot,
+						SHOPIFY_E2E_FAIL_FAST_ACTIVE: "1",
+						SHOPIFY_STORE_URL: origin,
+						TEMP: esm.runtimeTempRoot,
+						TMP: esm.runtimeTempRoot,
+						TMPDIR: esm.runtimeTempRoot,
+					},
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
+			let stderr = "";
+			child.stderr?.setEncoding("utf8");
+			child.stderr?.on("data", (chunk: string) => {
+				stderr += chunk;
+			});
+			const marker = join(esm.root, "admin-fail-fast.marker");
+			await expect
+				.poll(
+					async () =>
+						access(marker).then(
+							() => true,
+							() => false,
+						),
+					{ interval: 25, timeout: 10_000 },
+				)
+				.toBe(true);
+			const cliPid = child.pid;
+			if (cliPid === undefined) throw new Error("Packed CLI did not start");
+			const descendants = descendantPids(cliPid);
+			expect(descendants.length).toBeGreaterThanOrEqual(2);
+			await waitForChildToExit(child, 10_000);
+			expect(child.exitCode, stderr).toBe(1);
+			expect(stderr).toMatch(/admin: failed[\s\S]*customer: not-run/);
+			await expect(
+				access(join(esm.root, "customer-after-failure.marker")),
+			).rejects.toThrow();
+			await Promise.all(
+				descendants.map((pid) => waitForProcessToExit(pid, 5_000)),
+			);
+		},
+		20_000,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"forwards real SIGTERM through the packed CLI and cleans descendants and context",
+		async () => {
+			const markerDirectory = await makeTemporaryDirectory(
+				"shopify-e2e-installed-signal-",
+			);
+			const child = spawn(
+				installedCliPath(esm.root),
+				["run", "--role", "admin", "--grep", "admin interrupt lane"],
+				{
+					cwd: esm.root,
 					detached: true,
 					env: {
 						...process.env,
 						NO_COLOR: "1",
+						SHOPIFY_E2E_DATA_DIR: esm.dataRoot,
 						SHOPIFY_E2E_INTERRUPT_ACTIVE: "1",
-						SHOPIFY_E2E_MARKER_DIR: markers,
-						SHOPIFY_STORE_URL: "https://shop.example",
-						TEMP: runtimeTemp,
-						TMP: runtimeTemp,
-						TMPDIR: runtimeTemp,
+						SHOPIFY_E2E_MARKER_DIR: markerDirectory,
+						SHOPIFY_STORE_URL: origin,
+						TEMP: esm.runtimeTempRoot,
+						TMP: esm.runtimeTempRoot,
+						TMPDIR: esm.runtimeTempRoot,
 					},
 					stdio: ["ignore", "pipe", "pipe"],
 				},
@@ -921,62 +613,125 @@ describe.sequential("installed CLI release boundary", () => {
 			child.stderr?.on("data", (chunk: string) => {
 				stderr += chunk;
 			});
-			let interruptedProcess:
-				| { readonly pid: number; readonly ppid: number }
-				| undefined;
-			let isCleanupVerified = false;
+			const outcome = new Promise<{
+				readonly code: number | null;
+				readonly signal: NodeJS.Signals | null;
+			}>((resolveOutcome, rejectOutcome) => {
+				child.once("error", rejectOutcome);
+				child.once("exit", (code, signal) => resolveOutcome({ code, signal }));
+			});
+			let descendants: readonly number[] = [];
+			let consumerWebServers: readonly number[] = [];
+			let verified = false;
 
 			try {
-				await waitForMarker({
-					markerDirectory: markers,
-					name: "interrupt-started.marker",
-					timeoutMs: 10_000,
-				});
-				interruptedProcess = JSON.parse(
-					await readFile(join(markers, "interrupt-started.marker"), "utf8"),
-				) as { readonly pid: number; readonly ppid: number };
+				const markerPath = join(markerDirectory, "interrupt-started.marker");
+				await expect
+					.poll(
+						async () =>
+							access(markerPath).then(
+								() => true,
+								() => false,
+							),
+						{ interval: 25, timeout: 10_000 },
+					)
+					.toBe(true);
+				const active = JSON.parse(await readFile(markerPath, "utf8")) as {
+					readonly pid: number;
+					readonly ppid: number;
+				};
 				expect(child.pid).toBeTypeOf("number");
-				const outcomePromise = new Promise<{
-					readonly code: number | null;
-					readonly signal: NodeJS.Signals | null;
-				}>((resolveOutcome, rejectOutcome) => {
-					child.once("error", rejectOutcome);
-					child.once("exit", (code, signal) =>
-						resolveOutcome({ code, signal }),
-					);
-				});
-				process.kill(child.pid as number, "SIGTERM");
-				const outcome = await outcomePromise;
+				const activeDescendants = descendantPids(child.pid as number);
+				consumerWebServers = activeDescendants.filter((pid) =>
+					processCommand(pid).includes("web-server.mjs"),
+				);
+				descendants = activeDescendants.filter(
+					(pid) => !consumerWebServers.includes(pid),
+				);
+				expect(descendants).toEqual(
+					expect.arrayContaining([active.pid, active.ppid]),
+				);
+				signalProcess(child.pid as number, "SIGTERM");
 
 				expect(
-					outcome,
+					await outcome,
 					`interrupted installed CLI\nstdout:\n${stdout}\nstderr:\n${stderr}`,
 				).toEqual({ code: 143, signal: null });
 				expect(stderr).toContain("Command interrupted by SIGTERM");
-				expect(stderr).not.toContain("no tests started");
-				await waitForProcessToExit({
-					pid: interruptedProcess.pid,
-					timeoutMs: 5_000,
-				});
-				await waitForProcessToExit({
-					pid: interruptedProcess.ppid,
-					timeoutMs: 5_000,
-				});
-				expect(await generatedConfigDirectories(runtimeTemp)).toEqual(
-					generatedBefore,
+				await Promise.all(
+					descendants.map((pid) => waitForProcessToExit(pid, 5_000)),
 				);
-				isCleanupVerified = true;
+				await Promise.all(
+					consumerWebServers.map((pid) => waitForProcessToExit(pid, 5_000)),
+				);
+				expect(
+					(await readdir(esm.runtimeTempRoot)).some((entry) =>
+						entry.startsWith("shopify-e2e-context-"),
+					),
+				).toBe(false);
+				verified = true;
 			} finally {
-				if (!isCleanupVerified) {
-					await terminateAndAwaitProcesses({
-						child,
-						descendantPids: interruptedProcess
-							? [interruptedProcess.pid, interruptedProcess.ppid]
-							: [],
-					});
+				if (!verified) {
+					for (const pid of [...descendants, ...consumerWebServers]) {
+						signalProcess(pid, "SIGKILL");
+					}
+					if (
+						child.pid &&
+						child.exitCode === null &&
+						child.signalCode === null
+					) {
+						child.kill("SIGKILL");
+					}
+					await Promise.allSettled([
+						...[...descendants, ...consumerWebServers].map((pid) =>
+							waitForProcessToExit(pid, 1_000),
+						),
+						waitForChildToExit(child, 1_000),
+					]);
 				}
 			}
 		},
 		20_000,
 	);
+
+	it("loads and runs the packed helper from a CommonJS consumer", () => {
+		const helper = spawnSync(
+			process.execPath,
+			[
+				"-e",
+				'const c=require("@sematico/shopify-e2e/config"); if(typeof c.defineShopifyE2EConfig!=="function") process.exit(9)',
+			],
+			{ cwd: cjs.root, encoding: "utf8" },
+		);
+		expect(helper.status, helper.stderr).toBe(0);
+		const result = runCli(cjs, ["run", "--role", "admin"]);
+		expect(result.status, result.stderr).toBe(0);
+	});
+
+	it("lists and removes exactly one packed role state without loading Playwright", () => {
+		const list = runCli(esm, ["auth", "list"]);
+		expect(list.status, list.stderr).toBe(0);
+		expect(list.stdout).toContain("admin\tready");
+		expect(list.stdout).toContain("customer\tready");
+		const removed = runCli(esm, [
+			"auth",
+			"remove",
+			"--role",
+			"customer",
+			"--yes",
+		]);
+		expect(removed.status, removed.stderr).toBe(0);
+		const after = runCli(esm, ["auth", "list"]);
+		expect(after.stdout).toContain("admin\tready");
+		expect(after.stdout).toContain("customer\tmissing");
+	});
+
+	it("leaves no package-created execution context after packed runs", async () => {
+		for (const consumer of [esm, cjs]) {
+			const entries = await readdir(consumer.runtimeTempRoot);
+			expect(
+				entries.some((entry) => entry.startsWith("shopify-e2e-context-")),
+			).toBe(false);
+		}
+	});
 });

@@ -15,7 +15,7 @@ import {
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
-import { configuredOriginFromEnvironment } from "../profiles/configured-origin.js";
+import { configuredOriginFromEnvironment } from "../role-states/configured-origin.cjs";
 
 export const DOCTOR_CHECK_ORDER = [
 	"project",
@@ -42,7 +42,6 @@ export interface DoctorReport {
 }
 
 interface DoctorOptions {
-	readonly configPath?: string;
 	readonly cwd: string;
 	readonly environment: NodeJS.ProcessEnv;
 	readonly signal: AbortSignal;
@@ -102,6 +101,16 @@ const classifyError = (
 		id,
 		status: "ERROR",
 	};
+};
+
+const classifyStoreUrlError = (
+	error: unknown,
+	detail: string,
+): DoctorCheckResult => {
+	if (error instanceof TypeError) {
+		return { detail, id: "store-url", status: "FAIL" };
+	}
+	return classifyError("store-url", error, detail);
 };
 
 const reportFrom = (
@@ -189,8 +198,7 @@ export const orchestrateDoctor = async ({
 		} catch (error) {
 			results.set(
 				"store-url",
-				classifyError(
-					"store-url",
+				classifyStoreUrlError(
 					error,
 					"SHOPIFY_STORE_URL must be an absolute HTTPS URL without credentials",
 				),
@@ -201,7 +209,7 @@ export const orchestrateDoctor = async ({
 			"config",
 			() =>
 				dependencies.loadConfig({
-					configPath: options.configPath,
+					environment: options.environment,
 					projectRoot,
 				}),
 			options.signal,
@@ -215,7 +223,7 @@ export const orchestrateDoctor = async ({
 				"config",
 				pass(
 					"config",
-					`Dedicated Shopify config loaded: ${config.value.configPath}`,
+					`Package-owned Shopify config checks passed: ${config.value.configPath}`,
 				),
 			);
 		}
@@ -231,8 +239,7 @@ export const orchestrateDoctor = async ({
 			} catch (error) {
 				results.set(
 					"store-url",
-					classifyError(
-						"store-url",
+					classifyStoreUrlError(
 						error,
 						"Trusted config must not remove or change SHOPIFY_STORE_URL origin",
 					),
@@ -253,7 +260,7 @@ export const orchestrateDoctor = async ({
 				"specs",
 				pass(
 					"specs",
-					`${specs.value.length} Playwright spec candidate(s) found: ${loadedConfig.testDir}`,
+					`${specs.value.length} JavaScript/TypeScript file candidate(s) found: ${loadedConfig.testDir}`,
 				),
 			);
 		}

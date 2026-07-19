@@ -5,10 +5,10 @@ import { pathToFileURL } from "node:url";
 
 import semver from "semver";
 
-import type { CaptureBrowser } from "../auth/capture-profile.js";
+import type { CaptureBrowser } from "../auth/capture-role-state.js";
 import { ShopifyE2EPreflightError } from "../errors.js";
 import { PACKAGE_ROOT } from "../package-root.js";
-import { isPathContained } from "../path-boundary.utils.js";
+import { isPathContained } from "../path-boundary.utils.cjs";
 
 const SUPPORTED_PLAYWRIGHT_RANGE = ">=1.61.1 <1.62.0";
 export interface ResolvedPlaywrightPeer {
@@ -19,6 +19,41 @@ export interface ResolvedPlaywrightPeer {
 export interface ConsumerChromiumLauncher {
 	readonly executablePath?: () => string;
 	launch(options: { readonly headless: boolean }): Promise<CaptureBrowser>;
+	readonly launchServer: (
+		options: BrowserServerLaunchOptions,
+	) => Promise<ConsumerBrowserServer>;
+}
+
+export interface BrowserServerLaunchOptions {
+	readonly args?: readonly string[];
+	readonly artifactsDir?: string;
+	readonly channel?: string;
+	readonly chromiumSandbox?: boolean;
+	readonly downloadsPath?: string;
+	readonly env?: Readonly<Record<string, string | undefined>>;
+	readonly executablePath?: string;
+	readonly handleSIGHUP: true;
+	readonly handleSIGINT: false;
+	readonly handleSIGTERM: false;
+	readonly headless: false;
+	readonly host: "127.0.0.1";
+	readonly ignoreDefaultArgs?: boolean | readonly string[];
+	readonly port: 0;
+	readonly proxy?: {
+		readonly bypass?: string;
+		readonly password?: string;
+		readonly server: string;
+		readonly username?: string;
+	};
+	readonly timeout?: number;
+}
+
+export interface ConsumerBrowserServer {
+	close(): Promise<unknown>;
+	kill(): Promise<unknown>;
+	off(event: "close", listener: () => void): unknown;
+	on(event: "close", listener: () => void): unknown;
+	wsEndpoint(): string;
 }
 
 const isModuleApi = (value: unknown): value is Record<string, unknown> =>
@@ -268,6 +303,8 @@ export const loadConsumerChromium = async (
 		publicApi.chromium === null ||
 		!("launch" in publicApi.chromium) ||
 		typeof publicApi.chromium.launch !== "function" ||
+		!("launchServer" in publicApi.chromium) ||
+		typeof publicApi.chromium.launchServer !== "function" ||
 		!("executablePath" in publicApi.chromium) ||
 		typeof publicApi.chromium.executablePath !== "function"
 	) {

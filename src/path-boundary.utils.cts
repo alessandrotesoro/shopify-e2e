@@ -17,3 +17,7 @@ export const isPathContained = ({
 			!isAbsolute(pathFromParent))
 	);
 };
+
+export const isPathStrictlyContained = (
+	options: IsPathContainedArgs,
+): boolean => options.candidate !== options.parent && isPathContained(options);

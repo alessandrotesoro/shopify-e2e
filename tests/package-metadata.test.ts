@@ -34,12 +34,19 @@ describe("package metadata", () => {
 		const packageJson = await readPackage();
 
 		expect(packageJson.name).toBe("@sematico/shopify-e2e");
-		expect(packageJson.version).toBe("0.4.0");
+		expect(packageJson.version).toBe("0.6.0");
 		expect(packageJson.engines).toEqual({ node: ">=20" });
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.bin).toEqual({ "shopify-e2e": "./bin/run.js" });
 		expect(packageJson.files).toEqual(["bin", "dist", "LICENSE"]);
-		expect(packageJson.exports).toEqual({});
+		expect(packageJson.exports).toEqual({
+			"./config": {
+				default: "./dist/config/public.cjs",
+				import: "./dist/config/public.cjs",
+				require: "./dist/config/public.cjs",
+				types: "./dist/config/public.d.cts",
+			},
+		});
 	});
 
 	it("pins the shell dependencies and declares the supported Playwright peer", async () => {
@@ -49,7 +56,7 @@ describe("package metadata", () => {
 			"@inquirer/prompts": "7.10.1",
 			"@oclif/core": "4.11.14",
 			dotenv: "17.4.2",
-			jiti: "^2.6.1",
+			jiti: "2.7.0",
 			semver: "^7.7.4",
 		});
 		expect(packageJson.devDependencies).toMatchObject({
@@ -65,14 +72,21 @@ describe("package metadata", () => {
 		});
 	});
 
-	it("coordinates the 0.4.0 release and prompt pin in the lockfile", async () => {
+	it("pins the package-owned Jiti implementation exactly", async () => {
 		const lockfile = await readPackageLock();
 
-		expect(lockfile.version).toBe("0.4.0");
+		expect(lockfile.packages[""]?.dependencies?.jiti).toBe("2.7.0");
+		expect(lockfile.packages["node_modules/jiti"]?.version).toBe("2.7.0");
+	});
+
+	it("coordinates the 0.6.0 release and prompt pin in the lockfile", async () => {
+		const lockfile = await readPackageLock();
+
+		expect(lockfile.version).toBe("0.6.0");
 		expect(lockfile.packages[""]).toMatchObject({
 			dependencies: { "@inquirer/prompts": "7.10.1" },
 			engines: { node: ">=20" },
-			version: "0.4.0",
+			version: "0.6.0",
 		});
 		expect(lockfile.packages["node_modules/@inquirer/prompts"]?.version).toBe(
 			"7.10.1",
@@ -101,10 +115,10 @@ describe("package metadata", () => {
 		const packageJson = await readPackage();
 
 		expect(packageJson.scripts).toMatchObject({
-			"test:browser:profiles":
-				"npm run build && vitest run tests/browser-profile-isolation.test.ts",
+			"test:browser:roles":
+				"npm run build && vitest run tests/browser-role-isolation.test.ts",
 			"test:fast":
-				"vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/browser-profile-isolation.test.ts",
+				"vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/browser-role-isolation.test.ts",
 			"test:installed:built":
 				"vitest run tests/installed-cli.test.ts tests/installed-doctor-cli.test.ts",
 			verify:

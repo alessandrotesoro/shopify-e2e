@@ -15,28 +15,36 @@ import {
 	resolvePlaywrightPeer,
 } from "../playwright/peer.js";
 import {
+	CommandSignalError,
+	commandSignalFromReason,
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
-import {
-	configuredOriginFromEnvironment,
-	resolveProfileDataRoot,
-} from "../profiles/configured-origin.js";
-import {
-	createProfileStore,
-	EMPTY_STORAGE_STATE,
-	type ProfileSelection,
-	type ProfileStore,
-	type ProfileSummary,
-} from "../profiles/profile-store.js";
 import type { PromptFunctions } from "../prompts/inquirer.js";
-import { captureBrowserProfile } from "./capture-profile.js";
+import { resolveRoleStateDataRoot } from "../role-states/data-root.js";
+import {
+	assertConfiguredRole,
+	configuredOriginForCommand,
+	invalidStateForRole,
+	missingState,
+	unknownRole,
+	unsafeCollision,
+} from "../role-states/preflight.js";
+import {
+	createRoleStateStore,
+	type RoleStateSelection,
+	type RoleStateStore,
+	type RoleStateSummary,
+} from "../role-states/role-state-store.js";
+import type { PlaywrightStorageState } from "../storage-state/schema.cjs";
+import { captureBrowserRoleState } from "./capture-role-state.js";
 
 export type AuthAction = "capture" | "list" | "menu" | "refresh" | "remove";
 
+export class AuthMutationCommittedSignalError extends CommandSignalError {}
+
 export interface AuthOrchestratorOptions {
 	readonly action: AuthAction;
-	readonly configPath?: string;
 	readonly cwd: string;
 	readonly dataDir: string;
 	readonly environment: NodeJS.ProcessEnv;
@@ -44,36 +52,32 @@ export interface AuthOrchestratorOptions {
 	readonly interactive: boolean;
 	readonly output?: NodeJS.WritableStream;
 	readonly packageRoot: string;
-	readonly profile?: string;
 	readonly role?: string;
 	readonly signal: AbortSignal;
 	readonly yes?: boolean;
 }
 
 export interface AuthOrchestratorDependencies {
-	readonly captureProfile: typeof captureBrowserProfile;
+	readonly captureRoleState: typeof captureBrowserRoleState;
 	readonly createStore: (options: {
 		readonly dataRoot: string;
 		readonly origin: string;
-		readonly roles: LoadedShopifyConfig["roles"];
-	}) => ProfileStore;
+		readonly roles: readonly string[];
+	}) => RoleStateStore;
+	readonly loadChromium: typeof loadConsumerChromium;
 	readonly loadConfig: typeof loadShopifyConfig;
 	readonly loadEnvironment: (
 		options: LoadEnvironmentOptions,
 	) => Promise<string>;
 	readonly prompts: PromptFunctions;
 	readonly report: (message: string) => void;
-	readonly resolveDataRoot: typeof resolveProfileDataRoot;
+	readonly resolveDataRoot: typeof resolveRoleStateDataRoot;
 	readonly resolvePeer: typeof resolvePlaywrightPeer;
-	readonly loadChromium: typeof loadConsumerChromium;
 }
 
-const requireInteractive = (options: AuthOrchestratorOptions): void => {
-	if (!options.interactive) {
-		throw new ShopifyE2EPreflightError(
-			"This auth flow requires an interactive terminal. Use `auth list` for non-interactive inspection.",
-		);
-	}
+const EMPTY_STORAGE_STATE: PlaywrightStorageState = {
+	cookies: [],
+	origins: [],
 };
 
 const createPromptContext = (options: AuthOrchestratorOptions) => ({
@@ -82,43 +86,121 @@ const createPromptContext = (options: AuthOrchestratorOptions) => ({
 	signal: options.signal,
 });
 
-const selectSavedProfile = async (
-	summaries: readonly ProfileSummary[],
-	store: ProfileStore,
+const throwIfMutationCommittedDuringSignal = (
+	signal: AbortSignal,
+	role: string,
+	action: "captured" | "refreshed" | "removed",
+): void => {
+	if (!signal.aborted) return;
+	throw new AuthMutationCommittedSignalError(
+		commandSignalFromReason(signal.reason),
+		`Authentication interrupted after role state for ${role} was ${action}; the change completed. Run \`auth list\` to verify the current state.`,
+	);
+};
+
+const requireInteractive = (
 	options: AuthOrchestratorOptions,
-	dependencies: AuthOrchestratorDependencies,
-): Promise<Extract<ProfileSelection, { kind: "saved" }>> => {
-	const saved = summaries.filter((summary) => summary.status === "runnable");
-	if (saved.length === 0) {
-		throw new ShopifyE2EPreflightError(
-			"No runnable saved profile is available. Capture one first.",
-		);
+	message = "This authentication action requires an interactive terminal. Run it from a terminal with a TTY.",
+): void => {
+	if (!options.interactive) throw new ShopifyE2EPreflightError(message);
+};
+
+const validateTerminalMode = (options: AuthOrchestratorOptions): void => {
+	switch (options.action) {
+		case "capture":
+		case "refresh":
+			requireInteractive(options);
+			return;
+		case "menu":
+			requireInteractive(
+				options,
+				"Bare `shopify-e2e auth` requires an interactive terminal. Use `auth capture`, `auth refresh`, `auth remove`, or `auth list` directly.",
+			);
+			return;
+		case "remove":
+			if (
+				!options.interactive &&
+				(options.role === undefined || options.yes !== true)
+			) {
+				throw new ShopifyE2EPreflightError(
+					"Non-interactive role-state removal requires both --role and --yes",
+				);
+			}
+			return;
+		case "list":
+			return;
+		default: {
+			const unsupportedAction: never = options.action;
+			throw new ShopifyE2EInfrastructureError(
+				"Authentication action could not be resolved",
+				{ cause: unsupportedAction },
+			);
+		}
 	}
-	requireInteractive(options);
-	const name = await runWithCommandSignal(
+};
+
+const roleSummary = (
+	summaries: readonly RoleStateSummary[],
+	role: string,
+): RoleStateSummary | undefined =>
+	summaries.find((summary) => summary.role === role);
+
+const readyCapture = (role: string): ShopifyE2EPreflightError =>
+	new ShopifyE2EPreflightError(
+		`Role ${role} already has saved state. Run \`shopify-e2e auth refresh --role ${role}\`.`,
+	);
+
+const classifyInvalidState = async (
+	store: RoleStateStore,
+	role: string,
+): Promise<ShopifyE2EPreflightError> =>
+	invalidStateForRole(role, await store.removableRoles());
+
+const resolveConfiguredSummary = async (
+	config: LoadedShopifyConfig,
+	store: RoleStateStore,
+	role: string,
+): Promise<RoleStateSummary> => {
+	const selectedRole = assertConfiguredRole(config.roles, role);
+	const summary = roleSummary(await store.list(), selectedRole);
+	if (!summary) throw unknownRole(selectedRole);
+	return summary;
+};
+
+interface SelectRoleArgs {
+	readonly candidates: readonly string[];
+	readonly emptyMessage: string;
+	readonly message: string;
+	readonly options: AuthOrchestratorOptions;
+	readonly prompts: PromptFunctions;
+}
+
+const selectRole = async ({
+	candidates,
+	emptyMessage,
+	message,
+	options,
+	prompts,
+}: SelectRoleArgs): Promise<string> => {
+	if (candidates.length === 0) {
+		throw new ShopifyE2EPreflightError(emptyMessage);
+	}
+	const role = await runWithCommandSignal(
 		() =>
-			dependencies.prompts.select({
+			prompts.select({
 				...createPromptContext(options),
-				choices: saved.map((profile) => ({
-					name: `${profile.name} - ${profile.role}`,
-					value: profile.name,
+				choices: candidates.map((candidate) => ({
+					name: candidate,
+					value: candidate,
 				})),
-				message: "Which profile should be refreshed?",
+				message,
 			}),
 		options.signal,
 	);
-	const selected = saved.find((profile) => profile.name === name);
-	if (!selected) {
-		throw new ShopifyE2EPreflightError("Selected profile is unavailable");
+	if (!candidates.includes(role)) {
+		throw new ShopifyE2EPreflightError("Selected role is unavailable");
 	}
-	const resolved = await runWithCommandSignal(
-		() => store.resolve(selected.name),
-		options.signal,
-	);
-	if (resolved.kind !== "saved") {
-		throw new ShopifyE2EPreflightError("Selected profile is unavailable");
-	}
-	return resolved;
+	return role;
 };
 
 interface CaptureStateArgs {
@@ -126,7 +208,7 @@ interface CaptureStateArgs {
 	readonly config: LoadedShopifyConfig;
 	readonly confirmationMessage: string;
 	readonly dependencies: AuthOrchestratorDependencies;
-	readonly initialState: ProfileSelection["state"];
+	readonly initialState: PlaywrightStorageState;
 	readonly options: AuthOrchestratorOptions;
 	readonly origin: string;
 }
@@ -139,7 +221,7 @@ const captureState = async ({
 	initialState,
 	options,
 	origin,
-}: CaptureStateArgs): Promise<ProfileSelection["state"] | undefined> => {
+}: CaptureStateArgs): Promise<PlaywrightStorageState | undefined> => {
 	const peer = await runWithCommandSignal(
 		() => dependencies.resolvePeer(config.projectRoot),
 		options.signal,
@@ -149,7 +231,7 @@ const captureState = async ({
 		options.signal,
 	);
 	throwIfCommandAborted(options.signal);
-	const result = await dependencies.captureProfile({
+	const result = await dependencies.captureRoleState({
 		dependencies: {
 			confirmSave: ({ signal }) =>
 				dependencies.prompts.confirm({
@@ -175,71 +257,42 @@ const captureState = async ({
 
 const runCapture = async (
 	config: LoadedShopifyConfig,
-	store: ProfileStore,
+	store: RoleStateStore,
 	origin: string,
 	options: AuthOrchestratorOptions,
 	dependencies: AuthOrchestratorDependencies,
 ): Promise<void> => {
-	requireInteractive(options);
-	const authenticatedRoles = Object.entries(config.roles)
-		.filter(([, role]) => role.authentication === "required")
-		.map(([name]) => name)
-		.sort();
-	if (authenticatedRoles.length === 0) {
-		throw new ShopifyE2EPreflightError(
-			"No role with required authentication is configured",
-		);
-	}
-	let role = options.role;
-	if (role !== undefined && !authenticatedRoles.includes(role)) {
-		throw new ShopifyE2EPreflightError(
-			"Capture role must be configured with required authentication",
-		);
-	}
-	role ??= await runWithCommandSignal(
-		() =>
-			dependencies.prompts.select({
-				...createPromptContext(options),
-				choices: authenticatedRoles.map((name) => ({ name, value: name })),
-				message: "Which role should this profile use?",
-			}),
+	const summaries = await runWithCommandSignal(
+		() => store.list(),
 		options.signal,
 	);
-
-	let profile = options.profile;
-	if (profile !== undefined) {
-		const requestedProfile = profile;
-		await runWithCommandSignal(
-			() => store.assertCaptureNameAvailable(requestedProfile),
-			options.signal,
-		);
-	} else {
-		profile = await runWithCommandSignal(
-			() =>
-				dependencies.prompts.input({
-					...createPromptContext(options),
-					message:
-						"Profile name (lower-kebab, no credentials or personal data):",
-					validate: async (value) => {
-						try {
-							await store.assertCaptureNameAvailable(value);
-							return true;
-						} catch (error) {
-							return error instanceof Error
-								? error.message
-								: "Profile name is invalid";
-						}
-					},
-				}),
-			options.signal,
-		);
+	const role =
+		options.role ??
+		(await selectRole({
+			candidates: summaries
+				.filter((summary) => summary.status === "missing")
+				.map((summary) => summary.role),
+			emptyMessage:
+				"No configured role is missing state. Use `shopify-e2e auth refresh --role <role>` for an existing role state.",
+			message: "Which role should be captured?",
+			options,
+			prompts: dependencies.prompts,
+		}));
+	const summary = await resolveConfiguredSummary(config, store, role);
+	if (summary.status === "ready") throw readyCapture(role);
+	if (summary.status === "invalid") {
+		throw await classifyInvalidState(store, role);
 	}
-
+	if (summary.status !== "missing") throw unknownRole(role);
+	await runWithCommandSignal(
+		() => store.assertCaptureAvailable(role),
+		options.signal,
+	);
 	const state = await captureState({
 		cancellationMessage:
-			"Authentication capture cancelled; no profile changed.",
+			"Authentication capture cancelled; no role state changed.",
 		config,
-		confirmationMessage: "Authentication complete. Save this browser profile?",
+		confirmationMessage: "Authentication complete. Save this role state?",
 		dependencies,
 		initialState: EMPTY_STORAGE_STATE,
 		options,
@@ -247,49 +300,63 @@ const runCapture = async (
 	});
 	if (!state) return;
 	throwIfCommandAborted(options.signal);
-	await store.capture({ name: profile, role, signal: options.signal, state });
+	await store.capture({ role, signal: options.signal, state });
+	throwIfMutationCommittedDuringSignal(options.signal, role, "captured");
 	dependencies.report(
-		`Saved profile ${profile} for role ${role}. Run \`shopify-e2e run --profile ${profile}\`.`,
+		`Saved role state for ${role}. Run \`shopify-e2e run --role ${role}\`.`,
 	);
 };
 
 const runRefresh = async (
-	store: ProfileStore,
-	origin: string,
 	config: LoadedShopifyConfig,
+	store: RoleStateStore,
+	origin: string,
 	options: AuthOrchestratorOptions,
 	dependencies: AuthOrchestratorDependencies,
-	summaries?: readonly ProfileSummary[],
 ): Promise<void> => {
-	requireInteractive(options);
-	let selected: Extract<ProfileSelection, { kind: "saved" }>;
-	const requestedProfile = options.profile;
-	if (requestedProfile !== undefined) {
-		const resolved = await runWithCommandSignal(
-			() => store.resolve(requestedProfile),
+	const summaries = await runWithCommandSignal(
+		() => store.list(),
+		options.signal,
+	);
+	const role =
+		options.role ??
+		(await selectRole({
+			candidates: summaries
+				.filter((summary) => summary.status === "ready")
+				.map((summary) => summary.role),
+			emptyMessage:
+				"No configured role has ready state. Run `shopify-e2e auth capture --role <role>` for a missing role.",
+			message: "Which role should be refreshed?",
+			options,
+			prompts: dependencies.prompts,
+		}));
+	const summary = await resolveConfiguredSummary(config, store, role);
+	if (summary.status === "missing") throw missingState(role);
+	if (summary.status === "invalid") {
+		throw await classifyInvalidState(store, role);
+	}
+	if (summary.status !== "ready") throw unknownRole(role);
+	let selected: RoleStateSelection;
+	try {
+		selected = await runWithCommandSignal(
+			() => store.resolve(role),
 			options.signal,
 		);
-		if (resolved.kind !== "saved") {
-			throw new ShopifyE2EPreflightError(
-				"Requested saved profile is unknown or invalid",
-			);
+	} catch (error) {
+		if (error instanceof ShopifyE2EPreflightError) {
+			const latest = await resolveConfiguredSummary(config, store, role);
+			if (latest.status === "missing") throw missingState(role);
+			if (latest.status === "invalid") {
+				throw await classifyInvalidState(store, role);
+			}
 		}
-		selected = resolved;
-	} else {
-		selected = await selectSavedProfile(
-			summaries ??
-				(await runWithCommandSignal(() => store.list(), options.signal)),
-			store,
-			options,
-			dependencies,
-		);
+		throw error;
 	}
 	const state = await captureState({
 		cancellationMessage:
-			"Authentication refresh cancelled; no profile changed.",
+			"Authentication refresh cancelled; no role state changed.",
 		config,
-		confirmationMessage:
-			"Authentication refreshed. Replace this profile state?",
+		confirmationMessage: "Authentication refreshed. Replace this role state?",
 		dependencies,
 		initialState: selected.state,
 		options,
@@ -297,90 +364,84 @@ const runRefresh = async (
 	});
 	if (!state) return;
 	throwIfCommandAborted(options.signal);
-	await store.refresh({
-		name: selected.name,
-		signal: options.signal,
-		state,
-	});
-	dependencies.report(
-		`Refreshed profile ${selected.name} for role ${selected.role}.`,
-	);
+	await store.refresh({ role, signal: options.signal, state });
+	throwIfMutationCommittedDuringSignal(options.signal, role, "refreshed");
+	dependencies.report(`Refreshed role state for ${role}.`);
 };
 
-const unavailableRemovalError = (): ShopifyE2EPreflightError =>
-	new ShopifyE2EPreflightError("Saved profile is unknown or cannot be removed");
-
-const removableProfiles = async (
-	store: ProfileStore,
-	options: AuthOrchestratorOptions,
-): Promise<readonly string[]> =>
-	runWithCommandSignal(() => store.removableProfiles(), options.signal);
-
 const runRemove = async (
-	store: ProfileStore,
+	store: RoleStateStore,
 	options: AuthOrchestratorOptions,
 	dependencies: AuthOrchestratorDependencies,
 	cachedCandidates?: readonly string[],
 ): Promise<void> => {
-	const confirmed = options.yes === true;
-	if (!options.interactive && (options.profile === undefined || !confirmed)) {
+	const skipConfirmation = options.yes === true;
+	const candidates =
+		cachedCandidates ??
+		(await runWithCommandSignal(() => store.removableRoles(), options.signal));
+	const role =
+		options.role ??
+		(await selectRole({
+			candidates,
+			emptyMessage:
+				"No removable role state is available for the configured store.",
+			message: "Which role state should be removed?",
+			options,
+			prompts: dependencies.prompts,
+		}));
+	if (!candidates.includes(role)) {
+		const summary = roleSummary(
+			await runWithCommandSignal(() => store.list(), options.signal),
+			role,
+		);
+		if (summary?.status === "invalid") throw unsafeCollision(role);
 		throw new ShopifyE2EPreflightError(
-			"Non-interactive profile removal requires both --profile and --yes",
+			"Role state is unknown or cannot be removed",
 		);
 	}
 
-	let selectedName = options.profile;
-	if (selectedName === undefined) {
-		requireInteractive(options);
-		const candidates =
-			cachedCandidates ?? (await removableProfiles(store, options));
-		if (candidates.length === 0) {
-			throw new ShopifyE2EPreflightError(
-				"No removable saved profile is available for the configured store",
-			);
-		}
-		selectedName = await runWithCommandSignal(
-			() =>
-				dependencies.prompts.select({
-					...createPromptContext(options),
-					choices: candidates.map((name) => ({ name, value: name })),
-					message: "Which profile should be removed?",
-				}),
-			options.signal,
-		);
-		if (!candidates.includes(selectedName)) throw unavailableRemovalError();
-	} else if (!confirmed) {
-		const candidates =
-			cachedCandidates ?? (await removableProfiles(store, options));
-		if (!candidates.includes(selectedName)) throw unavailableRemovalError();
-	}
-
-	if (!confirmed) {
+	if (!skipConfirmation) {
 		const shouldRemove = await runWithCommandSignal(
 			() =>
 				dependencies.prompts.confirm({
 					...createPromptContext(options),
 					default: false,
-					message: `Remove ${selectedName}? Locally saved browser authentication will be removed.`,
+					message: `Remove role state for ${role}? Locally saved browser authentication will be removed.`,
 				}),
 			options.signal,
 		);
 		if (!shouldRemove) {
 			dependencies.report(
-				"Authentication profile removal cancelled; no profile changed.",
+				"Authentication role-state removal cancelled; no role state changed.",
 			);
 			return;
 		}
 	}
 
-	await store.remove({ name: selectedName, signal: options.signal });
-	dependencies.report(`Removed saved profile ${selectedName}.`);
+	await store.remove({ role, signal: options.signal });
+	throwIfMutationCommittedDuringSignal(options.signal, role, "removed");
+	dependencies.report(`Removed role state for ${role}.`);
+};
+
+const runList = async (
+	store: RoleStateStore,
+	options: AuthOrchestratorOptions,
+	dependencies: AuthOrchestratorDependencies,
+	summaries?: readonly RoleStateSummary[],
+): Promise<void> => {
+	const entries =
+		summaries ??
+		(await runWithCommandSignal(() => store.list(), options.signal));
+	for (const entry of entries) {
+		dependencies.report(`${entry.role}\t${entry.status}`);
+	}
 };
 
 export const orchestrateAuth = async (
 	options: AuthOrchestratorOptions,
 	dependencies: AuthOrchestratorDependencies,
 ): Promise<void> => {
+	validateTerminalMode(options);
 	const projectRoot = await runWithCommandSignal(
 		() =>
 			dependencies.loadEnvironment({
@@ -390,16 +451,16 @@ export const orchestrateAuth = async (
 		options.signal,
 	);
 	throwIfCommandAborted(options.signal);
-	const origin = configuredOriginFromEnvironment(options.environment);
+	const origin = configuredOriginForCommand(options.environment);
 	const config = await runWithCommandSignal(
 		() =>
 			dependencies.loadConfig({
-				configPath: options.configPath,
+				environment: options.environment,
 				projectRoot,
 			}),
 		options.signal,
 	);
-	const liveOrigin = configuredOriginFromEnvironment(options.environment);
+	const liveOrigin = configuredOriginForCommand(options.environment);
 	if (liveOrigin !== origin) {
 		throw new ShopifyE2EPreflightError(
 			"SHOPIFY_STORE_URL must not change while loading the dedicated Shopify config. Set it in the consumer .env file or inherited environment.",
@@ -422,18 +483,18 @@ export const orchestrateAuth = async (
 	});
 
 	let action: Exclude<AuthAction, "menu">;
-	let summaries: readonly ProfileSummary[] | undefined;
+	let summaries: readonly RoleStateSummary[] | undefined;
 	let removalCandidates: readonly string[] | undefined;
 	if (options.action === "menu") {
-		requireInteractive(options);
 		summaries = await runWithCommandSignal(() => store.list(), options.signal);
-		removalCandidates = await removableProfiles(store, options);
-		const hasCapture = Object.values(config.roles).some(
-			(role) => role.authentication === "required",
+		removalCandidates = await runWithCommandSignal(
+			() => store.removableRoles(),
+			options.signal,
 		);
-		const hasRefresh = summaries.some(
-			(summary) => summary.status === "runnable",
+		const hasCapture = summaries.some(
+			(summary) => summary.status === "missing",
 		);
+		const hasRefresh = summaries.some((summary) => summary.status === "ready");
 		const hasRemoval = removalCandidates.length > 0;
 		const selectedAction = await runWithCommandSignal(
 			() =>
@@ -441,33 +502,31 @@ export const orchestrateAuth = async (
 					...createPromptContext(options),
 					choices: [
 						{
-							disabled: hasCapture
-								? false
-								: "No authenticated role is configured",
-							name: "Capture a profile",
+							disabled: hasCapture ? false : "No role is missing state",
+							name: "Capture",
 							value: "capture" as const,
 						},
 						{
-							disabled: hasRefresh ? false : "No runnable saved profile exists",
-							name: "Refresh a profile",
+							disabled: hasRefresh ? false : "No role has ready state",
+							name: "Refresh",
 							value: "refresh" as const,
 						},
 						{
-							disabled: hasRemoval
-								? false
-								: "No removable saved profile exists",
-							name: "Remove a profile",
+							disabled: hasRemoval ? false : "No removable role state exists",
+							name: "Remove",
 							value: "remove" as const,
 						},
-						{ name: "List profiles", value: "list" as const },
+						{ name: "List", value: "list" as const },
 						{ name: "Cancel", value: "cancel" as const },
 					],
-					message: "Authentication profiles",
+					message: "Authentication role states",
 				}),
 			options.signal,
 		);
 		if (selectedAction === "cancel") {
-			dependencies.report("Authentication menu cancelled; no profile changed.");
+			dependencies.report(
+				"Authentication menu cancelled; no role state changed.",
+			);
 			return;
 		}
 		action = selectedAction;
@@ -476,29 +535,17 @@ export const orchestrateAuth = async (
 	}
 
 	switch (action) {
-		case "list": {
-			const profiles =
-				summaries ??
-				(await runWithCommandSignal(() => store.list(), options.signal));
-			if (profiles.length === 0) {
-				dependencies.report("No saved profiles for the configured store.");
-				return;
-			}
-			for (const profile of profiles) {
-				dependencies.report(
-					`${profile.name}\t${profile.role}\t${profile.status}`,
-				);
-			}
-			return;
-		}
 		case "capture":
 			await runCapture(config, store, origin, options, dependencies);
 			return;
 		case "refresh":
-			await runRefresh(store, origin, config, options, dependencies, summaries);
+			await runRefresh(config, store, origin, options, dependencies);
 			return;
 		case "remove":
 			await runRemove(store, options, dependencies, removalCandidates);
+			return;
+		case "list":
+			await runList(store, options, dependencies, summaries);
 			return;
 		default: {
 			const unsupportedAction: never = action;
@@ -514,13 +561,13 @@ export const defaultAuthDependencies = (
 	prompts: PromptFunctions,
 	report: (message: string) => void,
 ): AuthOrchestratorDependencies => ({
-	captureProfile: captureBrowserProfile,
-	createStore: createProfileStore,
+	captureRoleState: captureBrowserRoleState,
+	createStore: createRoleStateStore,
 	loadChromium: loadConsumerChromium,
 	loadConfig: loadShopifyConfig,
 	loadEnvironment,
 	prompts,
 	report,
-	resolveDataRoot: resolveProfileDataRoot,
+	resolveDataRoot: resolveRoleStateDataRoot,
 	resolvePeer: resolvePlaywrightPeer,
 });

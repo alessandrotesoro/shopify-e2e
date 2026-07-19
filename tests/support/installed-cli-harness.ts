@@ -1,11 +1,8 @@
-import type { ChildProcess } from "node:child_process";
 import {
 	access,
-	chmod,
 	cp,
 	mkdir,
 	mkdtemp,
-	readdir,
 	realpath,
 	rm,
 	writeFile,
@@ -15,31 +12,14 @@ import { basename, join } from "node:path";
 
 import { expect } from "vitest";
 
-import { configuredOriginKey } from "../../src/profiles/configured-origin.js";
 import {
 	installPackedPackage,
 	packPackageForConsumer,
 } from "./installed-consumer.js";
 
-const generatedConfigPrefix = "shopify-e2e-playwright-";
 const temporaryDirectories: string[] = [];
 const doctorDedicatedSpecMarker = "doctor-dedicated-spec-loaded.marker";
 const doctorPeerCliMarker = "doctor-peer-cli-spawned.marker";
-const doctorDedicatedSpecSource = `import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-
-const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
-if (markerDirectory) {
-  writeFileSync(join(markerDirectory, ${JSON.stringify(doctorDedicatedSpecMarker)}), "loaded");
-}
-`;
-
-export interface InstalledCliFixture {
-	readonly consumerRoot: string;
-	readonly missingPeerConsumerRoot: string;
-	readonly profileDataRoot: string;
-	readonly removal: InstalledRemovalFixture;
-}
 
 export interface DoctorConsumerFixture {
 	readonly consumerRoot: string;
@@ -59,150 +39,6 @@ export const doctorIsolationMarkers = [
 	"ordinary-spec-loaded.marker",
 ] as const;
 
-export interface InstalledRemovalFixture {
-	readonly currentOriginDirectory: string;
-	readonly currentProfileDirectory: string;
-	readonly currentSiblingProfileDirectories: readonly string[];
-	readonly otherOriginDirectory: string;
-	readonly otherOriginProfileDirectory: string;
-	readonly profileName: string;
-}
-
-interface PrepareInstalledFixtureOptions {
-	readonly fixtureRoot: string;
-	readonly projectRoot: string;
-}
-
-interface SeedProfileArgs {
-	readonly dataRoot: string;
-	readonly name: string;
-	readonly origin: string;
-	readonly role: string;
-	readonly state?: {
-		readonly cookies: readonly Record<string, unknown>[];
-		readonly origins: readonly Record<string, unknown>[];
-	};
-}
-
-interface PrepareDoctorConsumerArgs {
-	readonly chromiumInstalled: boolean;
-	readonly fixtureRoot: string;
-	readonly tarballPath: string;
-}
-
-interface MarkerArgs {
-	readonly markerDirectory: string;
-	readonly name: string;
-}
-
-interface ExpectMarkersAbsentArgs {
-	readonly markerDirectory: string;
-	readonly names: readonly string[];
-}
-
-interface WaitForMarkerArgs extends MarkerArgs {
-	readonly timeoutMs: number;
-}
-
-interface WaitForProcessToExitArgs {
-	readonly pid: number;
-	readonly timeoutMs: number;
-}
-
-interface WaitForChildToExitArgs {
-	readonly child: ChildProcess;
-	readonly timeoutMs: number;
-}
-
-interface SignalProcessArgs {
-	readonly pid: number;
-	readonly signal: NodeJS.Signals;
-}
-
-interface TerminateAndAwaitProcessesArgs {
-	readonly child: ChildProcess;
-	readonly descendantPids: readonly number[];
-}
-
-const installedStateProbe = `import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-
-import { test } from "@playwright/test";
-
-const mark = (name: string): void => {
-  const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
-  if (!markerDirectory) throw new Error("SHOPIFY_E2E_MARKER_DIR is required");
-  writeFileSync(join(markerDirectory, name + ".marker"), "verified");
-};
-
-test(
-  "generated saved state is embedded by value",
-  { tag: ["@shopify-e2e-role-admin", "@shopify-e2e-role-customer"] },
-  ({}, testInfo) => {
-    const expected = process.env.SHOPIFY_E2E_STATE_EXPECTED;
-    test.skip(!expected, "installed state probe is opt-in");
-    const state = testInfo.project.use.storageState;
-    if (typeof state !== "object" || state === null || Array.isArray(state)) {
-      throw new Error("saved state was not embedded as an object");
-    }
-    const expectedState = {
-      cookies: [
-        {
-          domain: "shop.example",
-          expires: -1,
-          httpOnly: true,
-          name: "installed-profile-sentinel",
-          path: "/",
-          sameSite: "Lax",
-          secure: true,
-          value: expected,
-        },
-      ],
-      origins: [
-        {
-          localStorage: [{ name: "installed-profile-sentinel", value: expected }],
-          origin: "https://shop.example",
-        },
-      ],
-    };
-    if (JSON.stringify(state) !== JSON.stringify(expectedState)) {
-      throw new Error("selected profile state did not match");
-    }
-    const registryRoot = process.env.SHOPIFY_E2E_PROFILE_DATA_ROOT_EXPECTED;
-    if (!registryRoot || process.argv.some((argument) => argument.includes(registryRoot))) {
-      throw new Error("profile registry path leaked to Playwright argv");
-    }
-    mark("saved-state-" + expected);
-  },
-);
-
-test(
-  "generated guest state is explicitly empty",
-  { tag: "@shopify-e2e-role-guest" },
-  ({}, testInfo) => {
-    test.skip(
-      process.env.SHOPIFY_E2E_EMPTY_STATE_PROBE !== "1",
-      "installed empty-state probe is opt-in",
-    );
-    const state = testInfo.project.use.storageState;
-    if (
-      typeof state !== "object" ||
-      state === null ||
-      Array.isArray(state) ||
-      state.cookies.length !== 0 ||
-      state.origins.length !== 0
-    ) {
-      throw new Error("guest state was not explicitly empty");
-    }
-    const registryRoot = process.env.SHOPIFY_E2E_PROFILE_DATA_ROOT_EXPECTED;
-    if (!registryRoot || process.argv.some((argument) => argument.includes(registryRoot))) {
-      throw new Error("profile registry path leaked to Playwright argv");
-    }
-    mark("guest-empty-state");
-  },
-);
-`;
-
 export const makeTemporaryDirectory = async (
 	prefix: string,
 ): Promise<string> => {
@@ -211,26 +47,25 @@ export const makeTemporaryDirectory = async (
 	return directory;
 };
 
-const packVerifiedPackage = async (projectRoot: string): Promise<string> => {
+export const packVerifiedPackage = async (
+	projectRoot: string,
+): Promise<string> => {
 	const packDirectory = await makeTemporaryDirectory("shopify-e2e-pack-");
-	const packedArtifact = await packPackageForConsumer(
-		projectRoot,
-		packDirectory,
+	const artifact = await packPackageForConsumer(projectRoot, packDirectory);
+	expect(basename(artifact.tarballPath)).toMatch(
+		/^sematico-shopify-e2e-.*\.tgz$/,
 	);
-	const tarballPath = packedArtifact.tarballPath;
-	expect(basename(tarballPath)).toMatch(/^sematico-shopify-e2e-.*\.tgz$/);
-	const publishedPaths = packedArtifact.files.map((file) => file.path);
+	const publishedPaths = artifact.files.map((file) => file.path);
 	expect(publishedPaths).toEqual(
 		expect.arrayContaining([
 			"LICENSE",
 			"README.md",
 			"bin/run.js",
 			"dist/commands.js",
-			"dist/commands/auth.js",
-			"dist/commands/auth/remove.js",
+			"dist/config/public.cjs",
+			"dist/config/public.d.cts",
 			"dist/commands/doctor.js",
 			"dist/commands/run.js",
-			"dist/doctor/doctor-orchestrator.js",
 			"package.json",
 		]),
 	);
@@ -246,54 +81,22 @@ const packVerifiedPackage = async (projectRoot: string): Promise<string> => {
 			),
 		),
 	).toBe(false);
-	const executable = packedArtifact.files.find(
-		(file) => file.path === "bin/run.js",
-	);
+	const executable = artifact.files.find((file) => file.path === "bin/run.js");
 	expect((executable?.mode ?? 0) & 0o111).not.toBe(0);
-	return tarballPath;
+	return artifact.tarballPath;
 };
 
-const seedProfile = async ({
-	dataRoot,
-	name,
-	origin,
-	role,
-	state = { cookies: [], origins: [] },
-}: SeedProfileArgs): Promise<void> => {
-	const originDirectory = join(
-		dataRoot,
-		"origins",
-		configuredOriginKey(origin),
-	);
-	const profileDirectory = join(originDirectory, "profiles", name);
-	await mkdir(profileDirectory, { mode: 0o700, recursive: true });
-	await chmod(dataRoot, 0o700);
-	await chmod(join(dataRoot, "origins"), 0o700);
-	await chmod(originDirectory, 0o700);
-	await chmod(join(originDirectory, "profiles"), 0o700);
-	await chmod(profileDirectory, 0o700);
-	await writeFile(
-		join(originDirectory, "origin.json"),
-		`${JSON.stringify({ origin, schemaVersion: 1 })}\n`,
-		{ mode: 0o600 },
-	);
-	await writeFile(
-		join(profileDirectory, "profile.json"),
-		`${JSON.stringify({ name, origin, role, schemaVersion: 1 })}\n`,
-		{ mode: 0o600 },
-	);
-	await writeFile(
-		join(profileDirectory, "storage-state.json"),
-		`${JSON.stringify(state)}\n`,
-		{ mode: 0o600 },
-	);
-};
+const doctorSpecSource = `import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
+if (markerDirectory) writeFileSync(join(markerDirectory, ${JSON.stringify(doctorDedicatedSpecMarker)}), "loaded");
+`;
 
-const prepareDoctorConsumer = async ({
-	chromiumInstalled,
-	fixtureRoot,
-	tarballPath,
-}: PrepareDoctorConsumerArgs): Promise<DoctorConsumerFixture> => {
+const prepareDoctorConsumer = async (
+	fixtureRoot: string,
+	tarballPath: string,
+	chromiumInstalled: boolean,
+): Promise<DoctorConsumerFixture> => {
 	const consumerRoot = await makeTemporaryDirectory(
 		chromiumInstalled
 			? "shopify-e2e-doctor-ready-"
@@ -302,7 +105,7 @@ const prepareDoctorConsumer = async ({
 	await cp(fixtureRoot, consumerRoot, { recursive: true });
 	await writeFile(
 		join(consumerRoot, "shopify-passing", "doctor-must-not-load.spec.ts"),
-		doctorDedicatedSpecSource,
+		doctorSpecSource,
 	);
 	await installPackedPackage({
 		consumerRoot,
@@ -332,21 +135,21 @@ const prepareDoctorConsumer = async ({
 		join(peerRoot, "cli.js"),
 		`import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
-if (markerDirectory) {
-  writeFileSync(join(markerDirectory, ${JSON.stringify(doctorPeerCliMarker)}), "spawned");
-}
-throw new Error("doctor must not spawn the Playwright CLI");
+if (markerDirectory) writeFileSync(join(markerDirectory, ${JSON.stringify(doctorPeerCliMarker)}), "spawned");
+throw new Error("doctor must not spawn Playwright");
 `,
 	);
 	await writeFile(
 		join(peerRoot, "index.js"),
 		`import { writeFile } from "node:fs/promises";
-
 export const chromium = {
   executablePath: () => ${JSON.stringify(chromiumPath)},
   launch: async () => {
+    await writeFile(${JSON.stringify(launchMarker)}, "launch attempted\\n");
+    throw new Error("doctor must not launch Chromium");
+  },
+  launchServer: async () => {
     await writeFile(${JSON.stringify(launchMarker)}, "launch attempted\\n");
     throw new Error("doctor must not launch Chromium");
   },
@@ -356,52 +159,17 @@ export const chromium = {
 	if (chromiumInstalled) {
 		await writeFile(chromiumPath, "controlled Chromium fixture\n");
 	}
-
 	return { consumerRoot, launchMarker };
 };
 
-interface PrepareMissingPeerConsumerArgs {
-	readonly includeDoctorSentinels?: boolean;
-	readonly fixtureRoot: string;
-	readonly tarballPath: string;
-}
-
-const prepareMissingPeerConsumer = async ({
-	fixtureRoot,
-	includeDoctorSentinels = false,
-	tarballPath,
-}: PrepareMissingPeerConsumerArgs): Promise<string> => {
+const prepareMissingPeerConsumer = async (
+	fixtureRoot: string,
+	tarballPath: string,
+): Promise<string> => {
 	const consumerRoot = await makeTemporaryDirectory(
-		"shopify-e2e-missing-peer-",
+		"shopify-e2e-doctor-missing-peer-",
 	);
-	await writeFile(
-		join(consumerRoot, "package.json"),
-		'{"name":"missing-peer-consumer","private":true,"type":"module"}\n',
-	);
-	await cp(
-		join(fixtureRoot, "shopify-e2e.config.ts"),
-		join(consumerRoot, "shopify-e2e.config.ts"),
-	);
-	await cp(
-		join(fixtureRoot, "shopify-passing"),
-		join(consumerRoot, "shopify-passing"),
-		{ recursive: true },
-	);
-	if (includeDoctorSentinels) {
-		await cp(
-			join(fixtureRoot, "playwright.config.ts"),
-			join(consumerRoot, "playwright.config.ts"),
-		);
-		await cp(
-			join(fixtureRoot, "ordinary-e2e"),
-			join(consumerRoot, "ordinary-e2e"),
-			{ recursive: true },
-		);
-		await writeFile(
-			join(consumerRoot, "shopify-passing", "doctor-must-not-load.spec.ts"),
-			doctorDedicatedSpecSource,
-		);
-	}
+	await cp(fixtureRoot, consumerRoot, { recursive: true });
 	await installPackedPackage({
 		consumerRoot,
 		hasPlaywright: false,
@@ -413,140 +181,31 @@ const prepareMissingPeerConsumer = async ({
 export const prepareInstalledDoctorCliFixture = async ({
 	fixtureRoot,
 	projectRoot,
-}: PrepareInstalledFixtureOptions): Promise<InstalledDoctorCliFixture> => {
+}: {
+	readonly fixtureRoot: string;
+	readonly projectRoot: string;
+}): Promise<InstalledDoctorCliFixture> => {
 	const tarballPath = await packVerifiedPackage(projectRoot);
 	const [ready, missingChromium, missingPeerConsumerRoot] = await Promise.all([
-		prepareDoctorConsumer({
-			chromiumInstalled: true,
-			fixtureRoot,
-			tarballPath,
-		}),
-		prepareDoctorConsumer({
-			chromiumInstalled: false,
-			fixtureRoot,
-			tarballPath,
-		}),
-		prepareMissingPeerConsumer({
-			fixtureRoot,
-			includeDoctorSentinels: true,
-			tarballPath,
-		}),
+		prepareDoctorConsumer(fixtureRoot, tarballPath, true),
+		prepareDoctorConsumer(fixtureRoot, tarballPath, false),
+		prepareMissingPeerConsumer(fixtureRoot, tarballPath),
 	]);
 	return { missingChromium, missingPeerConsumerRoot, ready };
 };
 
-export const prepareInstalledCliFixture = async ({
-	fixtureRoot,
-	projectRoot,
-}: PrepareInstalledFixtureOptions): Promise<InstalledCliFixture> => {
-	const tarballPath = await packVerifiedPackage(projectRoot);
-
-	const consumerRoot = await makeTemporaryDirectory("shopify-e2e-consumer-");
-	await cp(fixtureRoot, consumerRoot, { recursive: true });
-	await writeFile(
-		join(consumerRoot, "shopify-passing", "installed-state-probe.spec.ts"),
-		installedStateProbe,
-	);
-	await installPackedPackage({
-		consumerRoot,
-		hasPlaywright: true,
-		tarballPath,
-	});
-	const profileDataRoot = await makeTemporaryDirectory(
-		"shopify-e2e-profile-data-",
-	);
-	const currentOrigin = "https://shop.example";
-	const currentProfiles = [
-		["admin-primary", "admin"],
-		["customer-primary", "customer"],
-	] as const;
-	for (const [name, role] of currentProfiles) {
-		await seedProfile({
-			dataRoot: profileDataRoot,
-			name,
-			origin: currentOrigin,
-			role,
-			state: {
-				cookies: [
-					{
-						domain: "shop.example",
-						expires: -1,
-						httpOnly: true,
-						name: "installed-profile-sentinel",
-						path: "/",
-						sameSite: "Lax",
-						secure: true,
-						value: name,
-					},
-				],
-				origins: [
-					{
-						localStorage: [
-							{
-								name: "installed-profile-sentinel",
-								value: name,
-							},
-						],
-						origin: "https://shop.example",
-					},
-				],
-			},
+export const expectMarkersAbsent = async ({
+	markerDirectory,
+	names,
+}: {
+	readonly markerDirectory: string;
+	readonly names: readonly string[];
+}): Promise<void> => {
+	for (const name of names) {
+		await expect(access(join(markerDirectory, name))).rejects.toMatchObject({
+			code: "ENOENT",
 		});
 	}
-	const removalProfileName = "removal-disposable";
-	const otherOrigin = "https://other-shop.example";
-	await seedProfile({
-		dataRoot: profileDataRoot,
-		name: removalProfileName,
-		origin: currentOrigin,
-		role: "customer",
-	});
-	await seedProfile({
-		dataRoot: profileDataRoot,
-		name: removalProfileName,
-		origin: otherOrigin,
-		role: "customer",
-	});
-	const currentOriginDirectory = join(
-		profileDataRoot,
-		"origins",
-		configuredOriginKey(currentOrigin),
-	);
-	const otherOriginDirectory = join(
-		profileDataRoot,
-		"origins",
-		configuredOriginKey(otherOrigin),
-	);
-	const removal: InstalledRemovalFixture = {
-		currentOriginDirectory,
-		currentProfileDirectory: join(
-			currentOriginDirectory,
-			"profiles",
-			removalProfileName,
-		),
-		currentSiblingProfileDirectories: currentProfiles.map(([name]) =>
-			join(currentOriginDirectory, "profiles", name),
-		),
-		otherOriginDirectory,
-		otherOriginProfileDirectory: join(
-			otherOriginDirectory,
-			"profiles",
-			removalProfileName,
-		),
-		profileName: removalProfileName,
-	};
-
-	const missingPeerConsumerRoot = await prepareMissingPeerConsumer({
-		fixtureRoot,
-		tarballPath,
-	});
-
-	return {
-		consumerRoot,
-		missingPeerConsumerRoot,
-		profileDataRoot,
-		removal,
-	};
 };
 
 export const cleanupInstalledCliFixture = async (): Promise<void> => {
@@ -555,150 +214,4 @@ export const cleanupInstalledCliFixture = async (): Promise<void> => {
 			.splice(0)
 			.map((directory) => rm(directory, { force: true, recursive: true })),
 	);
-};
-
-export const markerExists = async ({
-	markerDirectory,
-	name,
-}: MarkerArgs): Promise<boolean> => {
-	try {
-		await access(join(markerDirectory, name));
-		return true;
-	} catch {
-		return false;
-	}
-};
-
-export const expectMarkersAbsent = async ({
-	markerDirectory,
-	names,
-}: ExpectMarkersAbsentArgs): Promise<void> => {
-	for (const name of names) {
-		await expect(markerExists({ markerDirectory, name }), name).resolves.toBe(
-			false,
-		);
-	}
-};
-
-export const expectOrdinaryLaneFixturesPresent = async (
-	consumerRoot: string,
-): Promise<void> => {
-	await expect(
-		access(join(consumerRoot, "playwright.config.ts")),
-	).resolves.toBeUndefined();
-	await expect(
-		access(join(consumerRoot, "ordinary-e2e", "must-not-load.spec.ts")),
-	).resolves.toBeUndefined();
-};
-
-export const generatedConfigDirectories = async (
-	root: string,
-): Promise<Set<string>> => {
-	const entries = await readdir(root, { withFileTypes: true });
-	return new Set(
-		entries
-			.filter(
-				(entry) =>
-					entry.isDirectory() && entry.name.startsWith(generatedConfigPrefix),
-			)
-			.map((entry) => entry.name),
-	);
-};
-
-export const waitForMarker = async ({
-	markerDirectory,
-	name,
-	timeoutMs,
-}: WaitForMarkerArgs): Promise<void> => {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (await markerExists({ markerDirectory, name })) return;
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
-	}
-	throw new Error(`Timed out waiting for marker ${name}`);
-};
-
-export const waitForProcessToExit = async ({
-	pid,
-	timeoutMs,
-}: WaitForProcessToExitArgs): Promise<void> => {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		try {
-			process.kill(pid, 0);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
-			throw error;
-		}
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
-	}
-	throw new Error(`Process ${pid} remained alive after CLI exit`);
-};
-
-const waitForChildToExit = async ({
-	child,
-	timeoutMs,
-}: WaitForChildToExitArgs): Promise<void> => {
-	if (child.exitCode !== null || child.signalCode !== null) return;
-
-	await new Promise<void>((resolveExit, rejectExit) => {
-		const timeout = setTimeout(() => {
-			child.off("exit", handleExit);
-			rejectExit(
-				new Error(`CLI process ${child.pid ?? "unknown"} remained alive`),
-			);
-		}, timeoutMs);
-		const handleExit = (): void => {
-			clearTimeout(timeout);
-			resolveExit();
-		};
-		child.once("exit", handleExit);
-	});
-};
-
-const signalProcess = ({ pid, signal }: SignalProcessArgs): void => {
-	try {
-		process.kill(pid, signal);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-	}
-};
-
-export const terminateAndAwaitProcesses = async ({
-	child,
-	descendantPids,
-}: TerminateAndAwaitProcessesArgs): Promise<void> => {
-	const pids = [...new Set(descendantPids)];
-	for (const pid of pids) signalProcess({ pid, signal: "SIGTERM" });
-	if (child.pid && child.exitCode === null && child.signalCode === null) {
-		signalProcess({ pid: child.pid, signal: "SIGTERM" });
-	}
-
-	const exitResults = await Promise.allSettled([
-		...pids.map((pid) => waitForProcessToExit({ pid, timeoutMs: 1_000 })),
-		waitForChildToExit({ child, timeoutMs: 1_000 }),
-	]);
-	const lingeringPids = pids.filter(
-		(_pid, index) => exitResults[index]?.status === "rejected",
-	);
-	const shouldForceStopChild = exitResults[pids.length]?.status === "rejected";
-
-	for (const pid of lingeringPids) signalProcess({ pid, signal: "SIGKILL" });
-	if (
-		shouldForceStopChild &&
-		child.pid &&
-		child.exitCode === null &&
-		child.signalCode === null
-	) {
-		signalProcess({ pid: child.pid, signal: "SIGKILL" });
-	}
-
-	await Promise.all([
-		...lingeringPids.map((pid) =>
-			waitForProcessToExit({ pid, timeoutMs: 1_000 }),
-		),
-		...(shouldForceStopChild
-			? [waitForChildToExit({ child, timeoutMs: 1_000 })]
-			: []),
-	]);
 };

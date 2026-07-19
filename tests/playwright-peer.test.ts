@@ -73,7 +73,7 @@ const installFakePeer = async ({
 		await writeFile(
 			modulePath,
 			options.moduleSource ??
-				`export const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { return { marker: "consumer-browser" }; } };\n`,
+				`export const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { return { marker: "consumer-browser" }; }, async launchServer() { return { marker: "consumer-server" }; } };\n`,
 		);
 	}
 
@@ -237,6 +237,16 @@ describe("consumer Playwright peer resolution", () => {
 		await expect(chromium.launch({ headless: false })).resolves.toMatchObject({
 			marker: "consumer-browser",
 		});
+		await expect(
+			chromium.launchServer({
+				handleSIGHUP: true,
+				handleSIGINT: false,
+				handleSIGTERM: false,
+				headless: false,
+				host: "127.0.0.1",
+				port: 0,
+			}),
+		).resolves.toMatchObject({ marker: "consumer-server" });
 	});
 
 	it("loads Chromium from the verified consumer CommonJS public module", async () => {
@@ -245,7 +255,7 @@ describe("consumer Playwright peer resolution", () => {
 		const chromiumPath = join(packageRoot, "chromium");
 		await installFakePeer({
 			consumer,
-			moduleSource: `function test() {}; test.chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { return { marker: "consumer-commonjs-browser" }; } }; module.exports = test;\n`,
+			moduleSource: `function test() {}; test.chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { return { marker: "consumer-commonjs-browser" }; }, async launchServer() { return { marker: "consumer-commonjs-server" }; } }; module.exports = test;\n`,
 			moduleType: "commonjs",
 		});
 		const peer = await resolvePlaywrightPeer(consumer);
@@ -254,6 +264,31 @@ describe("consumer Playwright peer resolution", () => {
 		await expect(chromium.launch({ headless: false })).resolves.toMatchObject({
 			marker: "consumer-commonjs-browser",
 		});
+		await expect(
+			chromium.launchServer({
+				handleSIGHUP: true,
+				handleSIGINT: false,
+				handleSIGTERM: false,
+				headless: false,
+				host: "127.0.0.1",
+				port: 0,
+			}),
+		).resolves.toMatchObject({ marker: "consumer-commonjs-server" });
+	});
+
+	it("rejects Chromium without launchServer support", async () => {
+		const consumer = await makeConsumer();
+		const packageRoot = join(consumer, "node_modules", "@playwright", "test");
+		const chromiumPath = join(packageRoot, "chromium");
+		await installFakePeer({
+			consumer,
+			moduleSource: `export const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() {} };\n`,
+		});
+		const peer = await resolvePlaywrightPeer(consumer);
+
+		await expect(loadConsumerChromium(peer)).rejects.toThrow(
+			/supported Chromium API/i,
+		);
 	});
 
 	it("rejects a consumer public module without the supported Chromium API", async () => {
@@ -274,7 +309,7 @@ describe("consumer Playwright peer resolution", () => {
 		const missingChromium = join(consumer, "missing-chromium");
 		await installFakePeer({
 			consumer,
-			moduleSource: `export const chromium = { executablePath() { return ${JSON.stringify(missingChromium)}; }, async launch() {} };\n`,
+			moduleSource: `export const chromium = { executablePath() { return ${JSON.stringify(missingChromium)}; }, async launch() {}, async launchServer() {} };\n`,
 		});
 		const peer = await resolvePlaywrightPeer(consumer);
 

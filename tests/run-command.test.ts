@@ -1,120 +1,150 @@
-import {
-	access,
-	mkdir,
-	mkdtemp,
-	realpath,
-	rm,
-	symlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
 	orchestrateShopifyRun,
+	Run,
 	type RunCommandDependencies,
 } from "../src/commands/run.js";
-import { loadRunnableShopifyConfig } from "../src/config/load-config.js";
+import { loadShopifyConfig } from "../src/config/load-config.js";
 import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../src/errors.js";
 import { PACKAGE_ROOT } from "../src/package-root.js";
-import type { GeneratedPlaywrightConfig } from "../src/playwright/generated-config.js";
+import type { PlaywrightExecutionContextArtifact } from "../src/playwright/execution-context.cjs";
 import { CommandSignalError } from "../src/process/command-signals.js";
-import {
-	EMPTY_STORAGE_STATE,
-	type ProfileSelection,
-	type RunnableProfileSummary,
-} from "../src/profiles/profile-store.js";
+import type {
+	RoleStateSelection,
+	RoleStateStore,
+	RoleStateSummary,
+} from "../src/role-states/role-state-store.js";
 
+const EMPTY_STATE = { cookies: [], origins: [] } as const;
+const helperUrl = pathToFileURL(
+	resolve(import.meta.dirname, "../dist/config/public.cjs"),
+).href;
 const temporaryDirectories: string[] = [];
 
-const makeConsumer = async (): Promise<{
+const makeConsumer = async (
+	roles: readonly string[] = ["admin", "customer"],
+): Promise<{
 	readonly configPath: string;
 	readonly projectRoot: string;
 	readonly testDir: string;
 }> => {
-	const projectRoot = await mkdtemp(join(tmpdir(), "shopify-e2e-run-"));
+	const projectRoot = await realpath(
+		await mkdtemp(join(tmpdir(), "shopify-e2e-run-")),
+	);
 	temporaryDirectories.push(projectRoot);
 	const testDir = join(projectRoot, "shopify-tests");
 	const configPath = join(projectRoot, "shopify-e2e.config.ts");
 	await mkdir(testDir);
 	await writeFile(
 		configPath,
-		'export default { testDir: "shopify-tests", roles: { guest: { authentication: "none" } } };\n',
+		`import { defineShopifyE2EConfig } from ${JSON.stringify(helperUrl)};\nexport default defineShopifyE2EConfig({ testDir: "shopify-tests", roles: ${JSON.stringify(roles)} });\n`,
 	);
-	await writeFile(join(testDir, "checkout.spec.ts"), "// candidate\n");
-	await mkdir(join(projectRoot, "node_modules", "@playwright"), {
-		recursive: true,
-	});
-	await symlink(
-		join(process.cwd(), "node_modules", "@playwright", "test"),
-		join(projectRoot, "node_modules", "@playwright", "test"),
-		"dir",
-	);
-	const physicalRoot = await realpath(projectRoot);
-	return {
-		configPath: join(physicalRoot, "shopify-e2e.config.ts"),
-		projectRoot: physicalRoot,
-		testDir: join(physicalRoot, "shopify-tests"),
-	};
+	return { configPath, projectRoot, testDir };
 };
 
-interface MakeDependenciesArgs {
-	readonly exitCode?: number;
-	readonly generatedConfig: GeneratedPlaywrightConfig;
+const selected = (
+	role = "admin",
+	state: RoleStateSelection["state"] = EMPTY_STATE,
+): RoleStateSelection => ({ role, state });
+
+interface StoreOptions {
+	readonly list?: readonly RoleStateSummary[];
+	readonly removableRoles?: readonly string[];
+	readonly resolve?: (role: string) => Promise<RoleStateSelection>;
 }
 
-const makeDependencies = ({
-	exitCode = 0,
-	generatedConfig,
-}: MakeDependenciesArgs): RunCommandDependencies => {
+const makeStore = (options: StoreOptions = {}): RoleStateStore => {
+	const summaries =
+		options.list ??
+		([
+			{ role: "admin", status: "ready" },
+			{ role: "customer", status: "missing" },
+		] as const);
 	return {
-		buildInvocation: vi.fn(({ controls, generatedConfig: generated }) => ({
+		list: vi.fn(async () => summaries),
+		removableRoles: vi.fn(async () => options.removableRoles ?? []),
+		resolve: vi.fn(options.resolve ?? (async (role) => selected(role))),
+	} as unknown as RoleStateStore;
+};
+
+interface MakeDependenciesOptions {
+	readonly artifact?: PlaywrightExecutionContextArtifact;
+	readonly exitCode?: number;
+	readonly store?: RoleStateStore;
+}
+
+const makeDependencies = (
+	options: MakeDependenciesOptions = {},
+): RunCommandDependencies => {
+	const artifact = options.artifact ?? {
+		cleanup: vi.fn(async () => undefined),
+		contextPath: join(tmpdir(), "shopify-e2e-context-test.json"),
+	};
+	return {
+		buildInvocation: vi.fn(({ configPath, controls, environment, peer }) => ({
 			args: [
-				"/consumer/playwright/cli.js",
+				peer.executablePath,
 				"test",
 				"--config",
-				generated.configPath,
+				configPath,
+				"--workers=1",
 				...(controls?.grep ? ["--grep", controls.grep] : []),
 				...(controls?.grepInvert ? ["--grep-invert", controls.grepInvert] : []),
 			],
+			environment,
 			executable: process.execPath,
 		})),
-		createGeneratedConfig: vi.fn(async () => generatedConfig),
-		createStore: vi.fn(() => {
-			throw new Error("profile store should not be used for guest");
-		}),
-		loadConfig: vi.fn(loadRunnableShopifyConfig),
+		createExecutionContext: vi.fn(async () => artifact),
+		createStore: vi.fn(() => options.store ?? makeStore()),
+		loadConfig: vi.fn(loadShopifyConfig),
 		loadEnvironment: vi.fn(async ({ cwd }) => realpath(cwd)),
+		launchBrowser: vi.fn(async () => ({
+			close: vi.fn(async () => undefined),
+			unexpectedClose: new Promise<ShopifyE2EInfrastructureError>(
+				() => undefined,
+			),
+			wsEndpoint: "ws://127.0.0.1/playwright-test-endpoint",
+		})),
+		loadChromium: vi.fn(
+			async () =>
+				({
+					executablePath: () => "/consumer/chromium",
+					launch: vi.fn(),
+					launchServer: vi.fn(),
+				}) as never,
+		),
 		reportSelection: vi.fn(),
-		resolveDataRoot: vi.fn(async () => "/external/profile-data"),
+		reportSummary: vi.fn(),
+		resolveDataRoot: vi.fn(async () => "/external/role-state-data"),
 		resolvePeer: vi.fn(async () => ({
 			executablePath: "/consumer/playwright/cli.js",
 			modulePath: "/consumer/playwright/index.js",
 		})),
-		runChild: vi.fn(async () => exitCode),
-		selectProfile: vi.fn(async () => "guest"),
+		runChild: vi.fn(async () => options.exitCode ?? 0),
+		selectRoles: vi.fn(async () => ["admin"]),
 	};
 };
 
-const makeGeneratedConfig = async (
+const runOptions = (
 	projectRoot: string,
-): Promise<
-	GeneratedPlaywrightConfig & { cleanup: ReturnType<typeof vi.fn> }
-> => {
-	const directoryPath = join(projectRoot, "temporary-config");
-	const configPath = join(directoryPath, "playwright.config.mjs");
-	await mkdir(directoryPath);
-	await writeFile(configPath, "export default {};\n");
-	const cleanup = vi.fn(async () =>
-		rm(directoryPath, { force: true, recursive: true }),
-	);
-	return { cleanup, configPath };
-};
+	overrides: Partial<
+		Parameters<typeof orchestrateShopifyRun>[0]["options"]
+	> = {},
+) => ({
+	cwd: projectRoot,
+	dataDir: join(projectRoot, "data"),
+	role: ["admin"],
+	...overrides,
+});
 
 beforeEach(() => vi.stubEnv("SHOPIFY_STORE_URL", "https://shop.example"));
 
@@ -127,194 +157,505 @@ afterEach(async () => {
 	);
 });
 
-describe("run command orchestration", () => {
-	const useStore = (
-		dependencies: RunCommandDependencies,
-		options: {
-			readonly profiles?: readonly RunnableProfileSummary[];
-			readonly resolve?: (name: string) => Promise<ProfileSelection>;
-		} = {},
-	): void => {
-		vi.mocked(dependencies.createStore).mockReturnValue({
-			resolve:
-				options.resolve ??
-				(async (name: string) => ({
-					kind: "saved",
-					name,
-					role: "admin",
-					state: { cookies: [], origins: [] },
-				})),
-			runnableProfiles: vi.fn(async () => options.profiles ?? []),
-		} as never);
-	};
+describe("role-only run orchestration", () => {
+	it("exposes only role and title-filter flags", () => {
+		expect(Object.keys(Run.flags).sort()).toEqual([
+			"grep",
+			"grep-invert",
+			"role",
+		]);
+		expect(Run.flags.role.multiple).toBe(true);
+	});
 
-	it("shows one interactive profile prompt, freezes the chosen tuple, and starts immediately", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		const selectedState = {
-			cookies: [],
-			origins: [
-				{
-					localStorage: [{ name: "session", value: "selected" }],
-					origin: "https://shop.example",
-				},
+	it("deduplicates repeated explicit roles and freezes them in config order before peer work", async () => {
+		const consumer = await makeConsumer(["admin", "customer", "staff"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "ready" },
+				{ role: "staff", status: "ready" },
 			],
-		};
-		useStore(dependencies, {
-			profiles: [
-				{ kind: "saved", name: "admin-primary", role: "admin" },
-				{ kind: "unauthenticated", name: "guest", role: "guest" },
-			],
-			resolve: async (name) => ({
-				kind: "saved",
-				name,
-				role: "admin",
-				state: selectedState,
-			}),
 		});
-		vi.mocked(dependencies.selectProfile).mockResolvedValue("admin-primary");
+		const dependencies = makeDependencies({ store });
+		const events: string[] = [];
+		vi.mocked(store.resolve).mockImplementation(async (role) => {
+			events.push(`resolve:${role}`);
+			return selected(role);
+		});
+		vi.mocked(dependencies.resolvePeer).mockImplementation(async () => {
+			events.push("peer");
+			return {
+				executablePath: "/consumer/playwright/cli.js",
+				modulePath: "/consumer/playwright/index.js",
+			};
+		});
 
 		await expect(
 			orchestrateShopifyRun({
 				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					dataDir: join(consumer.projectRoot, "data"),
-					interactive: true,
-				},
+				options: runOptions(consumer.projectRoot, {
+					role: ["staff", "admin", "staff"],
+				}),
 			}),
 		).resolves.toBe(0);
 
-		expect(dependencies.selectProfile).toHaveBeenCalledTimes(1);
-		expect(dependencies.selectProfile).toHaveBeenCalledWith(
-			expect.objectContaining({
-				choices: [
-					{ name: "admin-primary - admin", value: "admin-primary" },
-					{ name: "guest - unauthenticated", value: "guest" },
-				],
-			}),
-		);
-		expect(dependencies.createGeneratedConfig).toHaveBeenCalledWith({
-			packageRoot: PACKAGE_ROOT,
-			projectRoot: consumer.projectRoot,
-			selection: {
-				kind: "saved",
-				name: "admin-primary",
-				role: "admin",
-				state: selectedState,
-			},
-			testDir: consumer.testDir,
-		});
-		expect(dependencies.reportSelection).toHaveBeenCalledTimes(1);
-		expect(dependencies.runChild).toHaveBeenCalledTimes(1);
+		expect(events.slice(0, 3)).toEqual([
+			"resolve:admin",
+			"resolve:staff",
+			"peer",
+		]);
 	});
 
-	it("uses an explicit saved profile without prompting", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		useStore(dependencies);
+	it("preflights every explicit role before peer or Playwright work", async () => {
+		const consumer = await makeConsumer(["admin", "customer"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "missing" },
+			],
+		});
+		const dependencies = makeDependencies({ store });
 
 		await expect(
 			orchestrateShopifyRun({
 				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					dataDir: join(consumer.projectRoot, "data"),
-					profile: "admin-primary",
-				},
+				options: runOptions(consumer.projectRoot, {
+					role: ["admin", "customer"],
+				}),
 			}),
-		).resolves.toBe(0);
+		).rejects.toThrow(/auth capture --role customer/i);
 
-		expect(dependencies.selectProfile).not.toHaveBeenCalled();
-		expect(dependencies.createGeneratedConfig).toHaveBeenCalledWith({
-			packageRoot: PACKAGE_ROOT,
-			projectRoot: consumer.projectRoot,
-			selection: expect.objectContaining({
-				kind: "saved",
-				name: "admin-primary",
-				role: "admin",
-			}),
-			testDir: consumer.testDir,
-		});
-	});
-
-	it("rejects bare non-interactive use before peer resolution or config generation", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		useStore(dependencies);
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					dataDir: join(consumer.projectRoot, "data"),
-					interactive: false,
-				},
-			}),
-		).rejects.toThrow(/--profile/);
-		expect(dependencies.selectProfile).not.toHaveBeenCalled();
+		expect(store.resolve).toHaveBeenCalledWith("admin");
 		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
-		expect(dependencies.createGeneratedConfig).not.toHaveBeenCalled();
+		expect(dependencies.createExecutionContext).not.toHaveBeenCalled();
 		expect(dependencies.runChild).not.toHaveBeenCalled();
 	});
 
-	it("rejects a missing store URL before config, profile, or Playwright work", async () => {
+	it("runs one explicit role through the real config and pointer-only context", async () => {
 		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		vi.stubEnv("SHOPIFY_STORE_URL", "");
+		const state = {
+			cookies: [
+				{
+					domain: "shop.example",
+					expires: -1,
+					httpOnly: true,
+					name: "session",
+					path: "/",
+					sameSite: "Lax" as const,
+					secure: true,
+					value: "secret",
+				},
+			],
+			origins: [],
+		};
+		const store = makeStore({ resolve: async (role) => selected(role, state) });
+		const dependencies = makeDependencies({ store });
+		const environment = { SHOPIFY_STORE_URL: "https://shop.example/path" };
 
 		await expect(
 			orchestrateShopifyRun({
 				dependencies,
-				options: { cwd: consumer.projectRoot, profile: "guest" },
+				options: runOptions(consumer.projectRoot, {
+					environment,
+					grep: "account",
+					grepInvert: "draft",
+				}),
 			}),
-		).rejects.toThrow(/SHOPIFY_STORE_URL is required/);
-		expect(dependencies.createStore).not.toHaveBeenCalled();
-		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
-		expect(dependencies.createGeneratedConfig).not.toHaveBeenCalled();
+		).resolves.toBe(0);
+
+		expect(dependencies.selectRoles).not.toHaveBeenCalled();
+		expect(dependencies.createExecutionContext).toHaveBeenCalledWith({
+			configPath: consumer.configPath,
+			normalizedOrigin: "https://shop.example",
+			packageRoot: PACKAGE_ROOT,
+			projectRoot: consumer.projectRoot,
+			role: "admin",
+			state,
+			testDir: consumer.testDir,
+		});
+		expect(dependencies.buildInvocation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				configPath: consumer.configPath,
+				controls: { grep: "account", grepInvert: "draft" },
+				environment: {
+					PW_TEST_CONNECT_WS_ENDPOINT:
+						"ws://127.0.0.1/playwright-test-endpoint",
+					SHOPIFY_E2E_EXECUTION_CONTEXT: join(
+						tmpdir(),
+						"shopify-e2e-context-test.json",
+					),
+					SHOPIFY_STORE_URL: "https://shop.example/path",
+				},
+			}),
+		);
+		expect(environment).toEqual({
+			SHOPIFY_STORE_URL: "https://shop.example/path",
+		});
+		expect(dependencies.reportSelection).toHaveBeenCalledWith({
+			configPath: consumer.configPath,
+			role: "admin",
+			testDir: consumer.testDir,
+		});
+		expect(dependencies.runChild).toHaveBeenCalledOnce();
 	});
 
-	it("rejects URL userinfo with .env remediation before Playwright work", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		vi.stubEnv(
-			"SHOPIFY_STORE_URL",
-			"https://customer:storefront-password@shop.example",
-		);
+	it("prompts once for a ready-role subset and resolves it in config order", async () => {
+		const consumer = await makeConsumer(["admin", "customer", "staff"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "missing" },
+				{ role: "staff", status: "ready" },
+			],
+		});
+		const dependencies = makeDependencies({ store });
+		vi.mocked(dependencies.selectRoles).mockResolvedValue(["staff", "admin"]);
 
 		await expect(
 			orchestrateShopifyRun({
 				dependencies,
-				options: { cwd: consumer.projectRoot, profile: "guest" },
+				options: runOptions(consumer.projectRoot, {
+					interactive: true,
+					role: undefined,
+				}),
 			}),
-		).rejects.toThrow(/SHOPIFY_STORE_URL.*\.env/i);
-		expect(dependencies.createStore).not.toHaveBeenCalled();
-		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
-		expect(dependencies.createGeneratedConfig).not.toHaveBeenCalled();
+		).resolves.toBe(0);
+
+		expect(dependencies.selectRoles).toHaveBeenCalledOnce();
+		expect(dependencies.selectRoles).toHaveBeenCalledWith(
+			expect.objectContaining({
+				choices: [
+					{ name: "admin", value: "admin" },
+					{ name: "staff", value: "staff" },
+				],
+			}),
+		);
+		expect(store.resolve).toHaveBeenNthCalledWith(1, "admin");
+		expect(store.resolve).toHaveBeenNthCalledWith(2, "staff");
+	});
+
+	it("runs selected roles serially against one browser and cleans between them", async () => {
+		const consumer = await makeConsumer(["admin", "customer"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "ready" },
+			],
+		});
+		const dependencies = makeDependencies({ store });
+		const events: string[] = [];
+		vi.mocked(dependencies.createExecutionContext).mockImplementation(
+			async ({ role }) => ({
+				cleanup: vi.fn(async () => {
+					events.push(`cleanup:${role}`);
+				}),
+				contextPath: join(tmpdir(), `shopify-e2e-${role}.json`),
+			}),
+		);
+		vi.mocked(dependencies.runChild).mockImplementation(async (invocation) => {
+			const contextPath = invocation.environment?.SHOPIFY_E2E_EXECUTION_CONTEXT;
+			events.push(
+				`child:${contextPath?.includes("admin") ? "admin" : "customer"}`,
+			);
+			return 0;
+		});
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					role: ["customer", "admin"],
+				}),
+			}),
+		).resolves.toBe(0);
+
+		expect(dependencies.launchBrowser).toHaveBeenCalledOnce();
+		expect(events).toEqual([
+			"child:admin",
+			"cleanup:admin",
+			"child:customer",
+			"cleanup:customer",
+		]);
+		expect(dependencies.reportSummary).toHaveBeenCalledWith([
+			{ role: "admin", status: "passed" },
+			{ role: "customer", status: "passed" },
+		]);
+	});
+
+	it("stops after the first failing role and reports later roles not run", async () => {
+		const consumer = await makeConsumer(["admin", "customer", "guest"]);
+		const store = makeStore({
+			list: [
+				{ role: "admin", status: "ready" },
+				{ role: "customer", status: "ready" },
+				{ role: "guest", status: "ready" },
+			],
+		});
+		const dependencies = makeDependencies({ store });
+		vi.mocked(dependencies.runChild)
+			.mockResolvedValueOnce(0)
+			.mockResolvedValueOnce(1);
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					role: ["admin", "customer", "guest"],
+				}),
+			}),
+		).resolves.toBe(1);
+
+		expect(dependencies.runChild).toHaveBeenCalledTimes(2);
+		expect(dependencies.reportSummary).toHaveBeenCalledWith([
+			{ role: "admin", status: "passed" },
+			{ exitCode: 1, role: "customer", status: "failed" },
+			{ role: "guest", status: "not-run" },
+		]);
+	});
+
+	it("gives final browser cleanup failure precedence over successful roles", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.launchBrowser).mockResolvedValueOnce({
+			close: vi.fn(async () => {
+				throw new ShopifyE2EInfrastructureError("browser cleanup failed");
+			}),
+			unexpectedClose: new Promise(() => undefined),
+			wsEndpoint: "ws://127.0.0.1/playwright-test-endpoint",
+		});
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot),
+			}),
+		).rejects.toThrow(/browser cleanup failed/);
 	});
 
 	it.each([
-		{ changedUrl: undefined, label: "removes" },
-		{ changedUrl: "https://other-shop.example", label: "changes" },
-	])("fails closed when trusted config $label SHOPIFY_STORE_URL", async ({
-		changedUrl,
+		{ cleanupFails: false, expectedExit: 130, signal: "SIGINT" },
+		{ cleanupFails: true, expectedExit: 143, signal: "SIGTERM" },
+	] as const)("keeps $signal authoritative during final browser cleanup", async ({
+		cleanupFails,
+		expectedExit,
+		signal,
 	}) => {
 		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		const environment: NodeJS.ProcessEnv = {
-			SHOPIFY_STORE_URL: "https://shop.example/path",
-		};
+		const controller = new AbortController();
+		const close = vi.fn(async () => {
+			controller.abort(signal);
+			if (cleanupFails) throw new Error("private browser cleanup failure");
+		});
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.launchBrowser).mockResolvedValueOnce({
+			close,
+			unexpectedClose: new Promise(() => undefined),
+			wsEndpoint: "ws://127.0.0.1/playwright-test-endpoint",
+		});
+
+		const error = await orchestrateShopifyRun({
+			dependencies,
+			options: runOptions(consumer.projectRoot, {
+				signal: controller.signal,
+			}),
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toMatchObject({ exitCode: expectedExit, signal });
+		if (cleanupFails) {
+			expect(String(error)).toMatch(/cleanup could not complete/i);
+			expect(String(error)).not.toContain("private browser cleanup failure");
+		}
+		expect(close).toHaveBeenCalledOnce();
+	});
+
+	it("rejects omitted non-interactive role before state or Playwright work", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					interactive: false,
+					role: undefined,
+				}),
+			}),
+		).rejects.toThrow(/--role/);
+		expect(dependencies.resolveDataRoot).not.toHaveBeenCalled();
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+		expect(dependencies.createExecutionContext).not.toHaveBeenCalled();
+	});
+
+	it("rejects an invalid role without echoing unsafe input", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+		const unsafeRole = "admin\nsecret=/private/state";
+
+		const error = await orchestrateShopifyRun({
+			dependencies,
+			options: runOptions(consumer.projectRoot, { role: [unsafeRole] }),
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+		expect(String(error)).toMatch(/role is invalid/i);
+		expect(String(error)).not.toContain(unsafeRole);
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+	});
+
+	it("rejects an unknown role with list guidance before state inspection", async () => {
+		const consumer = await makeConsumer();
+		const store = makeStore();
+		const dependencies = makeDependencies({ store });
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, { role: ["merchant"] }),
+			}),
+		).rejects.toThrow(/merchant.*auth list/i);
+		expect(store.list).not.toHaveBeenCalled();
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{
+			expected: /auth capture --role admin/i,
+			label: "missing",
+			removableRoles: [] as string[],
+			status: "missing" as const,
+		},
+		{
+			expected: /auth remove --role admin.*auth capture --role admin/i,
+			label: "path-safe invalid",
+			removableRoles: ["admin"],
+			status: "invalid" as const,
+		},
+		{
+			expected: /unsafe.*manual cleanup/i,
+			label: "unsafe collision",
+			removableRoles: [] as string[],
+			status: "invalid" as const,
+		},
+	])("rejects $label state with exact remediation before peer work", async ({
+		expected,
+		removableRoles,
+		status,
+	}) => {
+		const consumer = await makeConsumer();
+		const store = makeStore({
+			list: [{ role: "admin", status }],
+			removableRoles,
+		});
+		const dependencies = makeDependencies({ store });
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot),
+			}),
+		).rejects.toThrow(expected);
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+		expect(dependencies.createExecutionContext).not.toHaveBeenCalled();
+		expect(dependencies.runChild).not.toHaveBeenCalled();
+	});
+
+	it("rejects an empty interactive ready set without opening a prompt", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies({
+			store: makeStore({
+				list: [
+					{ role: "admin", status: "missing" },
+					{ role: "customer", status: "missing" },
+				],
+			}),
+		});
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					interactive: true,
+					role: undefined,
+				}),
+			}),
+		).rejects.toThrow(/auth capture --role <role>/i);
+		expect(dependencies.selectRoles).not.toHaveBeenCalled();
+	});
+
+	it("rejects an empty interactive selection before peer or Playwright work", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.selectRoles).mockResolvedValue([]);
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					interactive: true,
+					role: undefined,
+				}),
+			}),
+		).rejects.toThrow(/at least one role/i);
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+		expect(dependencies.createExecutionContext).not.toHaveBeenCalled();
+		expect(dependencies.runChild).not.toHaveBeenCalled();
+	});
+
+	it("revalidates a stale prompt result and returns state remediation", async () => {
+		const consumer = await makeConsumer();
+		const store = makeStore({
+			list: [{ role: "admin", status: "ready" }],
+		});
+		vi.mocked(store.resolve).mockRejectedValueOnce(new Error("stale state"));
+		vi.mocked(store.list).mockResolvedValueOnce([
+			{ role: "admin", status: "ready" },
+		]);
+		vi.mocked(store.list).mockResolvedValueOnce([
+			{ role: "admin", status: "missing" },
+		]);
+		const dependencies = makeDependencies({ store });
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot, {
+					interactive: true,
+					role: undefined,
+				}),
+			}),
+		).rejects.toThrow(/auth capture --role admin/i);
+		expect(dependencies.selectRoles).toHaveBeenCalledOnce();
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+	});
+
+	it("does not perform filename discovery before a run", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot),
+			}),
+		).resolves.toBe(0);
+		expect(dependencies.loadConfig).toHaveBeenCalledOnce();
+		expect(dependencies.runChild).toHaveBeenCalledOnce();
+	});
+
+	it("loads environment before config and rejects origin drift before state work", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+		const environment: NodeJS.ProcessEnv = {};
+		vi.mocked(dependencies.loadEnvironment).mockImplementationOnce(
+			async ({ cwd }) => {
+				environment.SHOPIFY_STORE_URL = "https://shop.example/path";
+				return realpath(cwd);
+			},
+		);
 		vi.mocked(dependencies.loadConfig).mockImplementationOnce(
 			async (options) => {
-				const loaded = await loadRunnableShopifyConfig(options);
-				environment.SHOPIFY_STORE_URL = changedUrl;
+				const loaded = await loadShopifyConfig(options);
+				environment.SHOPIFY_STORE_URL = "https://other.example";
 				return loaded;
 			},
 		);
@@ -322,340 +663,164 @@ describe("run command orchestration", () => {
 		await expect(
 			orchestrateShopifyRun({
 				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					environment,
-					profile: "guest",
-				},
+				options: runOptions(consumer.projectRoot, { environment }),
 			}),
-		).rejects.toThrow(/SHOPIFY_STORE_URL.*(?:removed|changed).*\.env/i);
+		).rejects.toThrow(/SHOPIFY_STORE_URL changed.*\.env/i);
 		expect(dependencies.createStore).not.toHaveBeenCalled();
 		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
-		expect(dependencies.createGeneratedConfig).not.toHaveBeenCalled();
-		expect(dependencies.runChild).not.toHaveBeenCalled();
-	});
-
-	it("rejects an empty interactive registry with capture/configuration guidance", async () => {
-		const consumer = await makeConsumer();
-		await writeFile(
-			consumer.configPath,
-			'export default { testDir: "shopify-tests", roles: { admin: { authentication: "required" } } };\n',
-		);
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		useStore(dependencies);
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					dataDir: join(consumer.projectRoot, "data"),
-					interactive: true,
-				},
-			}),
-		).rejects.toThrow(/Capture one or configure an unauthenticated role/);
-		expect(dependencies.selectProfile).not.toHaveBeenCalled();
-		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it("fails closed when the interactive prompt returns an unavailable profile", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		useStore(dependencies, {
-			profiles: [
-				{ kind: "saved", name: "admin-primary", role: "admin" },
-				{ kind: "unauthenticated", name: "guest", role: "guest" },
-			],
-		});
-		vi.mocked(dependencies.selectProfile).mockResolvedValue("removed-profile");
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					dataDir: join(consumer.projectRoot, "data"),
-					interactive: true,
-				},
-			}),
-		).rejects.toThrow(/selected profile is unavailable/i);
-		expect(dependencies.selectProfile).toHaveBeenCalledTimes(1);
-		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
-		expect(dependencies.createGeneratedConfig).not.toHaveBeenCalled();
-		expect(dependencies.runChild).not.toHaveBeenCalled();
-	});
-
-	it("fails closed when a saved profile collides with an unauthenticated role", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		useStore(dependencies, {
-			profiles: [
-				{ kind: "saved", name: "guest", role: "admin" },
-				{ kind: "unauthenticated", name: "guest", role: "guest" },
-			],
-		});
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					dataDir: join(consumer.projectRoot, "data"),
-					interactive: true,
-				},
-			}),
-		).rejects.toThrow(/collides with an unauthenticated role/);
-		expect(dependencies.selectProfile).not.toHaveBeenCalled();
-		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
-	});
-
-	it("resolves explicit guest without touching an absent or corrupt profile registry", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		vi.mocked(dependencies.resolveDataRoot).mockRejectedValue(
-			new Error("corrupt registry must stay unused"),
-		);
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					dataDir: join(consumer.projectRoot, "corrupt-data"),
-					profile: "guest",
-				},
-			}),
-		).resolves.toBe(0);
-		expect(dependencies.resolveDataRoot).not.toHaveBeenCalled();
-		expect(dependencies.createStore).not.toHaveBeenCalled();
-	});
-
-	it("loads the invocation environment before evaluating trusted config", async () => {
-		const consumer = await makeConsumer();
-		const sentinel = "SHOPIFY_E2E_DOTENV_ORDER_SENTINEL";
-		await writeFile(
-			consumer.configPath,
-			`export default { testDir: process.env.${sentinel} === "loaded-before-config" ? "shopify-tests" : "missing-tests", roles: { guest: { authentication: "none" } } };\n`,
-		);
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		vi.mocked(dependencies.loadEnvironment).mockImplementationOnce(
-			async ({ cwd, environment }) => {
-				environment[sentinel] = "loaded-before-config";
-				return realpath(cwd);
-			},
-		);
-
-		try {
-			await expect(
-				orchestrateShopifyRun({
-					dependencies,
-					options: { cwd: consumer.projectRoot, profile: "guest" },
-				}),
-			).resolves.toBe(0);
-
-			expect(dependencies.loadEnvironment).toHaveBeenCalledWith({
-				cwd: consumer.projectRoot,
-				environment: process.env,
-			});
-			expect(dependencies.createGeneratedConfig).toHaveBeenCalledWith({
-				packageRoot: PACKAGE_ROOT,
-				projectRoot: consumer.projectRoot,
-				selection: {
-					kind: "unauthenticated",
-					name: "guest",
-					role: "guest",
-					state: { cookies: [], origins: [] },
-				},
-				testDir: consumer.testDir,
-			});
-		} finally {
-			delete process.env[sentinel];
-		}
-	});
-
-	it("stops before config and Playwright preflight when environment loading fails", async () => {
-		const consumer = await makeConsumer();
-		const configMarker = join(consumer.projectRoot, "config-loaded");
-		await writeFile(
-			consumer.configPath,
-			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(configMarker)}, "loaded"); export default { testDir: "shopify-tests", roles: { guest: { authentication: "none" } } };\n`,
-		);
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		vi.mocked(dependencies.loadEnvironment).mockRejectedValueOnce(
-			new ShopifyE2EPreflightError("Consumer .env could not be read"),
-		);
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: { cwd: consumer.projectRoot, profile: "guest" },
-			}),
-		).rejects.toThrow("Consumer .env could not be read");
-		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
-		expect(dependencies.createGeneratedConfig).not.toHaveBeenCalled();
-		expect(dependencies.buildInvocation).not.toHaveBeenCalled();
-		expect(dependencies.reportSelection).not.toHaveBeenCalled();
-		expect(dependencies.runChild).not.toHaveBeenCalled();
-		expect(generated.cleanup).not.toHaveBeenCalled();
-		await expect(access(configMarker)).rejects.toThrow();
 	});
 
 	it.each([
-		"environment",
-		"data-root",
-		"runnable-list",
-		"profile-prompt",
-		"profile-resolve",
-		"peer",
-		"generated-config",
-	] as const)("stops at the %s preflight signal checkpoint without starting Playwright", async (checkpoint) => {
+		"not-a-url",
+		"http://shop.example",
+	])("classifies trusted config origin drift to %s as preflight", async (changedUrl) => {
 		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		const controller = new AbortController();
-		let profile: string | undefined = "guest";
-		let interactive = false;
-
-		if (checkpoint === "environment") {
-			vi.mocked(dependencies.loadEnvironment).mockImplementationOnce(
-				async ({ cwd }) => {
-					controller.abort("SIGTERM");
-					return realpath(cwd);
-				},
-			);
-		}
-		if (checkpoint === "data-root") {
-			profile = "admin-primary";
-			vi.mocked(dependencies.resolveDataRoot).mockImplementationOnce(
-				async () => {
-					controller.abort("SIGTERM");
-					return "/external/profile-data";
-				},
-			);
-		}
-		if (
-			checkpoint === "runnable-list" ||
-			checkpoint === "profile-prompt" ||
-			checkpoint === "profile-resolve"
-		) {
-			profile = undefined;
-			interactive = true;
-			const resolve = vi.fn(async (name: string) => ({
-				kind: "saved" as const,
-				name,
-				role: "admin",
-				state: EMPTY_STORAGE_STATE,
-			}));
-			const runnableProfiles = vi.fn(async () => [
-				{ kind: "saved" as const, name: "admin-primary", role: "admin" },
-			]);
-			if (checkpoint === "runnable-list") {
-				runnableProfiles.mockImplementationOnce(async () => {
-					controller.abort("SIGTERM");
-					return [
-						{
-							kind: "saved" as const,
-							name: "admin-primary",
-							role: "admin",
-						},
-					];
-				});
-			}
-			if (checkpoint === "profile-prompt") {
-				vi.mocked(dependencies.selectProfile).mockImplementationOnce(
-					async () => {
-						controller.abort("SIGTERM");
-						return "admin-primary";
-					},
-				);
-			}
-			if (checkpoint === "profile-resolve") {
-				vi.mocked(dependencies.selectProfile).mockResolvedValueOnce(
-					"admin-primary",
-				);
-				resolve.mockImplementationOnce(async (name) => {
-					controller.abort("SIGTERM");
-					return {
-						kind: "saved" as const,
-						name,
-						role: "admin",
-						state: EMPTY_STORAGE_STATE,
-					};
-				});
-			}
-			vi.mocked(dependencies.createStore).mockReturnValue({
-				resolve,
-				runnableProfiles,
-			} as never);
-		}
-		if (checkpoint === "peer") {
-			vi.mocked(dependencies.resolvePeer).mockImplementationOnce(async () => {
-				controller.abort("SIGTERM");
-				return {
-					executablePath: "/consumer/playwright/cli.js",
-					modulePath: "/consumer/playwright/index.js",
-				};
-			});
-		}
-		if (checkpoint === "generated-config") {
-			vi.mocked(dependencies.createGeneratedConfig).mockImplementationOnce(
-				async () => {
-					controller.abort("SIGTERM");
-					return generated;
-				},
-			);
-		}
+		const dependencies = makeDependencies();
+		const environment: NodeJS.ProcessEnv = {
+			SHOPIFY_STORE_URL: "https://shop.example",
+		};
+		vi.mocked(dependencies.loadConfig).mockImplementationOnce(
+			async (options) => {
+				const loaded = await loadShopifyConfig(options);
+				environment.SHOPIFY_STORE_URL = changedUrl;
+				return loaded;
+			},
+		);
 
 		const error = await orchestrateShopifyRun({
 			dependencies,
-			options: {
-				cwd: consumer.projectRoot,
-				dataDir: join(consumer.projectRoot, "data"),
-				interactive,
-				profile,
-				signal: controller.signal,
-			},
+			options: runOptions(consumer.projectRoot, { environment }),
 		}).catch((cause: unknown) => cause);
 
-		expect(error).toBeInstanceOf(CommandSignalError);
-		expect(error).toMatchObject({ exitCode: 143, signal: "SIGTERM" });
-		expect(dependencies.buildInvocation).not.toHaveBeenCalled();
-		expect(dependencies.reportSelection).not.toHaveBeenCalled();
-		expect(dependencies.runChild).not.toHaveBeenCalled();
-		if (checkpoint === "generated-config") {
-			expect(generated.cleanup).toHaveBeenCalledOnce();
+		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+		expect(error).toMatchObject({ exitCode: 2 });
+		expect(String(error)).toMatch(/changed.*invalid.*\.env/i);
+		expect(dependencies.createStore).not.toHaveBeenCalled();
+		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+	});
+
+	it("rejects a reserved context key before config evaluation", async () => {
+		const consumer = await makeConsumer();
+		const dependencies = makeDependencies();
+		const secret = "/private/context-secret.json";
+		const error = await orchestrateShopifyRun({
+			dependencies,
+			options: runOptions(consumer.projectRoot, {
+				environment: {
+					SHOPIFY_E2E_EXECUTION_CONTEXT: secret,
+					SHOPIFY_STORE_URL: "https://shop.example",
+				},
+			}),
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+		expect(String(error)).toMatch(/reserved/i);
+		expect(String(error)).not.toContain(secret);
+		expect(dependencies.createStore).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		0, 1, 17, 130, 143,
+	])("preserves child exit %s and cleans context after settlement", async (exitCode) => {
+		const consumer = await makeConsumer();
+		const cleanup = vi.fn(async () => undefined);
+		const dependencies = makeDependencies({
+			artifact: {
+				cleanup,
+				contextPath: join(tmpdir(), "shopify-e2e-context-exit.json"),
+			},
+			exitCode,
+		});
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot),
+			}),
+		).resolves.toBe(exitCode);
+		expect(cleanup).toHaveBeenCalledOnce();
+	});
+
+	it("gives cleanup failure precedence over a child failure", async () => {
+		const consumer = await makeConsumer();
+		const cleanupError = new Error("context cleanup failed");
+		const dependencies = makeDependencies({
+			artifact: {
+				cleanup: vi.fn(async () => {
+					throw cleanupError;
+				}),
+				contextPath: join(tmpdir(), "shopify-e2e-context-cleanup.json"),
+			},
+		});
+		vi.mocked(dependencies.runChild).mockRejectedValue(
+			new ShopifyE2EInfrastructureError("child failed"),
+		);
+
+		await expect(
+			orchestrateShopifyRun({
+				dependencies,
+				options: runOptions(consumer.projectRoot),
+			}),
+		).rejects.toBe(cleanupError);
+	});
+
+	it("cleans context after invocation construction or child spawn errors", async () => {
+		const consumer = await makeConsumer();
+		for (const failure of ["invocation", "child"] as const) {
+			const cleanup = vi.fn(async () => undefined);
+			const dependencies = makeDependencies({
+				artifact: {
+					cleanup,
+					contextPath: join(tmpdir(), `shopify-e2e-${failure}.json`),
+				},
+			});
+			if (failure === "invocation") {
+				vi.mocked(dependencies.buildInvocation).mockImplementationOnce(() => {
+					throw new ShopifyE2EPreflightError("invalid filter");
+				});
+			} else {
+				vi.mocked(dependencies.runChild).mockRejectedValueOnce(
+					new ShopifyE2EInfrastructureError("spawn failed"),
+				);
+			}
+
+			await expect(
+				orchestrateShopifyRun({
+					dependencies,
+					options: runOptions(consumer.projectRoot),
+				}),
+			).rejects.toThrow(failure === "invocation" ? /filter/ : /spawn/);
+			expect(cleanup).toHaveBeenCalledOnce();
 		}
 	});
 
-	it("waits for pending generated-config creation and cleanup before reporting interruption", async () => {
+	it("waits for pending context creation and cleans it when a signal wins", async () => {
 		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
+		const cleanup = vi.fn(async () => undefined);
+		const artifact = {
+			cleanup,
+			contextPath: join(tmpdir(), "shopify-e2e-context-pending.json"),
+		};
+		const dependencies = makeDependencies({ artifact });
 		const controller = new AbortController();
 		let resolveCreation:
-			| ((value: GeneratedPlaywrightConfig) => void)
+			| ((value: PlaywrightExecutionContextArtifact) => void)
 			| undefined;
-		const creation = new Promise<GeneratedPlaywrightConfig>((resolveValue) => {
-			resolveCreation = resolveValue;
-		});
-		vi.mocked(dependencies.createGeneratedConfig).mockReturnValueOnce(creation);
+		const creation = new Promise<PlaywrightExecutionContextArtifact>(
+			(resolveValue) => {
+				resolveCreation = resolveValue;
+			},
+		);
+		vi.mocked(dependencies.createExecutionContext).mockReturnValueOnce(
+			creation,
+		);
 
 		const outcome = orchestrateShopifyRun({
 			dependencies,
-			options: {
-				cwd: consumer.projectRoot,
-				profile: "guest",
-				signal: controller.signal,
-			},
+			options: runOptions(consumer.projectRoot, { signal: controller.signal }),
 		}).catch((error: unknown) => error);
 		await vi.waitFor(() =>
-			expect(dependencies.createGeneratedConfig).toHaveBeenCalledOnce(),
+			expect(dependencies.createExecutionContext).toHaveBeenCalledOnce(),
 		);
 		controller.abort("SIGTERM");
 		let settled = false;
@@ -664,296 +829,146 @@ describe("run command orchestration", () => {
 		});
 		await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
 		expect(settled).toBe(false);
-
-		resolveCreation?.(generated);
-		await expect(outcome).resolves.toMatchObject({
-			exitCode: 143,
-			signal: "SIGTERM",
-		});
-		expect(generated.cleanup).toHaveBeenCalledOnce();
-		expect(dependencies.buildInvocation).not.toHaveBeenCalled();
-		expect(dependencies.runChild).not.toHaveBeenCalled();
-	});
-
-	it("keeps the signal authoritative when pending config creation later rejects", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		const controller = new AbortController();
-		let rejectCreation: ((error: Error) => void) | undefined;
-		const creation = new Promise<GeneratedPlaywrightConfig>((_, reject) => {
-			rejectCreation = reject;
-		});
-		vi.mocked(dependencies.createGeneratedConfig).mockReturnValueOnce(creation);
-
-		const outcome = orchestrateShopifyRun({
-			dependencies,
-			options: {
-				cwd: consumer.projectRoot,
-				profile: "guest",
-				signal: controller.signal,
-			},
-		}).catch((error: unknown) => error);
-		await vi.waitFor(() =>
-			expect(dependencies.createGeneratedConfig).toHaveBeenCalledOnce(),
-		);
-		controller.abort("SIGTERM");
-		rejectCreation?.(new Error("private config creation cause"));
+		resolveCreation?.(artifact);
 
 		await expect(outcome).resolves.toMatchObject({
 			exitCode: 143,
 			signal: "SIGTERM",
 		});
-		expect(generated.cleanup).not.toHaveBeenCalled();
-		expect(dependencies.runChild).not.toHaveBeenCalled();
-	});
-
-	it("retries interrupted generated-config cleanup and reports persistent failure", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		const controller = new AbortController();
-		let resolveCreation:
-			| ((value: GeneratedPlaywrightConfig) => void)
-			| undefined;
-		const creation = new Promise<GeneratedPlaywrightConfig>((resolveValue) => {
-			resolveCreation = resolveValue;
-		});
-		vi.mocked(dependencies.createGeneratedConfig).mockReturnValueOnce(creation);
-		generated.cleanup.mockRejectedValue(new Error("private cleanup cause"));
-
-		const outcome = orchestrateShopifyRun({
-			dependencies,
-			options: {
-				cwd: consumer.projectRoot,
-				profile: "guest",
-				signal: controller.signal,
-			},
-		}).catch((error: unknown) => error);
-		await vi.waitFor(() =>
-			expect(dependencies.createGeneratedConfig).toHaveBeenCalledOnce(),
-		);
-		controller.abort("SIGTERM");
-		resolveCreation?.(generated);
-
-		await expect(outcome).resolves.toMatchObject({
-			exitCode: 143,
-			message:
-				"Shopify test run interrupted; temporary Playwright cleanup could not complete.",
-			signal: "SIGTERM",
-		});
-		expect(generated.cleanup).toHaveBeenCalledTimes(2);
+		expect(cleanup).toHaveBeenCalledOnce();
 		expect(dependencies.runChild).not.toHaveBeenCalled();
 	});
 
 	it.each([
-		{ persistent: false, expectedMessage: undefined },
-		{
-			persistent: true,
-			expectedMessage:
-				"Shopify test run interrupted; temporary Playwright cleanup could not complete.",
-		},
-	] as const)("retries $persistent post-child cleanup failure without losing the signal", async ({
-		expectedMessage,
-		persistent,
-	}) => {
+		"data-root",
+		"ready-list",
+		"role-prompt",
+		"state-resolve",
+		"invalid-remediation",
+		"peer",
+	] as const)("stops at the %s signal checkpoint before context creation", async (checkpoint) => {
 		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
 		const controller = new AbortController();
-		generated.cleanup.mockImplementation(async () => {
-			controller.abort("SIGTERM");
-			if (persistent || generated.cleanup.mock.calls.length === 1) {
-				throw new Error("private cleanup cause");
-			}
-		});
-
-		const error = await orchestrateShopifyRun({
-			dependencies,
-			options: {
-				cwd: consumer.projectRoot,
-				profile: "guest",
-				signal: controller.signal,
-			},
-		}).catch((cause: unknown) => cause);
-
-		expect(error).toMatchObject({
-			exitCode: 143,
-			signal: "SIGTERM",
-			...(expectedMessage === undefined ? {} : { message: expectedMessage }),
-		});
-		expect(String(error)).not.toContain("private cleanup cause");
-		expect(generated.cleanup).toHaveBeenCalledTimes(2);
-	});
-
-	it.each([
-		{ abortDuring: "child", expectedExitCode: 143, reason: "SIGTERM" },
-		{ abortDuring: "cleanup", expectedExitCode: 130, reason: "SIGINT" },
-	] as const)("reports $expectedExitCode when interrupted during $abortDuring even if the child returns zero", async ({
-		abortDuring,
-		expectedExitCode,
-		reason,
-	}) => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		const controller = new AbortController();
-		if (abortDuring === "child") {
-			vi.mocked(dependencies.runChild).mockImplementationOnce(async () => {
-				controller.abort(reason);
-				return 0;
+		const store = makeStore();
+		const dependencies = makeDependencies({ store });
+		const abort = () => controller.abort("SIGTERM");
+		let role: readonly string[] | undefined = ["admin"];
+		let interactive = false;
+		if (checkpoint === "data-root") {
+			vi.mocked(dependencies.resolveDataRoot).mockImplementationOnce(
+				async () => {
+					abort();
+					return "/external/role-state-data";
+				},
+			);
+		}
+		if (checkpoint === "ready-list" || checkpoint === "role-prompt") {
+			role = undefined;
+			interactive = true;
+		}
+		if (checkpoint === "ready-list") {
+			vi.mocked(store.list).mockImplementationOnce(async () => {
+				abort();
+				return [{ role: "admin", status: "ready" }];
 			});
-		} else {
-			generated.cleanup.mockImplementationOnce(async () => {
-				await rm(dirname(generated.configPath), {
-					force: true,
-					recursive: true,
-				});
-				controller.abort(reason);
+		}
+		if (checkpoint === "role-prompt") {
+			vi.mocked(dependencies.selectRoles).mockImplementationOnce(async () => {
+				abort();
+				return ["admin"];
+			});
+		}
+		if (checkpoint === "state-resolve") {
+			vi.mocked(store.resolve).mockImplementationOnce(async () => {
+				abort();
+				return selected();
+			});
+		}
+		if (checkpoint === "invalid-remediation") {
+			vi.mocked(store.list).mockResolvedValueOnce([
+				{ role: "admin", status: "invalid" },
+			]);
+			vi.mocked(store.removableRoles).mockImplementationOnce(async () => {
+				abort();
+				return ["admin"];
+			});
+		}
+		if (checkpoint === "peer") {
+			vi.mocked(dependencies.resolvePeer).mockImplementationOnce(async () => {
+				abort();
+				return {
+					executablePath: "/consumer/playwright/cli.js",
+					modulePath: "/consumer/playwright/index.js",
+				};
 			});
 		}
 
 		const error = await orchestrateShopifyRun({
 			dependencies,
-			options: {
-				cwd: consumer.projectRoot,
-				profile: "guest",
+			options: runOptions(consumer.projectRoot, {
+				interactive,
+				role,
 				signal: controller.signal,
-			},
+			}),
 		}).catch((cause: unknown) => cause);
 
 		expect(error).toBeInstanceOf(CommandSignalError);
-		expect(error).toMatchObject({ exitCode: expectedExitCode, signal: reason });
-		expect(generated.cleanup).toHaveBeenCalledOnce();
-	});
-
-	it("completes preflight, reports selected paths, starts one child, and cleans up", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					grep: "checkout with spaces",
-					profile: "guest",
-				},
-			}),
-		).resolves.toBe(0);
-
-		expect(dependencies.reportSelection).toHaveBeenCalledWith({
-			configPath: consumer.configPath,
-			profile: "guest",
-			role: "guest",
-			testDir: consumer.testDir,
-		});
-		expect(dependencies.runChild).toHaveBeenCalledTimes(1);
-		expect(dependencies.buildInvocation).toHaveBeenCalledWith(
-			expect.objectContaining({
-				controls: { grep: "checkout with spaces" },
-			}),
-		);
-		expect(generated.cleanup).toHaveBeenCalledTimes(1);
-		await expect(access(dirname(generated.configPath))).rejects.toThrow();
-	});
-
-	it("passes through a valid no-match filter and the child no-tests exit", async () => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({
-			exitCode: 1,
-			generatedConfig: generated,
-		});
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: {
-					cwd: consumer.projectRoot,
-					grepInvert: ".*",
-					profile: "guest",
-				},
-			}),
-		).resolves.toBe(1);
-		expect(dependencies.runChild).toHaveBeenCalledTimes(1);
-	});
-
-	it.each([
-		{ exitCode: 1, label: "test failure" },
-		{ exitCode: 17, label: "runner infrastructure" },
-		{ exitCode: 130, label: "SIGINT" },
-		{ exitCode: 143, label: "SIGTERM" },
-	])("preserves $label child exit $exitCode", async ({ exitCode }) => {
-		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({
-			exitCode,
-			generatedConfig: generated,
-		});
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: { cwd: consumer.projectRoot, profile: "guest" },
-			}),
-		).resolves.toBe(exitCode);
-		expect(generated.cleanup).toHaveBeenCalledTimes(1);
-	});
-
-	it("never resolves the peer or spawns when dedicated config preflight fails", async () => {
-		const consumer = await makeConsumer();
-		await rm(consumer.configPath);
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: { cwd: consumer.projectRoot, profile: "guest" },
-			}),
-		).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
-		expect(dependencies.resolvePeer).not.toHaveBeenCalled();
+		expect(error).toMatchObject({ exitCode: 143, signal: "SIGTERM" });
+		expect(dependencies.createExecutionContext).not.toHaveBeenCalled();
 		expect(dependencies.runChild).not.toHaveBeenCalled();
 	});
 
-	it("cleans temporary state when invocation construction rejects a filter", async () => {
+	it("keeps the signal authoritative during child execution and context cleanup", async () => {
 		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		vi.mocked(dependencies.buildInvocation).mockImplementationOnce(() => {
-			throw new ShopifyE2EPreflightError(
-				"--grep filter must be a non-empty string",
-			);
+		const controller = new AbortController();
+		const cleanup = vi.fn(async () => undefined);
+		const dependencies = makeDependencies({
+			artifact: {
+				cleanup,
+				contextPath: join(tmpdir(), "shopify-e2e-context-signal.json"),
+			},
+		});
+		vi.mocked(dependencies.runChild).mockImplementationOnce(async () => {
+			controller.abort("SIGINT");
+			return 0;
 		});
 
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: { cwd: consumer.projectRoot, grep: "", profile: "guest" },
-			}),
-		).rejects.toThrow(/non-empty/i);
-		expect(dependencies.runChild).not.toHaveBeenCalled();
-		expect(generated.cleanup).toHaveBeenCalledTimes(1);
+		const error = await orchestrateShopifyRun({
+			dependencies,
+			options: runOptions(consumer.projectRoot, { signal: controller.signal }),
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(CommandSignalError);
+		expect(error).toMatchObject({ exitCode: 130, signal: "SIGINT" });
+		expect(cleanup).toHaveBeenCalledOnce();
 	});
 
-	it("cleans temporary state after a spawn infrastructure failure", async () => {
+	it("retries interrupted cleanup and sanitizes a persistent failure", async () => {
 		const consumer = await makeConsumer();
-		const generated = await makeGeneratedConfig(consumer.projectRoot);
-		const dependencies = makeDependencies({ generatedConfig: generated });
-		vi.mocked(dependencies.runChild).mockRejectedValueOnce(
-			new ShopifyE2EInfrastructureError(
-				`Could not start Playwright with ${process.execPath}`,
-			),
-		);
+		const controller = new AbortController();
+		const cleanup = vi.fn(async () => {
+			controller.abort("SIGTERM");
+			throw new Error("private cleanup cause");
+		});
+		const dependencies = makeDependencies({
+			artifact: {
+				cleanup,
+				contextPath: join(tmpdir(), "shopify-e2e-context-retry.json"),
+			},
+		});
 
-		await expect(
-			orchestrateShopifyRun({
-				dependencies,
-				options: { cwd: consumer.projectRoot, profile: "guest" },
-			}),
-		).rejects.toThrow(process.execPath);
-		expect(generated.cleanup).toHaveBeenCalledTimes(1);
+		const error = await orchestrateShopifyRun({
+			dependencies,
+			options: runOptions(consumer.projectRoot, { signal: controller.signal }),
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toMatchObject({
+			exitCode: 143,
+			message:
+				"Shopify test run interrupted; temporary Playwright cleanup could not complete.",
+			signal: "SIGTERM",
+		});
+		expect(String(error)).not.toContain("private cleanup cause");
+		expect(cleanup).toHaveBeenCalledTimes(2);
 	});
 });

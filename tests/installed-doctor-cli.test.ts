@@ -33,8 +33,8 @@ interface RunInstalledDoctorArgs {
 }
 
 interface InstalledDoctorResult {
-	readonly profilePoisonPath: string;
 	readonly result: CommandResult;
+	readonly roleStatePoisonPath: string;
 	readonly runtimeTemporaryRoot: string;
 	readonly sideEffectGuardActiveMarker: string;
 }
@@ -43,9 +43,9 @@ const runInstalledDoctor = async ({
 	consumerRoot,
 	markerDirectory,
 }: RunInstalledDoctorArgs): Promise<InstalledDoctorResult> => {
-	const profilePoisonPath = join(
+	const roleStatePoisonPath = join(
 		consumerRoot,
-		"doctor-must-not-create-profile-data",
+		"doctor-must-not-create-role-state-data",
 	);
 	const runtimeTemporaryRoot = join(consumerRoot, "doctor-runtime-tmp");
 	const launchMarker = join(consumerRoot, "doctor-launch.marker");
@@ -61,7 +61,7 @@ const runInstalledDoctor = async ({
 			...process.env,
 			NO_COLOR: "1",
 			NODE_OPTIONS: `--require ${JSON.stringify(sideEffectGuardPath)}`,
-			SHOPIFY_E2E_DATA_DIR: profilePoisonPath,
+			SHOPIFY_E2E_DATA_DIR: roleStatePoisonPath,
 			SHOPIFY_E2E_MARKER_DIR: markerDirectory,
 			SHOPIFY_E2E_SIDE_EFFECT_GUARD_ACTIVE_MARKER: sideEffectGuardActiveMarker,
 			SHOPIFY_STORE_URL: "https://shop.example",
@@ -78,13 +78,13 @@ const runInstalledDoctor = async ({
 		timeout: 30_000,
 	});
 	return {
-		profilePoisonPath,
 		result: {
 			...(command.error === undefined ? {} : { error: command.error }),
 			status: command.status,
 			stderr: command.stderr,
 			stdout: command.stdout,
 		},
+		roleStatePoisonPath,
 		runtimeTemporaryRoot,
 		sideEffectGuardActiveMarker,
 	};
@@ -92,11 +92,11 @@ const runInstalledDoctor = async ({
 
 const expectDoctorIsolation = async ({
 	markerDirectory,
-	profilePoisonPath,
+	roleStatePoisonPath,
 	sideEffectGuardActiveMarker,
 }: {
 	readonly markerDirectory: string;
-	readonly profilePoisonPath: string;
+	readonly roleStatePoisonPath: string;
 	readonly sideEffectGuardActiveMarker: string;
 }): Promise<void> => {
 	await expect(access(sideEffectGuardActiveMarker)).resolves.toBeUndefined();
@@ -104,7 +104,7 @@ const expectDoctorIsolation = async ({
 		markerDirectory,
 		names: doctorIsolationMarkers,
 	});
-	await expect(access(profilePoisonPath)).rejects.toMatchObject({
+	await expect(access(roleStatePoisonPath)).rejects.toMatchObject({
 		code: "ENOENT",
 	});
 };
@@ -127,8 +127,8 @@ describe.sequential("installed doctor CLI release boundary", () => {
 
 	it("proves packed doctor readiness without forbidden side effects", async () => {
 		const {
-			profilePoisonPath,
 			result,
+			roleStatePoisonPath,
 			runtimeTemporaryRoot,
 			sideEffectGuardActiveMarker,
 		} = await runInstalledDoctor({
@@ -149,17 +149,24 @@ describe.sequential("installed doctor CLI release boundary", () => {
 			expect.stringMatching(/^PASS Environment:/),
 			expect.stringMatching(/^PASS Store URL:/),
 			expect.stringMatching(/^PASS Shopify config:/),
-			expect.stringMatching(/^PASS Shopify spec candidates:/),
+			expect.stringMatching(/^PASS Shopify test directory:/),
 			expect.stringMatching(/^PASS Playwright peer:/),
 			expect.stringMatching(/^PASS Chromium:/),
 		]);
+		expect(result.stdout).toContain(
+			"Package-owned Shopify config checks passed",
+		);
+		expect(result.stdout).toMatch(
+			/JavaScript\/TypeScript file candidate\(s\) found/,
+		);
+		expect(result.stdout).not.toMatch(/runnable Playwright specs/i);
 		await expect(access(fixture.ready.launchMarker)).rejects.toMatchObject({
 			code: "ENOENT",
 		});
 		await expect(readdir(runtimeTemporaryRoot)).resolves.toEqual([]);
 		await expectDoctorIsolation({
 			markerDirectory,
-			profilePoisonPath,
+			roleStatePoisonPath,
 			sideEffectGuardActiveMarker,
 		});
 	});
@@ -176,7 +183,7 @@ describe.sequential("installed doctor CLI release boundary", () => {
 			),
 		).rejects.toMatchObject({ code: "ENOENT" });
 
-		const { profilePoisonPath, result, sideEffectGuardActiveMarker } =
+		const { result, roleStatePoisonPath, sideEffectGuardActiveMarker } =
 			await runInstalledDoctor({
 				consumerRoot: fixture.missingPeerConsumerRoot,
 				markerDirectory,
@@ -188,13 +195,13 @@ describe.sequential("installed doctor CLI release boundary", () => {
 		expect(result.stdout).not.toMatch(/^PASS Playwright peer:/m);
 		await expectDoctorIsolation({
 			markerDirectory,
-			profilePoisonPath,
+			roleStatePoisonPath,
 			sideEffectGuardActiveMarker,
 		});
 	});
 
 	it("reports packed missing Chromium with install guidance and no launch", async () => {
-		const { profilePoisonPath, result, sideEffectGuardActiveMarker } =
+		const { result, roleStatePoisonPath, sideEffectGuardActiveMarker } =
 			await runInstalledDoctor({
 				consumerRoot: fixture.missingChromium.consumerRoot,
 				markerDirectory,
@@ -209,7 +216,7 @@ describe.sequential("installed doctor CLI release boundary", () => {
 		).rejects.toMatchObject({ code: "ENOENT" });
 		await expectDoctorIsolation({
 			markerDirectory,
-			profilePoisonPath,
+			roleStatePoisonPath,
 			sideEffectGuardActiveMarker,
 		});
 	});

@@ -4,72 +4,108 @@ import {
 	mkdir,
 	mkdtemp,
 	readFile,
+	realpath,
 	rm,
-	stat,
 	symlink,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-	createGeneratedPlaywrightConfig,
-	type GeneratedPlaywrightConfig,
-} from "../src/playwright/generated-config.js";
+import { buildPlaywrightChildEnvironment } from "../src/config/execution-environment.cjs";
+import { createPlaywrightExecutionContext } from "../src/playwright/execution-context.cjs";
 import { buildPlaywrightInvocation } from "../src/playwright/invocation.js";
 import { resolvePlaywrightPeer } from "../src/playwright/peer.js";
-import { EMPTY_STORAGE_STATE } from "../src/profiles/profile-store.js";
 
+const EMPTY_STATE = { cookies: [], origins: [] } as const;
 const temporaryDirectories: string[] = [];
 
-const runListedTests = (
-	invocation: ReturnType<typeof buildPlaywrightInvocation>,
-	cwd: string,
-) =>
-	spawnSync(invocation.executable, [...invocation.args, "--list"], {
-		cwd,
-		encoding: "utf8",
-		env: { ...process.env, NO_COLOR: "1" },
-	});
-
-const makeTestRoot = async (): Promise<string> => {
-	const project = await mkdtemp(join(tmpdir(), "shopify-e2e-invocation-"));
-	temporaryDirectories.push(project);
-	const testDir = join(project, "shopify-tests");
+const makeProject = async () => {
+	const projectRoot = await realpath(
+		await mkdtemp(join(tmpdir(), "shopify-e2e-invocation-")),
+	);
+	temporaryDirectories.push(projectRoot);
+	const configPath = join(projectRoot, "shopify-e2e.config.ts");
+	const testDir = join(projectRoot, "shopify-tests");
 	await mkdir(testDir);
-	const packageScope = join(project, "node_modules", "@playwright");
-	await mkdir(packageScope, { recursive: true });
+	await writeFile(
+		join(projectRoot, "package.json"),
+		'{"name":"invocation-consumer","private":true,"type":"module"}\n',
+	);
+	await mkdir(join(projectRoot, "node_modules", "@sematico"), {
+		recursive: true,
+	});
+	await mkdir(join(projectRoot, "node_modules", "@playwright"), {
+		recursive: true,
+	});
 	await symlink(
-		join(process.cwd(), "node_modules", "@playwright", "test"),
-		join(packageScope, "test"),
+		process.cwd(),
+		join(projectRoot, "node_modules", "@sematico", "shopify-e2e"),
+		"dir",
+	);
+	await symlink(
+		resolve(process.cwd(), "node_modules/@playwright/test"),
+		join(projectRoot, "node_modules", "@playwright", "test"),
 		"dir",
 	);
 	await writeFile(
-		join(testDir, "baseline.spec.ts"),
-		'import { test } from "@playwright/test";\ntest("baseline", { tag: "@shopify-e2e-role-guest" }, () => {});\n',
+		configPath,
+		`import { defineShopifyE2EConfig } from "@sematico/shopify-e2e/config";
+export default defineShopifyE2EConfig({
+  fullyParallel: true,
+  metadata: { lane: "shopify" },
+  outputDir: "artifacts/output",
+  reporter: [["json", { outputFile: "artifacts/results.json" }]],
+  retries: 1,
+  roles: ["admin", "customer"],
+  testDir: "shopify-tests",
+  use: { screenshot: "off", trace: "off", video: "off" }
+});
+`,
 	);
-	return testDir;
+	return { configPath, projectRoot, testDir };
 };
 
-const createGuestConfig = (testDir: string) =>
-	createGeneratedPlaywrightConfig({
-		selection: {
-			kind: "unauthenticated",
-			name: "guest",
-			role: "guest",
-			state: EMPTY_STORAGE_STATE,
-		},
-		testDir,
+const invocationFor = async (
+	project: Awaited<ReturnType<typeof makeProject>>,
+	options: {
+		readonly controls?: {
+			readonly grep?: string;
+			readonly grepInvert?: string;
+		};
+		readonly markerDirectory?: string;
+		readonly role?: string;
+	} = {},
+) => {
+	const context = await createPlaywrightExecutionContext({
+		...project,
+		normalizedOrigin: "https://shop.example",
+		role: options.role ?? "admin",
+		state: EMPTY_STATE,
 	});
-
-const expectCleaned = async (
-	config: GeneratedPlaywrightConfig,
-): Promise<void> => {
-	await config.cleanup();
-	await config.cleanup();
-	await expect(access(dirname(config.configPath))).rejects.toThrow();
+	const environment = buildPlaywrightChildEnvironment(
+		{
+			...process.env,
+			NO_COLOR: "1",
+			...(options.markerDirectory === undefined
+				? {}
+				: { SHOPIFY_E2E_MARKER_DIR: options.markerDirectory }),
+			SHOPIFY_STORE_URL: "https://shop.example/path",
+		},
+		context.contextPath,
+	);
+	const peer = await resolvePlaywrightPeer(process.cwd());
+	return {
+		context,
+		invocation: buildPlaywrightInvocation({
+			configPath: project.configPath,
+			controls: options.controls,
+			environment,
+			peer,
+		}),
+	};
 };
 
 afterEach(async () => {
@@ -80,254 +116,71 @@ afterEach(async () => {
 	);
 });
 
-describe("generated Playwright configuration", () => {
-	it("writes the absolute root, selected role/state, and one-worker settings with user-only permissions", async () => {
-		const testDir = await makeTestRoot();
-		const config = await createGuestConfig(testDir);
-
-		try {
-			const source = await readFile(config.configPath, "utf8");
-			expect(source).toContain(`testDir: ${JSON.stringify(testDir)}`);
-			expect(source).toContain("workers: 1");
-			expect(source).toContain("@shopify-e2e-role-guest");
-			expect(source).toContain(
-				`storageState: JSON.parse(${JSON.stringify('{"cookies":[],"origins":[]}')})`,
-			);
-			expect((await stat(dirname(config.configPath))).mode & 0o777).toBe(0o700);
-			expect((await stat(config.configPath)).mode & 0o777).toBe(0o600);
-		} finally {
-			await config.cleanup();
-		}
-	});
-
-	it("rejects a relative test root", async () => {
-		await expect(createGuestConfig("shopify-tests")).rejects.toThrow(
-			/absolute/i,
-		);
-	});
-
-	it("provides idempotent cleanup", async () => {
-		const config = await createGuestConfig(await makeTestRoot());
-
-		await expectCleaned(config);
-	});
-
-	it("is accepted by the pinned consumer Playwright baseline", async () => {
-		const testDir = await makeTestRoot();
-		const project = join(testDir, "..");
-		const config = await createGuestConfig(testDir);
-		const peer = await resolvePlaywrightPeer(process.cwd());
-
-		try {
-			const result = spawnSync(
-				process.execPath,
-				[
-					peer.executablePath,
-					"test",
-					"--config",
-					config.configPath,
-					"--workers=1",
-					"--list",
-				],
-				{ cwd: project, encoding: "utf8" },
-			);
-
-			expect(result.status, result.stderr).toBe(0);
-			expect(result.stdout).toContain("baseline.spec.ts:2:");
-		} finally {
-			await config.cleanup();
-		}
-	});
-});
-
 describe("owned Playwright invocation", () => {
-	it("constructs only the consumer peer, test command, generated config, and one worker", async () => {
-		const generatedConfig = await createGuestConfig(await makeTestRoot());
+	it("rejects a relative config path", async () => {
 		const peer = await resolvePlaywrightPeer(process.cwd());
-
-		try {
-			expect(buildPlaywrightInvocation({ generatedConfig, peer })).toEqual({
-				args: [
-					peer.executablePath,
-					"test",
-					"--config",
-					generatedConfig.configPath,
-					"--workers=1",
-				],
-				executable: process.execPath,
-			});
-		} finally {
-			await generatedConfig.cleanup();
-		}
+		expect(() =>
+			buildPlaywrightInvocation({
+				configPath: "shopify-e2e.config.ts",
+				peer,
+			}),
+		).toThrow(/absolute/i);
 	});
 
-	it("keeps filter names and values in separate owned argv entries", async () => {
-		const generatedConfig = await createGuestConfig(await makeTestRoot());
+	it("constructs exactly one real config, one worker, filters, and child environment", async () => {
+		const project = await makeProject();
 		const peer = await resolvePlaywrightPeer(process.cwd());
+		const environment = {
+			PATH: "/usr/bin",
+			SHOPIFY_E2E_EXECUTION_CONTEXT: "/tmp/context.json",
+		};
 
-		try {
-			const invocation = buildPlaywrightInvocation({
+		expect(
+			buildPlaywrightInvocation({
+				configPath: project.configPath,
 				controls: {
-					grep: "checkout with spaces",
+					grep: "account with spaces",
 					grepInvert: "--project=ordinary",
 				},
-				generatedConfig,
+				environment,
 				peer,
-			});
-
-			expect(invocation.args.slice(-4)).toEqual([
+			}),
+		).toEqual({
+			args: [
+				peer.executablePath,
+				"test",
+				"--config",
+				project.configPath,
+				"--workers=1",
 				"--grep",
-				"checkout with spaces",
+				"account with spaces",
 				"--grep-invert",
 				"--project=ordinary",
-			]);
-		} finally {
-			await generatedConfig.cleanup();
-		}
-	});
-
-	it("keeps a leading-dash filter value from becoming a Playwright option", async () => {
-		const testDir = await makeTestRoot();
-		const generatedConfig = await createGuestConfig(testDir);
-		const peer = await resolvePlaywrightPeer(process.cwd());
-
-		try {
-			const invocation = buildPlaywrightInvocation({
-				controls: { grepInvert: "--project=ordinary" },
-				generatedConfig,
-				peer,
-			});
-			const result = spawnSync(
-				invocation.executable,
-				[...invocation.args, "--list"],
-				{
-					cwd: dirname(testDir),
-					encoding: "utf8",
-					env: { ...process.env, NO_COLOR: "1" },
-				},
-			);
-
-			expect(result.status, result.stderr).toBe(0);
-			expect(result.stdout).toContain("baseline.spec.ts:2:");
-			expect(result.stderr).not.toMatch(/project.*ordinary/i);
-		} finally {
-			await generatedConfig.cleanup();
-		}
-	});
-
-	it.each([
-		{
-			controls: undefined,
-			excluded: ["admin-extra role", "customer role", "untagged role"],
-			included: ["admin role", "multi role"],
-			label: "mandatory role lane",
-		},
-		{
-			controls: { grep: "multi role" },
-			excluded: ["admin role", "admin-extra role", "customer role"],
-			included: ["multi role"],
-			label: "additive grep",
-		},
-		{
-			controls: { grepInvert: "multi role" },
-			excluded: ["multi role", "admin-extra role", "customer role"],
-			included: ["admin role"],
-			label: "additive grep-invert",
-		},
-	])("ANDs $label with the exact admin token", async ({
-		controls,
-		excluded,
-		included,
-	}) => {
-		const project = await mkdtemp(join(tmpdir(), "shopify-e2e-role-and-"));
-		temporaryDirectories.push(project);
-		const testDir = join(project, "shopify-tests");
-		await mkdir(testDir);
-		await writeFile(
-			join(testDir, "roles.spec.ts"),
-			`import { test } from ${JSON.stringify(join(process.cwd(), "node_modules", "@playwright", "test", "index.js"))};
-test("admin role", { tag: "@shopify-e2e-role-admin" }, () => {});
-test("admin-extra role", { tag: "@shopify-e2e-role-admin-extra" }, () => {});
-test("customer role", { tag: "@shopify-e2e-role-customer" }, () => {});
-test("multi role", { tag: ["@shopify-e2e-role-admin", "@shopify-e2e-role-customer"] }, () => {});
-test("untagged role", () => {});
-`,
-		);
-		const generatedConfig = await createGeneratedPlaywrightConfig({
-			selection: {
-				kind: "saved",
-				name: "admin-primary",
-				role: "admin",
-				state: EMPTY_STORAGE_STATE,
-			},
-			testDir,
+			],
+			environment,
+			executable: process.execPath,
 		});
-		const peer = await resolvePlaywrightPeer(process.cwd());
-
-		try {
-			const result = runListedTests(
-				buildPlaywrightInvocation({ controls, generatedConfig, peer }),
-				project,
-			);
-			expect(result.status, result.stderr).toBe(0);
-			for (const title of included) expect(result.stdout).toContain(title);
-			for (const title of excluded) expect(result.stdout).not.toContain(title);
-		} finally {
-			await generatedConfig.cleanup();
-		}
 	});
 
-	it("executes only admin and multi-role bodies while preserving discovery boundaries", async () => {
-		const consumer = join(process.cwd(), "tests", "fixtures", "consumer");
-		const testDir = join(consumer, "shopify-passing");
-		const markerDirectory = await mkdtemp(
-			join(tmpdir(), "shopify-e2e-role-markers-"),
-		);
-		temporaryDirectories.push(markerDirectory);
-		const generatedConfig = await createGeneratedPlaywrightConfig({
-			selection: {
-				kind: "saved",
-				name: "admin-primary",
-				role: "admin",
-				state: EMPTY_STORAGE_STATE,
-			},
-			testDir,
-		});
+	it("passes the pinned native endpoint only through the child environment", async () => {
+		const project = await makeProject();
 		const peer = await resolvePlaywrightPeer(process.cwd());
+		const endpoint = "ws://127.0.0.1:4321/invocation-secret";
+		const environment = buildPlaywrightChildEnvironment(
+			{ PATH: "/usr/bin" },
+			"/tmp/context.json",
+			endpoint,
+		);
 
-		try {
-			const invocation = buildPlaywrightInvocation({ generatedConfig, peer });
-			const result = spawnSync(invocation.executable, invocation.args, {
-				cwd: consumer,
-				encoding: "utf8",
-				env: {
-					...process.env,
-					NO_COLOR: "1",
-					SHOPIFY_E2E_MARKER_DIR: markerDirectory,
-				},
-			});
-			expect(result.status, result.stderr).toBe(0);
-			await expect(
-				access(join(markerDirectory, "admin-role.marker")),
-			).resolves.toBeUndefined();
-			await expect(
-				access(join(markerDirectory, "multi-role.marker")),
-			).resolves.toBeUndefined();
-			await expect(
-				access(join(markerDirectory, "wrong-role-module-loaded.marker")),
-			).resolves.toBeUndefined();
-			for (const marker of [
-				"customer-role.marker",
-				"guest-role.marker",
-				"untagged-role.marker",
-				"wrong-role-body.marker",
-				"ordinary-spec-loaded.marker",
-			]) {
-				await expect(access(join(markerDirectory, marker))).rejects.toThrow();
-			}
-		} finally {
-			await generatedConfig.cleanup();
-		}
+		const invocation = buildPlaywrightInvocation({
+			configPath: project.configPath,
+			environment,
+			peer,
+		});
+
+		expect(invocation.environment?.PW_TEST_CONNECT_WS_ENDPOINT).toBe(endpoint);
+		expect(invocation.args.join(" ")).not.toContain(endpoint);
+		expect(invocation.executable).not.toContain(endpoint);
 	});
 
 	it.each([
@@ -337,21 +190,136 @@ test("untagged role", () => {});
 		{ controls: { config: "playwright.config.ts" }, label: "config override" },
 		{ controls: { files: ["ordinary.spec.ts"] }, label: "file selection" },
 		{ controls: { passthrough: ["--", "--ui"] }, label: "passthrough" },
-		{ controls: { reporter: "html" }, label: "deferred option" },
 	])("rejects $label before argv construction", async ({ controls }) => {
-		const generatedConfig = await createGuestConfig(await makeTestRoot());
+		const project = await makeProject();
 		const peer = await resolvePlaywrightPeer(process.cwd());
+		expect(() =>
+			buildPlaywrightInvocation({
+				configPath: project.configPath,
+				controls: controls as never,
+				peer,
+			}),
+		).toThrow(/filter|unsupported/i);
+	});
+
+	it("ANDs the exact role tag with title filters without loading ordinary config or out-of-root tests", async () => {
+		const project = await makeProject();
+		const markerDirectory = await realpath(
+			await mkdtemp(join(tmpdir(), "shopify-e2e-invocation-markers-")),
+		);
+		temporaryDirectories.push(markerDirectory);
+		const ordinaryConfigMarker = join(
+			markerDirectory,
+			"ordinary-config.marker",
+		);
+		const ordinarySpecMarker = join(markerDirectory, "ordinary-spec.marker");
+		await writeFile(
+			join(project.projectRoot, "playwright.config.ts"),
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(ordinaryConfigMarker)}, "loaded"); export default { testDir: "ordinary" };\n`,
+		);
+		await mkdir(join(project.projectRoot, "ordinary"));
+		await writeFile(
+			join(project.projectRoot, "ordinary", "ordinary.spec.ts"),
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(ordinarySpecMarker)}, "loaded");\n`,
+		);
+		await writeFile(
+			join(project.testDir, "roles.spec.ts"),
+			`import { writeFileSync } from "node:fs";
+import { test } from "@playwright/test";
+const markers = process.env.SHOPIFY_E2E_MARKER_DIR;
+if (!markers) throw new Error("marker directory is required");
+const mark = (name: string) => writeFileSync(markers + "/" + name + ".marker", String(process.pid));
+test("account active", { tag: "@shopify-e2e-role-admin" }, () => mark("admin-account"));
+test("account draft", { tag: "@shopify-e2e-role-admin" }, () => mark("admin-draft"));
+test("other admin", { tag: "@shopify-e2e-role-admin" }, () => mark("other-admin"));
+test("untagged account", () => mark("untagged-body"));
+`,
+		);
+		await writeFile(
+			join(project.testDir, "wrong-role.spec.ts"),
+			`import { writeFileSync } from "node:fs";
+import { test } from "@playwright/test";
+const markers = process.env.SHOPIFY_E2E_MARKER_DIR;
+if (!markers) throw new Error("marker directory is required");
+writeFileSync(markers + "/wrong-role-module.marker", "loaded");
+test("account customer", { tag: "@shopify-e2e-role-customer" }, () => {
+  writeFileSync(markers + "/customer-body.marker", String(process.pid));
+});
+`,
+		);
+		const { context, invocation } = await invocationFor(project, {
+			controls: { grep: "account", grepInvert: "draft" },
+			markerDirectory,
+		});
 
 		try {
-			expect(() =>
-				buildPlaywrightInvocation({
-					controls: controls as never,
-					generatedConfig,
-					peer,
-				}),
-			).toThrow(/filter|unsupported/i);
+			const result = spawnSync(invocation.executable, invocation.args, {
+				cwd: project.projectRoot,
+				encoding: "utf8",
+				env: invocation.environment,
+			});
+			expect(result.status, result.stderr).toBe(0);
+			await expect(
+				access(join(markerDirectory, "admin-account.marker")),
+			).resolves.toBeUndefined();
+			await expect(
+				access(join(markerDirectory, "wrong-role-module.marker")),
+			).resolves.toBeUndefined();
+			for (const marker of [
+				"admin-draft.marker",
+				"customer-body.marker",
+				"other-admin.marker",
+				"untagged-body.marker",
+				"ordinary-config.marker",
+				"ordinary-spec.marker",
+			]) {
+				await expect(access(join(markerDirectory, marker))).rejects.toThrow();
+			}
+			await expect(
+				access(join(project.projectRoot, "artifacts", "results.json")),
+			).resolves.toBeUndefined();
 		} finally {
-			await generatedConfig.cleanup();
+			await context.cleanup();
+		}
+	});
+
+	it("keeps fullyParallel execution on one global worker", async () => {
+		const project = await makeProject();
+		const markerDirectory = await realpath(
+			await mkdtemp(join(tmpdir(), "shopify-e2e-worker-markers-")),
+		);
+		temporaryDirectories.push(markerDirectory);
+		for (const name of ["first", "second"]) {
+			await writeFile(
+				join(project.testDir, `${name}.spec.ts`),
+				`import { appendFile } from "node:fs/promises";
+import { test } from "@playwright/test";
+test(${JSON.stringify(name)}, { tag: "@shopify-e2e-role-admin" }, async () => {
+  await appendFile(process.env.SHOPIFY_E2E_MARKER_DIR + "/workers.txt", String(process.pid) + "\\n");
+});
+`,
+			);
+		}
+		const { context, invocation } = await invocationFor(project, {
+			markerDirectory,
+		});
+
+		try {
+			const result = spawnSync(invocation.executable, invocation.args, {
+				cwd: project.projectRoot,
+				encoding: "utf8",
+				env: invocation.environment,
+			});
+			expect(result.status, result.stderr).toBe(0);
+			const pids = (
+				await readFile(join(markerDirectory, "workers.txt"), "utf8")
+			)
+				.trim()
+				.split("\n");
+			expect(pids).toHaveLength(2);
+			expect(new Set(pids).size).toBe(1);
+		} finally {
+			await context.cleanup();
 		}
 	});
 });
