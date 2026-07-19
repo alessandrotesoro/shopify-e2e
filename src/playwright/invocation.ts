@@ -1,5 +1,6 @@
+import { isAbsolute } from "node:path";
+
 import { ShopifyE2EPreflightError } from "../errors.js";
-import type { GeneratedPlaywrightConfig } from "./generated-config.js";
 import type { ResolvedPlaywrightPeer } from "./peer.js";
 
 export interface PlaywrightRunControls {
@@ -9,12 +10,14 @@ export interface PlaywrightRunControls {
 
 export interface BuildPlaywrightInvocationOptions {
 	readonly controls?: PlaywrightRunControls;
-	readonly generatedConfig: GeneratedPlaywrightConfig;
+	readonly configPath: string;
+	readonly environment?: NodeJS.ProcessEnv;
 	readonly peer: ResolvedPlaywrightPeer;
 }
 
 export interface PlaywrightInvocation {
 	readonly args: readonly string[];
+	readonly environment?: NodeJS.ProcessEnv;
 	readonly executable: string;
 }
 
@@ -51,15 +54,24 @@ const translateControls = (
 export const buildPlaywrightInvocation = (
 	options: BuildPlaywrightInvocationOptions,
 ): PlaywrightInvocation => {
+	const configPath = options.configPath;
+	if (!isAbsolute(configPath)) {
+		throw new ShopifyE2EPreflightError(
+			"Playwright invocation config path must be absolute",
+		);
+	}
 	return {
 		args: [
 			options.peer.executablePath,
 			"test",
 			"--config",
-			options.generatedConfig.configPath,
+			configPath,
 			"--workers=1",
 			...translateControls(options.controls),
 		],
+		...(options.environment === undefined
+			? {}
+			: { environment: options.environment }),
 		executable: process.execPath,
 	};
 };

@@ -1,23 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import {
-	assertProfileName,
-	assertRoleName,
-	isValidProfileName,
-} from "../src/profiles/profile-name.js";
+import { assertRoleName, isValidRoleName } from "../src/roles/role-name.cjs";
 import {
 	buildRoleToken,
 	buildRoleTokenPattern,
-} from "../src/roles/role-token.js";
+} from "../src/roles/role-token.cjs";
 
-describe("profile and role names", () => {
+describe("role names", () => {
 	it.each([
 		"admin",
 		"customer-primary",
 		"role2",
 		"a",
 	])("accepts canonical lower-kebab name %s", (name) =>
-		expect(isValidProfileName(name)).toBe(true));
+		expect(isValidRoleName(name)).toBe(true));
 
 	it.each([
 		"",
@@ -35,8 +31,8 @@ describe("profile and role names", () => {
 		"admin.role",
 		`${"a".repeat(64)}b`,
 	])("rejects unsafe name %s", (name) => {
-		expect(isValidProfileName(name)).toBe(false);
-		expect(() => assertProfileName(name)).toThrow(/lower-kebab/i);
+		expect(isValidRoleName(name)).toBe(false);
+		expect(() => assertRoleName(name)).toThrow(/lower-kebab/i);
 	});
 });
 

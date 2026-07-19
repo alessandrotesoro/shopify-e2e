@@ -5,7 +5,6 @@ import {
 	type DoctorReport,
 	orchestrateDoctor,
 } from "../doctor/doctor-orchestrator.js";
-import { configFlag } from "../flags.js";
 import {
 	CommandSignalError,
 	createCommandSignalScope,
@@ -17,7 +16,7 @@ const CHECK_LABELS = {
 	environment: "Environment",
 	"playwright-peer": "Playwright peer",
 	project: "Project",
-	specs: "Shopify spec candidates",
+	specs: "Shopify test directory",
 	"store-url": "Store URL",
 } as const satisfies Readonly<Record<DoctorCheckId, string>>;
 
@@ -29,20 +28,17 @@ const renderDoctorReport = (command: Command, report: DoctorReport): void => {
 
 export class Doctor extends Command {
 	static override description =
-		"Inspect local Shopify E2E readiness without running tests or launching a browser.";
-
-	static override flags = { config: configFlag };
+		"Inspect bounded Shopify E2E readiness without running tests or launching a browser.";
 
 	static override strict = true;
 
 	public async run(): Promise<void> {
-		const { flags } = await this.parse(Doctor);
+		await this.parse(Doctor);
 		const signals = createCommandSignalScope();
 		let report: DoctorReport;
 		try {
 			report = await orchestrateDoctor({
 				options: {
-					configPath: flags.config,
 					cwd: process.cwd(),
 					environment: process.env,
 					signal: signals.signal,

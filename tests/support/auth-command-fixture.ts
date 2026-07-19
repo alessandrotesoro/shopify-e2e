@@ -9,17 +9,17 @@ import type {
 	AuthOrchestratorOptions,
 	defaultAuthDependencies,
 } from "../../src/auth/auth-orchestrator.js";
-import type { PlaywrightStorageState } from "../../src/profiles/profile-schema.js";
-import {
-	createProfileStore,
-	EMPTY_STORAGE_STATE,
-	type ProfileStore,
-} from "../../src/profiles/profile-store.js";
 import type { PromptFunctions } from "../../src/prompts/inquirer.js";
+import {
+	createRoleStateStore,
+	type RoleStateStore,
+} from "../../src/role-states/role-state-store.js";
+import type { PlaywrightStorageState } from "../../src/storage-state/schema.cjs";
 
-export const DEFAULT_ROLES = {
-	admin: { authentication: "required" as const },
-	guest: { authentication: "none" as const },
+export const DEFAULT_ROLES = ["admin", "customer"] as const;
+export const EMPTY_STORAGE_STATE: PlaywrightStorageState = {
+	cookies: [],
+	origins: [],
 };
 
 export interface AuthCommandFixture {
@@ -27,13 +27,14 @@ export interface AuthCommandFixture {
 	readonly projectRoot: string;
 }
 
+const configHelperPath = resolve(
+	import.meta.dirname,
+	"../../src/config/public.cts",
+);
+
 export const createAuthFixtureScope = (): {
 	cleanup(): Promise<void>;
-	makeFixture(
-		roles?: Readonly<
-			Record<string, { readonly authentication: "none" | "required" }>
-		>,
-	): Promise<AuthCommandFixture>;
+	makeFixture(roles?: readonly string[]): Promise<AuthCommandFixture>;
 } => {
 	const temporaryDirectories: string[] = [];
 
@@ -56,7 +57,7 @@ export const createAuthFixtureScope = (): {
 			await mkdir(join(projectRoot, "shopify-tests"));
 			await writeFile(
 				join(projectRoot, "shopify-e2e.config.ts"),
-				`export default ${JSON.stringify({ roles, testDir: "shopify-tests" })};\n`,
+				`import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)};\nexport default defineShopifyE2EConfig(${JSON.stringify({ roles, testDir: "shopify-tests" })});\n`,
 			);
 			await writeFile(
 				join(projectRoot, ".env"),
@@ -72,37 +73,38 @@ export const createAuthFixtureScope = (): {
 
 interface MakePromptsOptions {
 	readonly confirmValue?: boolean;
-	readonly inputValue?: string;
 	readonly selectValues?: unknown[];
 }
 
 export const makePrompts = ({
 	confirmValue = true,
-	inputValue = "admin-primary",
 	selectValues = [],
 }: MakePromptsOptions = {}): PromptFunctions => ({
+	checkbox: vi.fn(async () =>
+		selectValues.shift(),
+	) as PromptFunctions["checkbox"],
 	confirm: vi.fn(async () => confirmValue),
-	input: vi.fn(async () => inputValue),
 	select: vi.fn(async () => selectValues.shift()) as PromptFunctions["select"],
 });
 
-export const seedProfile = async (
+export const seedRoleState = async (
 	fixture: AuthCommandFixture,
-	name = "admin-primary",
+	role = "admin",
 	state: PlaywrightStorageState = EMPTY_STORAGE_STATE,
-): Promise<ProfileStore> => {
-	const store = createProfileStore({
+	roles: readonly string[] = DEFAULT_ROLES,
+): Promise<RoleStateStore> => {
+	const store = createRoleStateStore({
 		dataRoot: fixture.dataDir,
 		origin: "https://shop.example",
-		roles: DEFAULT_ROLES,
+		roles,
 	});
-	await store.capture({ name, role: "admin", state });
+	await store.capture({ role, state });
 	return store;
 };
 
 export const withStubbedBrowser = (
 	dependencies: ReturnType<typeof defaultAuthDependencies>,
-	captureProfile: AuthOrchestratorDependencies["captureProfile"] = vi.fn(
+	captureRoleState: AuthOrchestratorDependencies["captureRoleState"] = vi.fn(
 		async () => ({
 			state: EMPTY_STORAGE_STATE,
 			status: "captured" as const,
@@ -110,10 +112,11 @@ export const withStubbedBrowser = (
 	),
 ) => ({
 	...dependencies,
-	captureProfile,
+	captureRoleState,
 	loadChromium: vi.fn(async () => ({
 		executablePath: vi.fn(() => "/consumer/chromium"),
 		launch: vi.fn(),
+		launchServer: vi.fn(),
 	})),
 	resolvePeer: vi.fn(async () => ({
 		executablePath: "/consumer/cli.js",

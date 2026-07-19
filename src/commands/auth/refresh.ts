@@ -1,19 +1,19 @@
 import { Command, Flags } from "@oclif/core";
 
-import { configFlag } from "../../flags.js";
 import { executeAuthCommand } from "../auth.js";
 
 export class AuthRefresh extends Command {
 	static override description =
-		"Refresh an existing saved profile in consumer-owned headed Chromium.";
+		"Refresh browser authentication state for one configured role in consumer-owned headed Chromium.";
 
 	static override examples = [
-		"<%= config.bin %> <%= command.id %> --profile customer-primary",
+		"<%= config.bin %> <%= command.id %> --role customer",
 	];
 
 	static override flags = {
-		config: configFlag,
-		profile: Flags.string({ description: "Existing saved profile name" }),
+		role: Flags.string({
+			description: "Configured role (ASCII lower-kebab, max 64 UTF-8 bytes)",
+		}),
 	};
 
 	static override strict = true;
@@ -23,8 +23,7 @@ export class AuthRefresh extends Command {
 		await executeAuthCommand({
 			action: "refresh",
 			command: this,
-			configPath: flags.config,
-			profile: flags.profile,
+			role: flags.role,
 		});
 	}
 }

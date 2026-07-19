@@ -2,6 +2,7 @@ import { Command } from "@oclif/core";
 
 import {
 	type AuthAction,
+	AuthMutationCommittedSignalError,
 	defaultAuthDependencies,
 	orchestrateAuth,
 } from "../auth/auth-orchestrator.js";
@@ -9,7 +10,6 @@ import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../errors.js";
-import { configFlag } from "../flags.js";
 import { PACKAGE_ROOT } from "../package-root.js";
 import {
 	CommandSignalError,
@@ -20,8 +20,6 @@ import { inquirerPrompts } from "../prompts/inquirer.js";
 interface ExecuteAuthCommandArgs {
 	readonly action: AuthAction;
 	readonly command: Command;
-	readonly configPath?: string;
-	readonly profile?: string;
 	readonly role?: string;
 	readonly yes?: boolean;
 }
@@ -38,12 +36,15 @@ export const classifyAuthCommandFailure = (
 	if (error instanceof ShopifyE2EInfrastructureError) {
 		return { exitCode: error.exitCode, message: error.message };
 	}
+	if (error instanceof AuthMutationCommittedSignalError) {
+		return { exitCode: error.exitCode, message: error.message };
+	}
 	if (signalExitCode !== undefined || error instanceof CommandSignalError) {
 		return {
 			exitCode:
 				signalExitCode ??
 				(error instanceof CommandSignalError ? error.exitCode : 130),
-			message: "Authentication interrupted; no profile changed.",
+			message: "Authentication interrupted; no role state changed.",
 		};
 	}
 	if (error instanceof ShopifyE2EPreflightError) {
@@ -55,7 +56,7 @@ export const classifyAuthCommandFailure = (
 	) {
 		return {
 			exitCode: 130,
-			message: "Authentication interrupted; no profile changed.",
+			message: "Authentication interrupted; no role state changed.",
 		};
 	}
 	return {
@@ -67,8 +68,6 @@ export const classifyAuthCommandFailure = (
 export const executeAuthCommand = async ({
 	action,
 	command,
-	configPath,
-	profile,
 	role,
 	yes,
 }: ExecuteAuthCommandArgs): Promise<void> => {
@@ -77,7 +76,6 @@ export const executeAuthCommand = async ({
 		await orchestrateAuth(
 			{
 				action,
-				configPath,
 				cwd: process.cwd(),
 				dataDir: command.config.dataDir,
 				environment: process.env,
@@ -85,7 +83,6 @@ export const executeAuthCommand = async ({
 				interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 				output: process.stdout,
 				packageRoot: PACKAGE_ROOT,
-				profile,
 				role,
 				signal: signals.signal,
 				yes,
@@ -104,23 +101,17 @@ export const executeAuthCommand = async ({
 
 export class Auth extends Command {
 	static override description =
-		"Capture, refresh, remove, or inspect browser authentication profiles. Credentials are entered only in the dedicated browser window.";
+		"Capture, refresh, remove, or inspect role-keyed browser authentication state. Credentials are entered only in the dedicated browser window.";
 
-	static override examples = [
-		"<%= config.bin %> <%= command.id %>",
-		"<%= config.bin %> <%= command.id %> --config configs/shopify-e2e.config.ts",
-	];
-
-	static override flags = { config: configFlag };
+	static override examples = ["<%= config.bin %> <%= command.id %>"];
 
 	static override strict = true;
 
 	public async run(): Promise<void> {
-		const { flags } = await this.parse(Auth);
+		await this.parse(Auth);
 		await executeAuthCommand({
 			action: "menu",
 			command: this,
-			configPath: flags.config,
 		});
 	}
 }

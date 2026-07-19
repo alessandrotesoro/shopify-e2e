@@ -30,7 +30,7 @@ export const prepareDoctorReadyConsumer = async (
 	await writeFile(join(peerRoot, "cli.js"), "// fake Playwright CLI\n");
 	await writeFile(
 		join(peerRoot, "index.js"),
-		`import { writeFileSync } from "node:fs"; export const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, launch() { writeFileSync(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
+		`import { writeFileSync } from "node:fs"; export const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, launch() { writeFileSync(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); }, launchServer() { writeFileSync(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
 	);
 	await writeFile(
 		join(peerRoot, "package.json"),

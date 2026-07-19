@@ -1,24 +1,18 @@
 import { Command, Flags } from "@oclif/core";
 
-import { configFlag } from "../../flags.js";
 import { executeAuthCommand } from "../auth.js";
 
 export class AuthCapture extends Command {
 	static override description =
-		"Capture a named authenticated profile in consumer-owned headed Chromium. The CLI never asks for credentials.";
+		"Capture browser authentication state for one configured role in consumer-owned headed Chromium. The CLI never asks for credentials.";
 
 	static override examples = [
-		"<%= config.bin %> <%= command.id %> --role admin --profile admin-primary",
+		"<%= config.bin %> <%= command.id %> --role admin",
 	];
 
 	static override flags = {
-		config: configFlag,
-		profile: Flags.string({
-			description: "New profile name (ASCII lower-kebab, max 64 UTF-8 bytes)",
-		}),
 		role: Flags.string({
-			description:
-				"Configured authenticated role (ASCII lower-kebab, max 64 UTF-8 bytes)",
+			description: "Configured role (ASCII lower-kebab, max 64 UTF-8 bytes)",
 		}),
 	};
 
@@ -29,8 +23,6 @@ export class AuthCapture extends Command {
 		await executeAuthCommand({
 			action: "capture",
 			command: this,
-			configPath: flags.config,
-			profile: flags.profile,
 			role: flags.role,
 		});
 	}

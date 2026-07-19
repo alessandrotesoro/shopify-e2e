@@ -4,15 +4,16 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	configuredOriginFromEnvironment,
 	configuredOriginKey,
 	normalizeConfiguredOrigin,
-	resolveProfileDataRoot,
-} from "../src/profiles/configured-origin.js";
+} from "../src/role-states/configured-origin.cjs";
+import { resolveRoleStateDataRoot } from "../src/role-states/data-root.js";
 
 const temporaryDirectories: string[] = [];
 
 const makeRoot = async (): Promise<string> => {
-	const root = await mkdtemp(join(tmpdir(), "shopify-e2e-profiles-"));
+	const root = await mkdtemp(join(tmpdir(), "shopify-e2e-role-states-"));
 	temporaryDirectories.push(root);
 	return realpath(root);
 };
@@ -46,6 +47,27 @@ describe("configured origin", () => {
 		).toBe("https://example.com");
 	});
 
+	it("reads and validates the configured origin from an explicit environment", () => {
+		expect(
+			configuredOriginFromEnvironment({
+				SHOPIFY_STORE_URL: "https://Example.COM/path?secret=value",
+			}),
+		).toBe("https://example.com");
+		expect(() => configuredOriginFromEnvironment({})).toThrow(
+			/SHOPIFY_STORE_URL is required/i,
+		);
+		expect(() =>
+			configuredOriginFromEnvironment({
+				SHOPIFY_STORE_URL: "http://example.com",
+			}),
+		).toThrow(/HTTPS/i);
+	});
+
+	it("reports validation failures through dependency-neutral errors", () => {
+		expect(() => normalizeConfiguredOrigin("shop.example")).toThrow(TypeError);
+		expect(() => configuredOriginFromEnvironment({})).toThrow(TypeError);
+	});
+
 	it("partitions custom and myshopify origins independently", () => {
 		expect(configuredOriginKey("https://shop.example")).not.toBe(
 			configuredOriginKey("https://shop.myshopify.com"),
@@ -62,7 +84,7 @@ describe("configured origin", () => {
 		const prospectiveSafeRoot = join(safeRoot, "future", "data");
 
 		await expect(
-			resolveProfileDataRoot({
+			resolveRoleStateDataRoot({
 				dataDir: prospectiveSafeRoot,
 				packageRoot,
 				projectRoot,
@@ -71,7 +93,7 @@ describe("configured origin", () => {
 
 		const consumerCandidate = join(projectRoot, "existing-data");
 		await expect(
-			resolveProfileDataRoot({
+			resolveRoleStateDataRoot({
 				dataDir: consumerCandidate,
 				packageRoot,
 				projectRoot,
@@ -81,7 +103,7 @@ describe("configured origin", () => {
 
 		const packageCandidate = join(packageRoot, "future", "nested");
 		await expect(
-			resolveProfileDataRoot({
+			resolveRoleStateDataRoot({
 				dataDir: packageCandidate,
 				packageRoot,
 				projectRoot,
@@ -97,7 +119,7 @@ describe("configured origin", () => {
 		const linkTarget = await makeRoot();
 
 		await expect(
-			resolveProfileDataRoot({
+			resolveRoleStateDataRoot({
 				dataDir: "relative/data",
 				packageRoot,
 				projectRoot,
@@ -107,7 +129,7 @@ describe("configured origin", () => {
 		if (process.platform !== "win32") {
 			await symlink(linkTarget, join(linkParent, "linked"));
 			await expect(
-				resolveProfileDataRoot({
+				resolveRoleStateDataRoot({
 					dataDir: join(linkParent, "linked", "data"),
 					packageRoot,
 					projectRoot,

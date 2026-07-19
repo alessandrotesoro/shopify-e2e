@@ -9,38 +9,39 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import {
-	loadRunnableShopifyConfig,
-	loadShopifyConfig,
-} from "../src/config/load-config.js";
+import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "../src/config/execution-environment.cjs";
+import { loadShopifyConfig } from "../src/config/load-config.js";
 import { ShopifyE2EPreflightError } from "../src/errors.js";
 
 const temporaryDirectories: string[] = [];
-const rolesSource =
-	'roles: { admin: { authentication: "required" }, guest: { authentication: "none" } }';
+const helperUrl = pathToFileURL(
+	resolve(import.meta.dirname, "../dist/config/public.cjs"),
+).href;
 
 const makeProject = async (): Promise<string> => {
 	const project = await mkdtemp(join(tmpdir(), "shopify-e2e-config-"));
 	temporaryDirectories.push(project);
-	await mkdir(join(project, "tests"), { recursive: true });
-	await writeFile(join(project, "tests", "lane.spec.ts"), "// candidate\n");
+	await mkdir(join(project, "shopify-tests"), { recursive: true });
+	await writeFile(
+		join(project, "shopify-tests", "lane.spec.ts"),
+		"// candidate\n",
+	);
 	return realpath(project);
 };
 
-interface WriteConfigArgs {
-	readonly name?: string;
-	readonly project: string;
-	readonly source: string;
-}
+const markedConfigSource = (
+	fields = 'testDir: "shopify-tests", roles: ["admin", "customer"]',
+): string =>
+	`import { defineShopifyE2EConfig } from ${JSON.stringify(helperUrl)};\nexport default defineShopifyE2EConfig({ ${fields} });\n`;
 
-const writeConfig = async ({
+const writeConfig = async (
+	project: string,
+	source: string,
 	name = "shopify-e2e.config.ts",
-	project,
-	source,
-}: WriteConfigArgs): Promise<string> => {
+): Promise<string> => {
 	const configPath = join(project, name);
 	await mkdir(resolve(configPath, ".."), { recursive: true });
 	await writeFile(configPath, source);
@@ -48,6 +49,7 @@ const writeConfig = async ({
 };
 
 afterEach(async () => {
+	vi.unstubAllEnvs();
 	await Promise.all(
 		temporaryDirectories
 			.splice(0)
@@ -56,278 +58,350 @@ afterEach(async () => {
 });
 
 describe("dedicated Shopify configuration", () => {
-	it("loads the exact conventional config and resolves testDir from cwd", async () => {
+	it("loads only the marked fixed root and returns its derived boundary", async () => {
 		const project = await makeProject();
-		await writeConfig({
+		await writeConfig(
 			project,
-			source: `export default { testDir: 'tests', ${rolesSource} };\n`,
+			markedConfigSource(
+				'testDir: "shopify-tests", roles: ["admin", "customer"], fullyParallel: true, retries: 2, testMatch: /checkout\\.spec\\.ts$/, use: { screenshot: "only-on-failure", trace: "retain-on-failure" }',
+			),
+		);
+
+		const loaded = await loadShopifyConfig({
+			environment: {},
+			projectRoot: project,
 		});
 
-		await expect(loadShopifyConfig({ projectRoot: project })).resolves.toEqual({
+		expect(loaded).toEqual({
+			browserLaunchOptions: {
+				handleSIGHUP: true,
+				handleSIGINT: false,
+				handleSIGTERM: false,
+				headless: false,
+				host: "127.0.0.1",
+				port: 0,
+			},
 			configPath: join(project, "shopify-e2e.config.ts"),
 			projectRoot: project,
-			roles: {
-				admin: { authentication: "required" },
-				guest: { authentication: "none" },
-			},
-			testDir: join(project, "tests"),
+			roles: ["admin", "customer"],
+			testDir: join(project, "shopify-tests"),
 		});
 	});
 
-	it("loads a contained explicit config but still resolves testDir from cwd", async () => {
+	it("creates an immutable allowlisted headed Chromium launch projection", async () => {
 		const project = await makeProject();
-		await writeConfig({
-			name: "configs/alternate.ts",
+		await writeConfig(
 			project,
-			source: `export default { ${rolesSource}, testDir: 'tests' };\n`,
-		});
+			markedConfigSource(
+				'testDir: "shopify-tests", roles: ["admin"], use: { channel: "chrome", launchOptions: { args: ["--start-maximized"], artifactsDir: "artifacts", channel: "msedge", chromiumSandbox: true, downloadsPath: "downloads", env: { SAFE_FLAG: "1" }, executablePath: "/consumer/chromium", headless: true, handleSIGHUP: false, handleSIGINT: true, handleSIGTERM: true, ignoreDefaultArgs: ["--disable-popup-blocking"], proxy: { server: "http://proxy.example", bypass: "localhost", username: "user", password: "secret" }, timeout: 1234 } }',
+			),
+		);
 
-		const result = await loadShopifyConfig({
-			configPath: "configs/alternate.ts",
+		const loaded = await loadShopifyConfig({
+			environment: {},
 			projectRoot: project,
 		});
 
-		expect(result.configPath).toBe(join(project, "configs", "alternate.ts"));
-		expect(result.testDir).toBe(join(project, "tests"));
+		expect(loaded.browserLaunchOptions).toEqual({
+			args: ["--start-maximized"],
+			artifactsDir: "artifacts",
+			channel: "chrome",
+			chromiumSandbox: true,
+			downloadsPath: "downloads",
+			env: { SAFE_FLAG: "1" },
+			executablePath: "/consumer/chromium",
+			handleSIGHUP: true,
+			handleSIGINT: false,
+			handleSIGTERM: false,
+			headless: false,
+			host: "127.0.0.1",
+			ignoreDefaultArgs: ["--disable-popup-blocking"],
+			port: 0,
+			proxy: {
+				bypass: "localhost",
+				password: "secret",
+				server: "http://proxy.example",
+				username: "user",
+			},
+			timeout: 1234,
+		});
+		expect(Object.isFrozen(loaded.browserLaunchOptions)).toBe(true);
+		expect(Object.isFrozen(loaded.browserLaunchOptions.args)).toBe(true);
+		expect(Object.isFrozen(loaded.browserLaunchOptions.env)).toBe(true);
+		expect(Object.isFrozen(loaded.browserLaunchOptions.ignoreDefaultArgs)).toBe(
+			true,
+		);
+		expect(Object.isFrozen(loaded.browserLaunchOptions.proxy)).toBe(true);
 	});
 
-	it("loads roles for auth without specs but requires a spec for run", async () => {
+	it.each([
+		["deprecated logger", "logger: {}", /launchOptions\.logger/i],
+		[
+			"Firefox preferences",
+			"firefoxUserPrefs: { foo: true }",
+			/launchOptions\.firefoxUserPrefs/i,
+		],
+		[
+			"launch-server trace directory",
+			'tracesDir: "traces"',
+			/launchOptions\.tracesDir/i,
+		],
+		["unknown option", "custom: true", /launchOptions\.custom/i],
+	])("rejects the unsupported %s", async (_label, launchField, message) => {
 		const project = await makeProject();
-		await rm(join(project, "tests", "lane.spec.ts"));
-		await writeConfig({
+		await writeConfig(
 			project,
-			source: `export default { testDir: 'tests', ${rolesSource} };\n`,
-		});
-
-		await expect(loadShopifyConfig({ projectRoot: project })).resolves.toEqual(
-			expect.objectContaining({
-				roles: {
-					admin: { authentication: "required" },
-					guest: { authentication: "none" },
-				},
-				testDir: join(project, "tests"),
-			}),
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], use: { launchOptions: { ${launchField} } }`,
+			),
 		);
-		await expect(
-			loadRunnableShopifyConfig({ projectRoot: project }),
-		).rejects.toThrow(/no runnable Playwright specs/i);
 
-		await writeFile(join(project, "tests", "lane.spec.ts"), "// candidate\n");
 		await expect(
-			loadRunnableShopifyConfig({ projectRoot: project }),
-		).resolves.toEqual(
-			expect.objectContaining({ testDir: join(project, "tests") }),
-		);
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(message);
 	});
 
-	it("does not discover or import the ordinary Playwright config", async () => {
+	it.each([
+		"--remote-debugging-port=0",
+		"--remote-debugging-address=127.0.0.1",
+		"--remote-debugging-pipe",
+	])("rejects Chromium CDP argument %s", async (argument) => {
 		const project = await makeProject();
-		const sentinel = join(project, "ordinary-loaded");
-		await writeConfig({
+		await writeConfig(
 			project,
-			source: `export default { testDir: 'tests', ${rolesSource} };\n`,
-		});
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], use: { launchOptions: { args: [${JSON.stringify(argument)}] } }`,
+			),
+		);
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(/remote-debugging/i);
+	});
+
+	it.each([
+		"--headless",
+		"--headless=new",
+		" --HEADLESS=old",
+	])("rejects Chromium headless argument %s", async (argument) => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], use: { launchOptions: { args: [${JSON.stringify(argument)}] } }`,
+			),
+		);
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(/headless Chromium/i);
+	});
+
+	it.each([
+		["all defaults", "true"],
+		["the native transport", '["--remote-debugging-pipe"]'],
+	])("rejects ignoreDefaultArgs removing %s", async (_label, value) => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], use: { launchOptions: { ignoreDefaultArgs: ${value} } }`,
+			),
+		);
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(/ignoreDefaultArgs.*native transport/i);
+	});
+
+	it.each([
+		"pw:server",
+		"pw:*",
+		"*",
+	])("rejects endpoint-revealing DEBUG=%s before config evaluation", async (debug) => {
+		const project = await makeProject();
+		const marker = join(project, "config-loaded");
+		await writeConfig(
+			project,
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "loaded"); ${markedConfigSource()}`,
+		);
+
+		const error = await loadShopifyConfig({
+			environment: { DEBUG: debug },
+			projectRoot: project,
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+		expect((error as Error).message).toMatch(/DEBUG.*browser endpoint/i);
+		expect((error as Error).message).not.toContain(debug);
+		await expect(access(marker)).rejects.toThrow();
+	});
+
+	it("rejects endpoint logging enabled by trusted config evaluation", async () => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			`process.env.DEBUG = "pw:server"; ${markedConfigSource()}`,
+		);
+		const previousDebug = process.env.DEBUG;
+		delete process.env.DEBUG;
+
+		try {
+			const error = await loadShopifyConfig({
+				environment: process.env,
+				projectRoot: project,
+			}).catch((cause: unknown) => cause);
+
+			expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+			expect((error as Error).message).toMatch(/DEBUG.*browser endpoint/i);
+			expect((error as Error).message).not.toContain("pw:server");
+		} finally {
+			if (previousDebug === undefined) delete process.env.DEBUG;
+			else process.env.DEBUG = previousDebug;
+		}
+	});
+
+	it("ignores alternate and ordinary Playwright configs", async () => {
+		const project = await makeProject();
+		const ordinaryMarker = join(project, "ordinary-loaded");
+		const alternateMarker = join(project, "alternate-loaded");
+		await writeConfig(project, markedConfigSource());
 		await writeFile(
 			join(project, "playwright.config.ts"),
-			`import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(sentinel)}, 'loaded');\nexport default {};\n`,
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(ordinaryMarker)}, "loaded"); export default {};\n`,
+		);
+		await writeConfig(
+			project,
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(alternateMarker)}, "loaded"); export default {};\n`,
+			"configs/alternate.ts",
 		);
 
-		await loadShopifyConfig({ projectRoot: project });
+		const loaded = await loadShopifyConfig({
+			environment: {},
+			projectRoot: project,
+		});
 
-		await expect(access(sentinel)).rejects.toThrow();
+		expect(loaded.configPath).toBe(join(project, "shopify-e2e.config.ts"));
+		await expect(access(ordinaryMarker)).rejects.toThrow();
+		await expect(access(alternateMarker)).rejects.toThrow();
 	});
 
-	it("does not leave a transformed consumer config in jiti's filesystem cache", async () => {
+	it.each([
+		["raw", 'export default { testDir: "shopify-tests", roles: ["admin"] };\n'],
+		[
+			"spread-cloned",
+			`import { defineShopifyE2EConfig } from ${JSON.stringify(helperUrl)}; const marked = defineShopifyE2EConfig({ testDir: "shopify-tests", roles: ["admin"] }); export default { ...marked };\n`,
+		],
+	])("rejects a %s export with direct helper guidance", async (_label, source) => {
+		const project = await makeProject();
+		await writeConfig(project, source);
+
+		const promise = loadShopifyConfig({
+			environment: {},
+			projectRoot: project,
+		});
+
+		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
+		await expect(promise).rejects.toThrow(/defineShopifyE2EConfig/i);
+		await expect(promise).rejects.toThrow(/@sematico\/shopify-e2e\/config/i);
+	});
+
+	it.each([
+		["projects", "projects: []"],
+		["workers", "workers: 2"],
+		["grep", "grep: /checkout/"],
+		["grepInvert", "grepInvert: /draft/"],
+		["use.storageState", 'use: { storageState: "state.json" }'],
+	])("reports the protected %s conflict", async (setting, field) => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], ${field}`,
+			),
+		);
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(new RegExp(setting.replace(".", "\\."), "i"));
+	});
+
+	it("rejects a reserved key before trusted config evaluation without its value", async () => {
+		const project = await makeProject();
+		const marker = join(project, "config-loaded");
+		const secretValue = join(project, "secret-context.json");
+		await writeConfig(
+			project,
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "loaded"); ${markedConfigSource()}`,
+		);
+
+		const error = await loadShopifyConfig({
+			environment: { [SHOPIFY_E2E_EXECUTION_CONTEXT_ENV]: secretValue },
+			projectRoot: project,
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+		expect((error as Error).message).toMatch(/reserved/i);
+		expect((error as Error).message).not.toContain(secretValue);
+		await expect(access(marker)).rejects.toThrow();
+	});
+
+	it("loads roles without inspecting specs", async () => {
+		const project = await makeProject();
+		await rm(join(project, "shopify-tests", "lane.spec.ts"));
+		await writeConfig(project, markedConfigSource());
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).resolves.toMatchObject({ roles: ["admin", "customer"] });
+	});
+
+	it("does not leave transformed config in Jiti filesystem cache", async () => {
 		const project = await makeProject();
 		const temporaryRoot = join(project, "temporary-root");
 		await mkdir(temporaryRoot);
-		await writeConfig({
-			project,
-			source: `export default { testDir: 'tests', ${rolesSource} };\n`,
-		});
+		await writeConfig(project, markedConfigSource());
 		vi.stubEnv("TEMP", temporaryRoot);
 		vi.stubEnv("TMP", temporaryRoot);
 		vi.stubEnv("TMPDIR", temporaryRoot);
 
-		try {
-			await loadShopifyConfig({ projectRoot: project });
-		} finally {
-			vi.unstubAllEnvs();
-		}
+		await loadShopifyConfig({ environment: {}, projectRoot: project });
 
 		await expect(access(join(temporaryRoot, "jiti"))).rejects.toThrow();
 	});
 
-	it.each([
-		{
-			label: "a missing default export",
-			source: "export const testDir = 'tests';\n",
-		},
-		{ label: "a non-object export", source: "export default 'tests';\n" },
-		{ label: "an array export", source: "export default ['tests'];\n" },
-		{
-			label: "an empty testDir",
-			source: `export default { testDir: '  ', ${rolesSource} };\n`,
-		},
-		{
-			label: "a wrong testDir type",
-			source: `export default { testDir: 42, ${rolesSource} };\n`,
-		},
-		{
-			label: "an unknown key",
-			source: `export default { testDir: 'tests', ${rolesSource}, workers: 2 };\n`,
-		},
-		{
-			label: "a missing roles map",
-			source: "export default { testDir: 'tests' };\n",
-		},
-		{
-			label: "an empty roles map",
-			source: "export default { testDir: 'tests', roles: {} };\n",
-		},
-		{
-			label: "an invalid role name",
-			source:
-				'export default { testDir: "tests", roles: { "Admin User": { authentication: "required" } } };\n',
-		},
-		{
-			label: "an invalid authentication mode",
-			source:
-				'export default { testDir: "tests", roles: { admin: { authentication: "optional" } } };\n',
-		},
-		{
-			label: "an extra role key",
-			source:
-				'export default { testDir: "tests", roles: { admin: { authentication: "required", label: "Admin" } } };\n',
-		},
-		{
-			label: "a roles array",
-			source:
-				'export default { testDir: "tests", roles: [{ authentication: "required" }] };\n',
-		},
-		{
-			label: "a config accessor",
-			source:
-				'const config = { roles: { admin: { authentication: "required" } } }; Object.defineProperty(config, "testDir", { enumerable: true, get() { throw new Error("accessor secret"); } }); export default config;\n',
-		},
-		{
-			label: "a role-map accessor",
-			source:
-				'const roles = {}; Object.defineProperty(roles, "admin", { enumerable: true, get() { throw new Error("accessor secret"); } }); export default { testDir: "tests", roles };\n',
-		},
-		{
-			label: "an authentication accessor",
-			source:
-				'const admin = {}; Object.defineProperty(admin, "authentication", { enumerable: true, get() { throw new Error("accessor secret"); } }); export default { testDir: "tests", roles: { admin } };\n',
-		},
-		{
-			label: "a symbol config key",
-			source:
-				'export default { testDir: "tests", roles: { admin: { authentication: "required" } }, [Symbol("hidden")]: true };\n',
-		},
-		{
-			label: "a symbol role key",
-			source:
-				'export default { testDir: "tests", roles: { admin: { authentication: "required" }, [Symbol("hidden")]: { authentication: "none" } } };\n',
-		},
-		{
-			label: "a custom config prototype",
-			source:
-				'export default Object.assign(Object.create({ hidden: true }), { testDir: "tests", roles: { admin: { authentication: "required" } } });\n',
-		},
-		{
-			label: "a custom roles prototype",
-			source:
-				'const roles = Object.assign(Object.create({ hidden: true }), { admin: { authentication: "required" } }); export default { testDir: "tests", roles };\n',
-		},
-		{
-			label: "a custom role-record prototype",
-			source:
-				'const admin = Object.assign(Object.create({ hidden: true }), { authentication: "required" }); export default { testDir: "tests", roles: { admin } };\n',
-		},
-	])("rejects $label with selected-file context", async ({ source }) => {
+	it("sanitizes trusted evaluation failures", async () => {
 		const project = await makeProject();
-		const configPath = await writeConfig({ project, source });
-
-		const promise = loadShopifyConfig({ projectRoot: project });
-
-		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
-		await expect(promise).rejects.toThrow(configPath);
-		await expect(promise).rejects.not.toThrow(/accessor secret/i);
-	});
-
-	it("rejects a phase-one config with migration guidance and exit 2", async () => {
-		const project = await makeProject();
-		await writeConfig({
+		const configPath = await writeConfig(
 			project,
-			source: "export default { testDir: 'tests' };\n",
-		});
-
-		const error = await loadShopifyConfig({ projectRoot: project }).catch(
-			(cause: unknown) => cause,
+			'throw new Error("consumer secret"); export default {};\n',
 		);
 
-		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
-		expect(error).toMatchObject({ exitCode: 2 });
-		expect(error).toHaveProperty(
-			"message",
-			expect.stringMatching(
-				/add an explicit roles map.*migrating from 0\.1\.x/i,
-			),
-		);
-	});
-
-	it("wraps evaluation failures with selected-file context", async () => {
-		const project = await makeProject();
-		const configPath = await writeConfig({
-			project,
-			source: `throw new Error('consumer secret');\nexport default { testDir: 'tests', ${rolesSource} };\n`,
+		const promise = loadShopifyConfig({
+			environment: {},
+			projectRoot: project,
 		});
 
-		const promise = loadShopifyConfig({ projectRoot: project });
-
-		await expect(promise).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
-		await expect(promise).rejects.toThrow(configPath);
 		await expect(promise).rejects.toThrow(/could not load/i);
+		await expect(promise).rejects.toThrow(configPath);
 		await expect(promise).rejects.not.toThrow(/consumer secret/i);
 	});
 
-	it.each([
-		{ configPath: undefined, label: "a missing conventional config" },
-		{ configPath: "alternate.js", label: "an unsupported extension" },
-		{ configPath: "missing.ts", label: "a missing explicit config" },
-	])("rejects $label", async ({ configPath }) => {
-		const project = await makeProject();
-
+	it("rejects missing and symlinked fixed-root configs", async () => {
+		const missingProject = await makeProject();
 		await expect(
-			loadShopifyConfig({ configPath, projectRoot: project }),
-		).rejects.toBeInstanceOf(ShopifyE2EPreflightError);
-	});
+			loadShopifyConfig({ environment: {}, projectRoot: missingProject }),
+		).rejects.toThrow(/does not exist/i);
 
-	it("rejects explicit configs outside the project", async () => {
-		const project = await makeProject();
-		const outside = await makeProject();
-		const outsideConfig = await writeConfig({
-			project: outside,
-			source: `export default { testDir: 'tests', ${rolesSource} };\n`,
-		});
-
-		await expect(
-			loadShopifyConfig({ configPath: outsideConfig, projectRoot: project }),
-		).rejects.toThrow(/inside.*project/i);
-	});
-
-	it("rejects a symlinked config before evaluation", async () => {
-		const project = await makeProject();
-		const target = await writeConfig({
-			name: "target.ts",
-			project,
-			source: "export default { testDir: 'tests' };\n",
-		});
-		await symlink(target, join(project, "shopify-e2e.config.ts"));
-
-		await expect(loadShopifyConfig({ projectRoot: project })).rejects.toThrow(
-			/symbolic link/i,
+		const symlinkProject = await makeProject();
+		const target = await writeConfig(
+			symlinkProject,
+			markedConfigSource(),
+			"target.ts",
 		);
+		await symlink(target, join(symlinkProject, "shopify-e2e.config.ts"));
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: symlinkProject }),
+		).rejects.toThrow(/symbolic link/i);
 	});
 });

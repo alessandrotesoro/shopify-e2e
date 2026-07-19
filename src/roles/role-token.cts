@@ -1,4 +1,4 @@
-import { assertRoleName } from "../profiles/profile-name.js";
+import { assertRoleName } from "./role-name.cjs";
 
 export const ROLE_TOKEN_PREFIX = "@shopify-e2e-role-";
 

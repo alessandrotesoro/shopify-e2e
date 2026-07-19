@@ -2,13 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
 	CaptureSignalError,
-	captureBrowserProfile,
-} from "../src/auth/capture-profile.js";
+	captureBrowserRoleState,
+} from "../src/auth/capture-role-state.js";
 import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../src/errors.js";
-import { EMPTY_STORAGE_STATE } from "../src/profiles/profile-store.js";
+import type { PlaywrightStorageState } from "../src/storage-state/schema.cjs";
+
+const EMPTY_STORAGE_STATE: PlaywrightStorageState = {
+	cookies: [],
+	origins: [],
+};
 
 const deferred = <T>() => {
 	let resolve!: (value: T) => void;
@@ -58,12 +63,12 @@ const makeLifecycle = () => {
 	return { browser, capturedState, context, listeners, page };
 };
 
-describe("browser profile capture lifecycle", () => {
+describe("browser role-state capture lifecycle", () => {
 	it("captures IndexedDB-inclusive state after explicit confirmation", async () => {
 		const lifecycle = makeLifecycle();
 		const report = vi.fn();
 		const launchChromium = vi.fn(async () => lifecycle.browser);
-		const result = await captureBrowserProfile({
+		const result = await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium,
@@ -99,7 +104,7 @@ describe("browser profile capture lifecycle", () => {
 	it("returns cancellation without state when save is declined", async () => {
 		const lifecycle = makeLifecycle();
 		await expect(
-			captureBrowserProfile({
+			captureBrowserRoleState({
 				dependencies: {
 					confirmSave: vi.fn(async () => false),
 					launchChromium: vi.fn(async () => lifecycle.browser),
@@ -119,7 +124,7 @@ describe("browser profile capture lifecycle", () => {
 		["browser", "browser:disconnected"],
 	])("cancels when the %s closes before confirmation", async (_label, event) => {
 		const lifecycle = makeLifecycle();
-		const resultPromise = captureBrowserProfile({
+		const resultPromise = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(() => new Promise<boolean>(() => undefined)),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -146,7 +151,7 @@ describe("browser profile capture lifecycle", () => {
 		const lifecycle = makeLifecycle();
 		const launch = deferred<typeof lifecycle.browser>();
 		const controller = new AbortController();
-		const resultPromise = captureBrowserProfile({
+		const resultPromise = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(() => launch.promise),
@@ -172,7 +177,7 @@ describe("browser profile capture lifecycle", () => {
 			() => contextCreation.promise,
 		);
 		const contextController = new AbortController();
-		const contextResult = captureBrowserProfile({
+		const contextResult = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -198,7 +203,7 @@ describe("browser profile capture lifecycle", () => {
 			() => pageCreation.promise,
 		);
 		const pageController = new AbortController();
-		const pageResult = captureBrowserProfile({
+		const pageResult = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => secondLifecycle.browser),
@@ -223,7 +228,7 @@ describe("browser profile capture lifecycle", () => {
 		const lifecycle = makeLifecycle();
 		lifecycle.page.goto.mockImplementation(() => new Promise(() => undefined));
 		const controller = new AbortController();
-		const resultPromise = captureBrowserProfile({
+		const resultPromise = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -245,7 +250,7 @@ describe("browser profile capture lifecycle", () => {
 	it("treats page closure during pending navigation as cancellation", async () => {
 		const lifecycle = makeLifecycle();
 		lifecycle.page.goto.mockImplementation(() => new Promise(() => undefined));
-		const resultPromise = captureBrowserProfile({
+		const resultPromise = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -267,7 +272,7 @@ describe("browser profile capture lifecycle", () => {
 
 	it("treats prompt rejection after lifecycle abort as browser cancellation", async () => {
 		const lifecycle = makeLifecycle();
-		const resultPromise = captureBrowserProfile({
+		const resultPromise = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(
 					({ signal }) =>
@@ -306,7 +311,7 @@ describe("browser profile capture lifecycle", () => {
 				},
 			],
 		};
-		await captureBrowserProfile({
+		await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -328,7 +333,7 @@ describe("browser profile capture lifecycle", () => {
 	] as const)("maps external %s abort and still closes every resource", async (signalName, exitCode) => {
 		const lifecycle = makeLifecycle();
 		const controller = new AbortController();
-		const resultPromise = captureBrowserProfile({
+		const resultPromise = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(() => new Promise<boolean>(() => undefined)),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -358,7 +363,7 @@ describe("browser profile capture lifecycle", () => {
 		lifecycle.context.storageState.mockImplementationOnce(
 			() => new Promise<unknown>(() => undefined),
 		);
-		const resultPromise = captureBrowserProfile({
+		const resultPromise = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -393,7 +398,7 @@ describe("browser profile capture lifecycle", () => {
 			() => new Promise<unknown>(() => undefined),
 		);
 		const controller = new AbortController();
-		const resultPromise = captureBrowserProfile({
+		const resultPromise = captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -421,7 +426,7 @@ describe("browser profile capture lifecycle", () => {
 		const promptError = new Error("internal Inquirer details");
 		promptError.name = "ExitPromptError";
 
-		const error = await captureBrowserProfile({
+		const error = await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => {
 					throw promptError;
@@ -459,7 +464,7 @@ describe("browser profile capture lifecycle", () => {
 	}) => {
 		const lifecycle = makeLifecycle();
 		arrange(lifecycle);
-		const error = await captureBrowserProfile({
+		const error = await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -472,7 +477,7 @@ describe("browser profile capture lifecycle", () => {
 
 		expect(error).toBeInstanceOf(ShopifyE2EInfrastructureError);
 		expect((error as Error).message).toBe(
-			"Browser profile capture could not complete",
+			"Browser role-state capture could not complete",
 		);
 		expect((error as Error).message).not.toMatch(
 			/secret|state path|internals/i,
@@ -484,7 +489,7 @@ describe("browser profile capture lifecycle", () => {
 
 	it("sanitizes a generic confirmation prompt failure and closes resources", async () => {
 		const lifecycle = makeLifecycle();
-		const error = await captureBrowserProfile({
+		const error = await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => {
 					throw new Error("secret prompt internals");
@@ -499,7 +504,7 @@ describe("browser profile capture lifecycle", () => {
 
 		expect(error).toBeInstanceOf(ShopifyE2EInfrastructureError);
 		expect((error as Error).message).toBe(
-			"Browser profile capture could not complete",
+			"Browser role-state capture could not complete",
 		);
 		expect(lifecycle.page.close).toHaveBeenCalledOnce();
 		expect(lifecycle.context.close).toHaveBeenCalledOnce();
@@ -512,7 +517,7 @@ describe("browser profile capture lifecycle", () => {
 	])("rejects a non-normalized origin before reporting or launching: %s", async (origin) => {
 		const report = vi.fn();
 		const launchChromium = vi.fn();
-		const error = await captureBrowserProfile({
+		const error = await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium,
@@ -536,7 +541,7 @@ describe("browser profile capture lifecycle", () => {
 			origins: [],
 		});
 
-		const error = await captureBrowserProfile({
+		const error = await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -560,10 +565,10 @@ describe("browser profile capture lifecycle", () => {
 			throw new Error("secret listener internals");
 		});
 		lifecycle.page.close.mockRejectedValueOnce(
-			new Error("secret browser profile path"),
+			new Error("secret browser role-state path"),
 		);
 
-		const error = await captureBrowserProfile({
+		const error = await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => lifecycle.browser),
@@ -576,7 +581,7 @@ describe("browser profile capture lifecycle", () => {
 
 		expect(error).toBeInstanceOf(ShopifyE2EInfrastructureError);
 		expect((error as Error).message).toBe(
-			"Browser profile capture cleanup could not complete",
+			"Browser role-state capture cleanup could not complete",
 		);
 		expect(lifecycle.page.close).toHaveBeenCalledOnce();
 		expect(lifecycle.context.close).toHaveBeenCalledOnce();
@@ -584,7 +589,7 @@ describe("browser profile capture lifecycle", () => {
 	});
 
 	it("sanitizes browser launch failures as infrastructure errors", async () => {
-		const error = await captureBrowserProfile({
+		const error = await captureBrowserRoleState({
 			dependencies: {
 				confirmSave: vi.fn(async () => true),
 				launchChromium: vi.fn(async () => {

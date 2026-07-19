@@ -1,6 +1,3 @@
-import { ShopifyE2EPreflightError } from "../errors.js";
-
-export const MAX_METADATA_BYTES = 16 * 1024;
 export const MAX_STORAGE_STATE_BYTES = 64 * 1024 * 1024;
 
 export interface StorageStateCookie {
@@ -253,14 +250,10 @@ function assertStorageStateShape(
 		!Array.isArray(value.origins) ||
 		!value.origins.every(isStorageOrigin)
 	) {
-		throw new ShopifyE2EPreflightError("Playwright storage state is invalid");
+		throw new TypeError("Playwright storage state is invalid");
 	}
 }
 
-/**
- * Validates JSON that was already parsed from a byte-bounded regular file.
- * Unlike `validateStorageState`, this does not clone the complete state again.
- */
 export const validateParsedStorageState = (
 	value: unknown,
 ): PlaywrightStorageState => {
@@ -268,49 +261,34 @@ export const validateParsedStorageState = (
 	return value;
 };
 
-interface SerializeBoundedJsonOptions {
-	readonly invalidMessage: string;
-	readonly maxBytes: number;
-	readonly oversizedMessage: string;
-	readonly value: unknown;
-}
-
-const serializeBoundedJson = ({
-	invalidMessage,
-	maxBytes,
-	oversizedMessage,
-	value,
-}: SerializeBoundedJsonOptions): string => {
+const serializeBoundedJson = (value: unknown): string => {
 	let serialized: string | undefined;
 	try {
 		serialized = JSON.stringify(value);
 	} catch {
-		throw new ShopifyE2EPreflightError(invalidMessage);
+		throw new TypeError("Playwright storage state is invalid");
 	}
 	if (serialized === undefined) {
-		throw new ShopifyE2EPreflightError(invalidMessage);
+		throw new TypeError("Playwright storage state is invalid");
 	}
-	if (Buffer.byteLength(serialized) > maxBytes) {
-		throw new ShopifyE2EPreflightError(oversizedMessage);
-	}
-	return serialized;
-};
-
-/** Validate and serialize storage state exactly once under the 64 MiB bound. */
-export const serializeStorageState = (value: unknown): string => {
-	const serialized = serializeBoundedJson({
-		invalidMessage: "Playwright storage state is invalid",
-		maxBytes: MAX_STORAGE_STATE_BYTES,
-		oversizedMessage:
+	if (Buffer.byteLength(serialized) > MAX_STORAGE_STATE_BYTES) {
+		throw new TypeError(
 			"Playwright storage state is invalid or exceeds the 64 MiB limit",
-		value,
-	});
-	validateParsedStorageState(JSON.parse(serialized) as unknown);
+		);
+	}
 	return serialized;
 };
 
-/** Normalize an unknown external value to one bounded, detached JSON value. */
+const normalizeStorageState = (
+	value: unknown,
+): { readonly parsed: PlaywrightStorageState; readonly serialized: string } => {
+	const serialized = serializeBoundedJson(value);
+	const parsed = validateParsedStorageState(JSON.parse(serialized) as unknown);
+	return { parsed, serialized };
+};
+
+export const serializeStorageState = (value: unknown): string =>
+	normalizeStorageState(value).serialized;
+
 export const validateStorageState = (value: unknown): PlaywrightStorageState =>
-	validateParsedStorageState(
-		JSON.parse(serializeStorageState(value)) as unknown,
-	);
+	normalizeStorageState(value).parsed;

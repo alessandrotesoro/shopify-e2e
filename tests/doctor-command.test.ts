@@ -10,7 +10,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
 import type { LoadedShopifyConfig } from "../src/config/load-config.js";
 import {
 	DOCTOR_CHECK_ORDER,
@@ -19,14 +18,23 @@ import {
 } from "../src/doctor/doctor-orchestrator.js";
 import { ShopifyE2EPreflightError } from "../src/errors.js";
 import type { CommandSignalError } from "../src/process/command-signals.js";
-import { configuredOriginFromEnvironment } from "../src/profiles/configured-origin.js";
+import { configuredOriginFromEnvironment } from "../src/role-states/configured-origin.cjs";
 
 const projectRoot = "/physical/consumer";
+const configHelperPath = join(import.meta.dirname, "../src/config/public.cts");
 const temporaryDirectories: string[] = [];
 const loadedConfig: LoadedShopifyConfig = {
+	browserLaunchOptions: {
+		handleSIGHUP: true,
+		handleSIGINT: false,
+		handleSIGTERM: false,
+		headless: false,
+		host: "127.0.0.1",
+		port: 0,
+	},
 	configPath: `${projectRoot}/shopify-e2e.config.ts`,
 	projectRoot,
-	roles: { guest: { authentication: "none" } },
+	roles: ["guest"],
 	testDir: `${projectRoot}/shopify-tests`,
 };
 
@@ -38,6 +46,7 @@ const makeDependencies = (): DoctorDependencies => ({
 	loadChromium: vi.fn(async () => ({
 		executablePath: () => "/browser/chromium",
 		launch: vi.fn(),
+		launchServer: vi.fn(),
 	})),
 	loadConfig: vi.fn(async () => loadedConfig),
 	loadProjectEnvironment: vi.fn(async () => undefined),
@@ -69,14 +78,22 @@ const makeReadyConsumer = async (): Promise<{
 	await writeFile(join(project, "package.json"), '{"type":"module"}\n');
 	await writeFile(
 		configPath,
-		"export default { testDir: 'shopify-tests', roles: { guest: { authentication: 'none' } } };\n",
+		`import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)};
+export default defineShopifyE2EConfig({
+  roles: ["guest"],
+  testDir: "shopify-tests",
+  testIgnore: /checkout/,
+  testMatch: /never-match-doctor/,
+  webServer: { command: "doctor-must-not-start-a-server", port: 65534 },
+});
+`,
 	);
 	await writeFile(join(testDir, "checkout.spec.ts"), "// candidate only\n");
 	await writeFile(chromiumPath, "fake chromium binary\n");
 	await writeFile(join(packageRoot, "cli.js"), "// fake Playwright CLI\n");
 	await writeFile(
 		join(packageRoot, "index.js"),
-		`import { writeFile } from "node:fs/promises";\nexport const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { await writeFile(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
+		`import { writeFile } from "node:fs/promises";\nexport const chromium = { executablePath() { return ${JSON.stringify(chromiumPath)}; }, async launch() { await writeFile(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); }, async launchServer() { await writeFile(${JSON.stringify(launchSentinel)}, "launched"); throw new Error("doctor must not launch Chromium"); } };\n`,
 	);
 	await writeFile(
 		join(packageRoot, "package.json"),
@@ -126,6 +143,7 @@ describe("doctor orchestration", () => {
 		vi.mocked(dependencies.loadChromium).mockResolvedValueOnce({
 			executablePath: () => "/browser/chromium",
 			launch,
+			launchServer: vi.fn(),
 		});
 
 		const report = await runDoctor(dependencies);
@@ -146,7 +164,10 @@ describe("doctor orchestration", () => {
 			environment: expect.any(Object),
 			projectRoot,
 		});
-		expect(dependencies.loadConfig).toHaveBeenCalledWith({ projectRoot });
+		expect(dependencies.loadConfig).toHaveBeenCalledWith({
+			environment: expect.any(Object),
+			projectRoot,
+		});
 		expect(dependencies.discoverSpecs).toHaveBeenCalledWith(
 			loadedConfig.testDir,
 		);
@@ -209,12 +230,90 @@ describe("doctor orchestration", () => {
 		);
 		expect(report.checks[3]?.detail).toContain(consumer.configPath);
 		expect(report.checks[4]?.detail).toContain(consumer.testDir);
+		expect(report.checks[3]?.detail).toContain(
+			"Package-owned Shopify config checks passed",
+		);
 		expect(report.checks[4]?.detail).toContain(
-			"1 Playwright spec candidate(s) found",
+			"1 JavaScript/TypeScript file candidate(s) found",
 		);
 		expect(report.checks[4]?.detail).not.toContain("checkout.spec.ts");
 		expect(JSON.stringify(report)).not.toContain(consumer.chromiumPath);
 		expect(JSON.stringify(report)).not.toContain(environment.SHOPIFY_STORE_URL);
+		await expect(access(consumer.launchSentinel)).rejects.toThrow();
+	});
+
+	it("allows side effects explicitly initiated by trusted config evaluation", async () => {
+		const consumer = await makeReadyConsumer();
+		const configMarker = join(consumer.project, "trusted-config-evaluated");
+		await writeFile(
+			consumer.configPath,
+			`import { writeFileSync } from "node:fs";
+import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)};
+writeFileSync(${JSON.stringify(configMarker)}, "evaluated");
+export default defineShopifyE2EConfig({ roles: ["guest"], testDir: "shopify-tests" });
+`,
+		);
+
+		const report = await orchestrateDoctor({
+			options: {
+				cwd: consumer.project,
+				environment: { SHOPIFY_STORE_URL: "https://shop.example" },
+				signal: new AbortController().signal,
+			},
+		});
+
+		expect(report.exitCode).toBe(0);
+		await expect(access(configMarker)).resolves.toBeUndefined();
+	});
+
+	it.each([
+		{
+			expected: /defineShopifyE2EConfig/i,
+			name: "an unmarked default export",
+			source:
+				'export default { roles: ["guest"], testDir: "shopify-tests" };\n',
+		},
+		{
+			expected: /roles.*non-empty/i,
+			name: "an empty roles list",
+			source: `import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)};
+export default defineShopifyE2EConfig({ roles: [], testDir: "shopify-tests" });
+`,
+		},
+		{
+			expected: /workers/i,
+			name: "a protected Playwright setting",
+			source: `import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)};
+export default defineShopifyE2EConfig({ roles: ["guest"], testDir: "shopify-tests", workers: 2 });
+`,
+		},
+		{
+			expected: /test directory.*inside/i,
+			name: "a testDir outside the project boundary",
+			source: `import { defineShopifyE2EConfig } from ${JSON.stringify(configHelperPath)};
+export default defineShopifyE2EConfig({ roles: ["guest"], testDir: "../outside-tests" });
+`,
+		},
+	])("fails config for $name while completing the peer branch", async ({
+		expected,
+		source,
+	}) => {
+		const consumer = await makeReadyConsumer();
+		await writeFile(consumer.configPath, source);
+
+		const report = await orchestrateDoctor({
+			options: {
+				cwd: consumer.project,
+				environment: { SHOPIFY_STORE_URL: "https://shop.example" },
+				signal: new AbortController().signal,
+			},
+		});
+
+		expect(report.checks[3]).toMatchObject({ status: "FAIL" });
+		expect(report.checks[3]?.detail).toMatch(expected);
+		expect(report.checks[4]).toMatchObject({ status: "SKIP" });
+		expect(report.checks[5]).toMatchObject({ status: "PASS" });
+		expect(report.checks[6]).toMatchObject({ status: "PASS" });
 		await expect(access(consumer.launchSentinel)).rejects.toThrow();
 	});
 
@@ -309,11 +408,11 @@ describe("doctor orchestration", () => {
 		expect(dependencies.loadChromium).toHaveBeenCalledOnce();
 	});
 
-	it("fails spec discovery without suppressing the peer branch", async () => {
+	it("fails test-directory plausibility without suppressing the peer branch", async () => {
 		const dependencies = makeDependencies();
 		vi.mocked(dependencies.discoverSpecs).mockRejectedValueOnce(
 			new ShopifyE2EPreflightError(
-				`Shopify test directory contains no runnable Playwright specs: ${loadedConfig.testDir}`,
+				`Shopify test directory contains no JavaScript or TypeScript files with a Playwright-loadable extension: ${loadedConfig.testDir}`,
 			),
 		);
 

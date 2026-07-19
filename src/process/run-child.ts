@@ -1,164 +1,182 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
+import { Transform } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 
+import { PLAYWRIGHT_WS_ENDPOINT_ENV } from "../config/execution-environment.cjs";
 import { ShopifyE2EInfrastructureError } from "../errors.js";
 import type { PlaywrightInvocation } from "../playwright/invocation.js";
+import { errorFromAbortSignal } from "./command-signals.js";
 
-const forwardedSignals = ["SIGINT", "SIGTERM"] as const;
-type ForwardedSignal = (typeof forwardedSignals)[number];
-type ChildSignal = ForwardedSignal | "SIGKILL";
-type SignalListener = () => void;
+type ChildSignal = "SIGINT" | "SIGKILL" | "SIGTERM";
 type ChildOutcome = { error: Error } | { exitCode: number };
-
-export interface AddSignalListenerArgs {
-	readonly listener: SignalListener;
-	readonly signal: ForwardedSignal;
-}
 
 export interface ForwardSignalArgs {
 	readonly pid: number;
 	readonly signal: ChildSignal;
 }
 
-export interface RemoveSignalListenerArgs {
-	readonly listener: SignalListener;
-	readonly signal: ForwardedSignal;
-}
-
 export interface ChildProcessRuntime {
-	readonly addSignalListener: (args: AddSignalListenerArgs) => void;
 	readonly forwardSignal: (args: ForwardSignalArgs) => boolean;
 	readonly platform: NodeJS.Platform;
-	readonly removeSignalListener: (args: RemoveSignalListenerArgs) => void;
 	readonly spawn: typeof spawn;
+	readonly stderr: NodeJS.WritableStream;
 }
 
 const defaultRuntime: ChildProcessRuntime = {
-	addSignalListener: ({ listener, signal }) => {
-		process.on(signal, listener);
-	},
-	forwardSignal: ({ pid, signal }) => {
-		return process.kill(pid, signal);
-	},
+	forwardSignal: ({ pid, signal }) => process.kill(pid, signal),
 	platform: process.platform,
-	removeSignalListener: ({ listener, signal }) => {
-		process.off(signal, listener);
-	},
 	spawn,
+	stderr: process.stderr,
 };
 
-const isPosix = (platform: NodeJS.Platform): boolean => {
-	return platform !== "win32";
+const REDACTED_BROWSER_ENDPOINT = "[REDACTED PLAYWRIGHT ENDPOINT]";
+
+const redactBrowserEndpoint = (endpoint: string): Transform => {
+	const decoder = new StringDecoder("utf8");
+	let pending = "";
+	const replaceEndpoint = (value: string): string =>
+		value.replaceAll(endpoint, REDACTED_BROWSER_ENDPOINT);
+	return new Transform({
+		flush(callback) {
+			this.push(replaceEndpoint(pending + decoder.end()));
+			callback();
+		},
+		transform(chunk: Buffer, _encoding, callback) {
+			pending = replaceEndpoint(pending + decoder.write(chunk));
+			const retainedLength = Math.max(endpoint.length - 1, 0);
+			const emittedLength = Math.max(pending.length - retainedLength, 0);
+			if (emittedLength > 0) {
+				this.push(pending.slice(0, emittedLength));
+				pending = pending.slice(emittedLength);
+			}
+			callback();
+		},
+	});
 };
+
+const isPosix = (platform: NodeJS.Platform): boolean => platform !== "win32";
 
 const signalExitCode = (signal: NodeJS.Signals): number | undefined => {
 	const signalNumber = constants.signals[signal];
 	return typeof signalNumber === "number" ? 128 + signalNumber : undefined;
 };
 
+const PLAYWRIGHT_GRACEFUL_SHUTDOWN_SIGNAL = "SIGINT";
+
 export interface RunChildArgs {
 	readonly invocation: PlaywrightInvocation;
 	readonly runtime?: ChildProcessRuntime;
+	readonly signal?: AbortSignal;
+	readonly terminationGraceMs?: number;
 }
 
 export const runChild = async ({
 	invocation,
 	runtime = defaultRuntime,
+	signal,
+	terminationGraceMs = 10_000,
 }: RunChildArgs): Promise<number> => {
 	const isPosixPlatform = isPosix(runtime.platform);
+	const browserEndpoint = invocation.environment?.[PLAYWRIGHT_WS_ENDPOINT_ENV];
 	const child = runtime.spawn(invocation.executable, invocation.args, {
 		detached: isPosixPlatform,
+		...(invocation.environment === undefined
+			? {}
+			: { env: invocation.environment }),
 		shell: false,
-		stdio: "inherit",
+		stdio:
+			typeof browserEndpoint === "string"
+				? ["inherit", "inherit", "pipe"]
+				: "inherit",
 	});
+	if (typeof browserEndpoint === "string" && child.stderr) {
+		child.stderr
+			.pipe(redactBrowserEndpoint(browserEndpoint))
+			.pipe(runtime.stderr, { end: false });
+	}
 
 	return new Promise<number>((resolve, reject) => {
 		let isSettled = false;
-		let forwardingError: ShopifyE2EInfrastructureError | undefined;
-		const deliveredSignals = new Set<ForwardedSignal>();
-		const signalListeners = new Map<ForwardedSignal, SignalListener>();
+		let interruption: Error | undefined;
+		let graceTimer: NodeJS.Timeout | undefined;
+		let killTimer: NodeJS.Timeout | undefined;
 
-		const removeSignalListeners = (): void => {
-			for (const [signal, listener] of signalListeners) {
-				runtime.removeSignalListener({ listener, signal });
-			}
-			signalListeners.clear();
+		const clearTimers = (): void => {
+			if (graceTimer) clearTimeout(graceTimer);
+			if (killTimer) clearTimeout(killTimer);
 		};
-
+		const removeAbortListener = (): void => {
+			signal?.removeEventListener("abort", onAbort);
+		};
 		const settle = (outcome: ChildOutcome): void => {
 			if (isSettled) return;
 			isSettled = true;
-			removeSignalListeners();
+			clearTimers();
+			removeAbortListener();
 			if ("error" in outcome) reject(outcome.error);
 			else resolve(outcome.exitCode);
 		};
-
-		const recoverFromForwardingFailure = (
-			error: ShopifyE2EInfrastructureError,
-		): void => {
-			forwardingError = error;
-			removeSignalListeners();
-
-			let isTerminationInitiated = false;
+		const deliver = (selectedSignal: ChildSignal): boolean => {
 			if (isPosixPlatform && child.pid !== undefined) {
 				try {
-					isTerminationInitiated = runtime.forwardSignal({
-						pid: -child.pid,
-						signal: "SIGKILL",
-					});
-				} catch {
-					// Preserve the original forwarding error; direct-child recovery follows.
-				}
-			}
-
-			if (!isTerminationInitiated) {
-				try {
-					isTerminationInitiated = child.kill("SIGKILL");
-				} catch {
-					// Preserve the original forwarding error as the single CLI diagnostic.
-				}
-			}
-
-			if (!isTerminationInitiated) settle({ error });
-		};
-
-		for (const signal of forwardedSignals) {
-			const listener = (): void => {
-				if (forwardingError || deliveredSignals.has(signal)) return;
-				deliveredSignals.add(signal);
-				try {
-					let wasSignalDelivered: boolean;
-					if (isPosixPlatform && child.pid !== undefined) {
-						wasSignalDelivered = runtime.forwardSignal({
+					if (
+						runtime.forwardSignal({
 							pid: -child.pid,
-							signal,
-						});
-					} else {
-						wasSignalDelivered = child.kill(signal);
+							signal: selectedSignal,
+						})
+					) {
+						return true;
 					}
-					if (!wasSignalDelivered) {
-						recoverFromForwardingFailure(
-							new ShopifyE2EInfrastructureError(
-								`Could not forward ${signal} to the Playwright process`,
-							),
-						);
-					}
-				} catch (cause) {
-					recoverFromForwardingFailure(
-						new ShopifyE2EInfrastructureError(
-							`Could not forward ${signal} to the Playwright process`,
-							{ cause },
-						),
-					);
+				} catch {
+					// The direct-child fallback below remains available.
 				}
-			};
-			signalListeners.set(signal, listener);
-			runtime.addSignalListener({ listener, signal });
+			}
+			try {
+				return child.kill(selectedSignal);
+			} catch {
+				return false;
+			}
+		};
+		const forceKill = (): void => {
+			if (!deliver("SIGKILL")) {
+				settle({
+					error:
+						interruption ??
+						new ShopifyE2EInfrastructureError(
+							"Playwright process could not be terminated",
+						),
+				});
+				return;
+			}
+			killTimer = setTimeout(() => {
+				settle({
+					error:
+						interruption ??
+						new ShopifyE2EInfrastructureError(
+							"Playwright process could not be terminated",
+						),
+				});
+			}, terminationGraceMs);
+			killTimer.unref();
+		};
+		function onAbort(): void {
+			if (interruption || !signal) return;
+			interruption = errorFromAbortSignal(signal);
+			// Playwright 1.61 owns graceful runner and web-server teardown on
+			// SIGINT. The parent retains the original signal or infrastructure error.
+			if (!deliver(PLAYWRIGHT_GRACEFUL_SHUTDOWN_SIGNAL)) {
+				forceKill();
+				return;
+			}
+			graceTimer = setTimeout(forceKill, terminationGraceMs);
+			graceTimer.unref();
 		}
 
 		child.once("error", (cause) => {
-			if (forwardingError) {
-				settle({ error: forwardingError });
+			if (interruption) {
+				deliver("SIGKILL");
+				settle({ error: interruption });
 				return;
 			}
 			const peerExecutable = invocation.args[0] ?? "the selected peer";
@@ -170,17 +188,18 @@ export const runChild = async ({
 			});
 		});
 
-		child.once("exit", (code, signal) => {
-			if (forwardingError) {
-				settle({ error: forwardingError });
+		child.once("exit", (code, exitSignal) => {
+			if (interruption) {
+				deliver("SIGKILL");
+				settle({ error: interruption });
 				return;
 			}
 			if (code !== null) {
 				settle({ exitCode: code });
 				return;
 			}
-			if (signal !== null) {
-				const exitCode = signalExitCode(signal);
+			if (exitSignal !== null) {
+				const exitCode = signalExitCode(exitSignal);
 				if (exitCode !== undefined) {
 					settle({ exitCode });
 					return;
@@ -192,5 +211,10 @@ export const runChild = async ({
 				),
 			});
 		});
+
+		if (signal) {
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) onAbort();
+		}
 	});
 };

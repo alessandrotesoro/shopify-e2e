@@ -27,10 +27,46 @@ export class CommandSignalError extends Error {
 	}
 }
 
+export const errorFromAbortSignal = (signal: AbortSignal): Error => {
+	if (signal.reason instanceof Error) return signal.reason;
+	return new CommandSignalError(commandSignalFromReason(signal.reason));
+};
+
+export const throwIfAborted = (signal: AbortSignal): void => {
+	if (signal.aborted) throw errorFromAbortSignal(signal);
+};
+
 export const throwIfCommandAborted = (signal: AbortSignal): void => {
 	if (signal.aborted) {
 		throw new CommandSignalError(commandSignalFromReason(signal.reason));
 	}
+};
+
+export const runWithAbortSignal = async <Value>(
+	operation: () => Promise<Value>,
+	signal: AbortSignal,
+): Promise<Value> => {
+	throwIfAborted(signal);
+	const pending = operation();
+	return new Promise<Value>((resolve, reject) => {
+		const onAbort = (): void => reject(errorFromAbortSignal(signal));
+		signal.addEventListener("abort", onAbort, { once: true });
+		pending.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				try {
+					throwIfAborted(signal);
+					resolve(value);
+				} catch (error) {
+					reject(error);
+				}
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
 };
 
 const awaitWithCommandSignal = async <Value>(
