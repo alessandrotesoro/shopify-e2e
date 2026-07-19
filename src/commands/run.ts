@@ -39,6 +39,7 @@ import {
 } from "../playwright/serial-role-runner.js";
 import {
 	CommandSignalError,
+	commandSignalFromReason,
 	createCommandSignalScope,
 	runWithAbortSignal,
 	runWithCommandSignal,
@@ -194,12 +195,10 @@ const resolveReadyRole = async (
 	store: RoleStateStore,
 	role: string,
 	signal: AbortSignal,
+	status: RoleStateStatus | undefined,
 ): Promise<RoleStateSelection> => {
-	const summary = (await runWithCommandSignal(() => store.list(), signal)).find(
-		(candidate) => candidate.role === role,
-	);
-	if (summary?.status !== "ready") {
-		await throwForUnavailableState(store, role, signal, summary?.status);
+	if (status !== "ready") {
+		await throwForUnavailableState(store, role, signal, status);
 	}
 	try {
 		return await runWithCommandSignal(() => store.resolve(role), signal);
@@ -228,12 +227,15 @@ const resolveRolesInConfigOrder = async (
 	configuredRoles: readonly string[],
 	selectedRoles: readonly string[],
 	signal: AbortSignal,
+	statuses: ReadonlyMap<string, RoleStateStatus>,
 ): Promise<readonly RoleStateSelection[]> => {
 	const requestedRoles = new Set(selectedRoles);
 	const selections: RoleStateSelection[] = [];
 	for (const role of configuredRoles) {
 		if (requestedRoles.has(role)) {
-			selections.push(await resolveReadyRole(store, role, signal));
+			selections.push(
+				await resolveReadyRole(store, role, signal, statuses.get(role)),
+			);
 		}
 	}
 	return Object.freeze(selections);
@@ -281,18 +283,22 @@ const resolveRunSelection = async ({
 		origin,
 		roles: loadedConfig.roles,
 	});
+	const summaries = await runWithCommandSignal(() => store.list(), signal);
+	const statuses = new Map(
+		summaries.map(({ role, status }) => [role, status] as const),
+	);
 	if (explicitRoles !== undefined) {
 		return resolveRolesInConfigOrder(
 			store,
 			loadedConfig.roles,
 			explicitRoles,
 			signal,
+			statuses,
 		);
 	}
 
-	const readyRoles = await runWithCommandSignal(
-		() => store.readyRoles(),
-		signal,
+	const readyRoles = loadedConfig.roles.filter(
+		(role) => statuses.get(role) === "ready",
 	);
 	if (readyRoles.length === 0) {
 		throw new ShopifyE2EPreflightError(
@@ -322,6 +328,7 @@ const resolveRunSelection = async ({
 		loadedConfig.roles,
 		selectedRoles,
 		signal,
+		statuses,
 	);
 };
 
@@ -471,23 +478,20 @@ const runSelectedRole = async ({
 	} catch (error) {
 		cleanupError = error;
 	}
-	if (signal.aborted && signal.reason === "SIGINT") {
+	if (
+		signal.aborted &&
+		(signal.reason === "SIGINT" || signal.reason === "SIGTERM")
+	) {
+		const interruption = new CommandSignalError(
+			commandSignalFromReason(signal.reason),
+		);
 		if (cleanupError !== undefined) {
 			await retryExecutionContextCleanupAfterInterruption(
 				executionContext,
-				new CommandSignalError("SIGINT"),
+				interruption,
 			);
 		}
-		throw new CommandSignalError("SIGINT");
-	}
-	if (signal.aborted && signal.reason === "SIGTERM") {
-		if (cleanupError !== undefined) {
-			await retryExecutionContextCleanupAfterInterruption(
-				executionContext,
-				new CommandSignalError("SIGTERM"),
-			);
-		}
-		throw new CommandSignalError("SIGTERM");
+		throw interruption;
 	}
 	if (cleanupError !== undefined) throw cleanupError;
 	throwIfAborted(signal);
@@ -558,16 +562,7 @@ export const orchestrateShopifyRun = async ({
 				});
 			},
 			reportSummary: dependencies.reportSummary,
-			roles: selections.map(({ role }) => role),
-			runRole: async (role, roleSignal) => {
-				const selectedRole = selections.find(
-					(candidate) => candidate.role === role,
-				);
-				if (!selectedRole) {
-					throw new ShopifyE2EInfrastructureError(
-						"Selected role state became unavailable",
-					);
-				}
+			runRole: async (selectedRole, roleSignal) => {
 				return runSelectedRole({
 					dependencies,
 					environment,
@@ -580,6 +575,7 @@ export const orchestrateShopifyRun = async ({
 					wsEndpoint: browser.wsEndpoint,
 				});
 			},
+			selections,
 			signal,
 		});
 	} catch (error) {

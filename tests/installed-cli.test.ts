@@ -92,18 +92,29 @@ const waitForChildToExit = async (
 	timeout: number,
 ): Promise<void> => {
 	if (child.exitCode !== null || child.signalCode !== null) return;
-	await Promise.race([
-		new Promise<void>((resolveExit, rejectExit) => {
-			child.once("error", rejectExit);
-			child.once("exit", () => resolveExit());
-		}),
-		new Promise<never>((_resolve, rejectTimeout) => {
-			setTimeout(
-				() => rejectTimeout(new Error("Installed CLI did not exit")),
-				timeout,
-			);
-		}),
-	]);
+	await new Promise<void>((resolveExit, rejectExit) => {
+		let timer: NodeJS.Timeout;
+		const cleanup = (): void => {
+			clearTimeout(timer);
+			child.off("error", onError);
+			child.off("exit", onExit);
+		};
+		const onError = (error: Error): void => {
+			cleanup();
+			rejectExit(error);
+		};
+		const onExit = (): void => {
+			cleanup();
+			resolveExit();
+		};
+		child.once("error", onError);
+		child.once("exit", onExit);
+		timer = setTimeout(() => {
+			cleanup();
+			rejectExit(new Error("Installed CLI did not exit"));
+		}, timeout);
+		timer.unref();
+	});
 };
 
 const signalProcess = (pid: number, signal: NodeJS.Signals): void => {

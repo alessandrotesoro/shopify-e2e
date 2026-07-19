@@ -1,7 +1,6 @@
 import { ShopifyE2EInfrastructureError } from "../errors.js";
 import {
 	CommandSignalError,
-	commandSignalFromReason,
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
@@ -83,7 +82,6 @@ const createManagedServer = (
 	closeTimeoutMs: number,
 ): ManagedBrowserServer => {
 	const wsEndpoint = readEndpoint(server);
-	let expectedClose = false;
 	let serverClosed = false;
 	let closePromise: Promise<void> | undefined;
 	let resolveUnexpectedClose:
@@ -96,20 +94,17 @@ const createManagedServer = (
 	);
 	const onClose = (): void => {
 		serverClosed = true;
-		if (!expectedClose) {
-			resolveUnexpectedClose?.(
-				new ShopifyE2EInfrastructureError(
-					"Consumer Chromium server closed unexpectedly",
-				),
-			);
-		}
+		resolveUnexpectedClose?.(
+			new ShopifyE2EInfrastructureError(
+				"Consumer Chromium server closed unexpectedly",
+			),
+		);
 	};
 	server.on("close", onClose);
 
 	return {
 		close: () => {
 			if (closePromise) return closePromise;
-			expectedClose = true;
 			server.off("close", onClose);
 			closePromise = serverClosed
 				? Promise.resolve()
@@ -173,7 +168,7 @@ export const launchConsumerBrowserServer = async ({
 
 	if (signal.aborted) {
 		await cleanInterruptedLaunch(server);
-		throw new CommandSignalError(commandSignalFromReason(signal.reason));
+		throwIfCommandAborted(signal);
 	}
 
 	try {

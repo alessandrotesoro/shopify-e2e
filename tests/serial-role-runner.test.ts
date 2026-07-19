@@ -11,7 +11,7 @@ describe("serial role runner", () => {
 		const first = new Promise<void>((resolve) => {
 			releaseFirst = resolve;
 		});
-		const runRole = vi.fn(async (role: string) => {
+		const runRole = vi.fn(async ({ role }: { readonly role: string }) => {
 			events.push(`start:${role}`);
 			if (role === "admin") await first;
 			events.push(`end:${role}`);
@@ -22,8 +22,8 @@ describe("serial role runner", () => {
 			browserUnexpectedClose: new Promise(() => undefined),
 			reportActiveRole: (role) => events.push(`report:${role}`),
 			reportSummary,
-			roles: ["admin", "customer"],
 			runRole,
+			selections: [{ role: "admin" }, { role: "customer" }],
 			signal: new AbortController().signal,
 		});
 
@@ -53,8 +53,12 @@ describe("serial role runner", () => {
 				browserUnexpectedClose: new Promise(() => undefined),
 				reportActiveRole: vi.fn(),
 				reportSummary,
-				roles: ["admin", "customer", "guest"],
-				runRole: vi.fn(async (role) => (role === "customer" ? 17 : 0)),
+				runRole: vi.fn(async ({ role }) => (role === "customer" ? 17 : 0)),
+				selections: [
+					{ role: "admin" },
+					{ role: "customer" },
+					{ role: "guest" },
+				],
 				signal: new AbortController().signal,
 			}),
 		).resolves.toBe(17);
@@ -72,12 +76,12 @@ describe("serial role runner", () => {
 			browserUnexpectedClose: new Promise(() => undefined),
 			reportActiveRole: vi.fn(),
 			reportSummary,
-			roles: ["admin", "customer"],
-			runRole: vi.fn(async (_role, signal) => {
+			runRole: vi.fn(async (_selection, signal) => {
 				controller.abort("SIGTERM");
 				if (signal.aborted) throw new CommandSignalError("SIGTERM");
 				return 0;
 			}),
+			selections: [{ role: "admin" }, { role: "customer" }],
 			signal: controller.signal,
 		}).catch((error: unknown) => error);
 
@@ -102,15 +106,15 @@ describe("serial role runner", () => {
 			browserUnexpectedClose,
 			reportActiveRole: vi.fn(),
 			reportSummary,
-			roles: ["admin", "customer"],
 			runRole: vi.fn(
-				(_role, signal) =>
+				(_selection, signal) =>
 					new Promise<number>((_resolve, reject) => {
 						signal.addEventListener("abort", () => reject(signal.reason), {
 							once: true,
 						});
 					}),
 			),
+			selections: [{ role: "admin" }, { role: "customer" }],
 			signal: new AbortController().signal,
 		}).catch((error: unknown) => error);
 		closeBrowser?.(
