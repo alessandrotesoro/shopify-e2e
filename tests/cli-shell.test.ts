@@ -156,7 +156,18 @@ const makeConsumerWithExitingPlaywright = async (
 	await writeFile(join(peerRoot, "cli.js"), `process.exit(${exitCode});\n`);
 	await writeFile(
 		join(peerRoot, "index.js"),
-		"export const chromium = { launch() {} };\n",
+		`import { EventEmitter } from "node:events";
+class Server extends EventEmitter {
+  async close() { this.emit("close"); }
+  async kill() { this.emit("close"); }
+  wsEndpoint() { return "ws://127.0.0.1/fake-playwright-server"; }
+}
+export const chromium = {
+  executablePath() { return process.execPath; },
+  launch() {},
+  async launchServer() { return new Server(); },
+};
+`,
 	);
 	return consumer;
 };
@@ -875,7 +886,7 @@ export const chromium = {
 		expect(result.stderr).toContain("Shopify test directory:");
 	});
 
-	it("reports package infrastructure failures as one safe generic error", async () => {
+	it("reports browser startup failures as one safe infrastructure error", async () => {
 		const consumer = await makeRunnableConsumer();
 		const missingTemporaryRoot = join(
 			consumer,
@@ -894,9 +905,7 @@ export const chromium = {
 
 		expect(result.status).toBe(1);
 		expect(result.stdout).toBe("");
-		expect(result.stderr).toMatch(
-			/^\s*›?\s*Error: shopify-e2e could not complete Playwright execution\s*$/,
-		);
+		expect(result.stderr).toMatch(/consumer chromium server could not launch/i);
 		expect(result.stderr.match(/Error:/g)).toHaveLength(1);
 		expect(result.stderr).not.toContain("private-value");
 	});

@@ -3,67 +3,58 @@ import { constants } from "node:os";
 
 import { ShopifyE2EInfrastructureError } from "../errors.js";
 import type { PlaywrightInvocation } from "../playwright/invocation.js";
+import {
+	CommandSignalError,
+	commandSignalFromReason,
+} from "./command-signals.js";
 
-const forwardedSignals = ["SIGINT", "SIGTERM"] as const;
-type ForwardedSignal = (typeof forwardedSignals)[number];
-type ChildSignal = ForwardedSignal | "SIGKILL";
-type SignalListener = () => void;
+type ChildSignal = "SIGINT" | "SIGKILL" | "SIGTERM";
 type ChildOutcome = { error: Error } | { exitCode: number };
-
-export interface AddSignalListenerArgs {
-	readonly listener: SignalListener;
-	readonly signal: ForwardedSignal;
-}
 
 export interface ForwardSignalArgs {
 	readonly pid: number;
 	readonly signal: ChildSignal;
 }
 
-export interface RemoveSignalListenerArgs {
-	readonly listener: SignalListener;
-	readonly signal: ForwardedSignal;
-}
-
 export interface ChildProcessRuntime {
-	readonly addSignalListener: (args: AddSignalListenerArgs) => void;
 	readonly forwardSignal: (args: ForwardSignalArgs) => boolean;
 	readonly platform: NodeJS.Platform;
-	readonly removeSignalListener: (args: RemoveSignalListenerArgs) => void;
 	readonly spawn: typeof spawn;
 }
 
 const defaultRuntime: ChildProcessRuntime = {
-	addSignalListener: ({ listener, signal }) => {
-		process.on(signal, listener);
-	},
-	forwardSignal: ({ pid, signal }) => {
-		return process.kill(pid, signal);
-	},
+	forwardSignal: ({ pid, signal }) => process.kill(pid, signal),
 	platform: process.platform,
-	removeSignalListener: ({ listener, signal }) => {
-		process.off(signal, listener);
-	},
 	spawn,
 };
 
-const isPosix = (platform: NodeJS.Platform): boolean => {
-	return platform !== "win32";
-};
+const isPosix = (platform: NodeJS.Platform): boolean => platform !== "win32";
 
 const signalExitCode = (signal: NodeJS.Signals): number | undefined => {
 	const signalNumber = constants.signals[signal];
 	return typeof signalNumber === "number" ? 128 + signalNumber : undefined;
 };
 
+const abortError = (signal: AbortSignal): Error => {
+	if (signal.reason instanceof Error) return signal.reason;
+	return new CommandSignalError(commandSignalFromReason(signal.reason));
+};
+
+const abortSignal = (signal: AbortSignal): "SIGINT" | "SIGTERM" =>
+	signal.reason === "SIGINT" ? "SIGINT" : "SIGTERM";
+
 export interface RunChildArgs {
 	readonly invocation: PlaywrightInvocation;
 	readonly runtime?: ChildProcessRuntime;
+	readonly signal?: AbortSignal;
+	readonly terminationGraceMs?: number;
 }
 
 export const runChild = async ({
 	invocation,
 	runtime = defaultRuntime,
+	signal,
+	terminationGraceMs = 10_000,
 }: RunChildArgs): Promise<number> => {
 	const isPosixPlatform = isPosix(runtime.platform);
 	const child = runtime.spawn(invocation.executable, invocation.args, {
@@ -77,91 +68,70 @@ export const runChild = async ({
 
 	return new Promise<number>((resolve, reject) => {
 		let isSettled = false;
-		let forwardingError: ShopifyE2EInfrastructureError | undefined;
-		const deliveredSignals = new Set<ForwardedSignal>();
-		const signalListeners = new Map<ForwardedSignal, SignalListener>();
+		let interruption: Error | undefined;
+		let graceTimer: NodeJS.Timeout | undefined;
+		let killTimer: NodeJS.Timeout | undefined;
 
-		const removeSignalListeners = (): void => {
-			for (const [signal, listener] of signalListeners) {
-				runtime.removeSignalListener({ listener, signal });
-			}
-			signalListeners.clear();
+		const clearTimers = (): void => {
+			if (graceTimer) clearTimeout(graceTimer);
+			if (killTimer) clearTimeout(killTimer);
 		};
-
+		const removeAbortListener = (): void => {
+			signal?.removeEventListener("abort", onAbort);
+		};
 		const settle = (outcome: ChildOutcome): void => {
 			if (isSettled) return;
 			isSettled = true;
-			removeSignalListeners();
+			clearTimers();
+			removeAbortListener();
 			if ("error" in outcome) reject(outcome.error);
 			else resolve(outcome.exitCode);
 		};
-
-		const recoverFromForwardingFailure = (
-			error: ShopifyE2EInfrastructureError,
-		): void => {
-			forwardingError = error;
-			removeSignalListeners();
-
-			let isTerminationInitiated = false;
+		const deliver = (selectedSignal: ChildSignal): boolean => {
 			if (isPosixPlatform && child.pid !== undefined) {
 				try {
-					isTerminationInitiated = runtime.forwardSignal({
-						pid: -child.pid,
-						signal: "SIGKILL",
-					});
-				} catch {
-					// Preserve the original forwarding error; direct-child recovery follows.
-				}
-			}
-
-			if (!isTerminationInitiated) {
-				try {
-					isTerminationInitiated = child.kill("SIGKILL");
-				} catch {
-					// Preserve the original forwarding error as the single CLI diagnostic.
-				}
-			}
-
-			if (!isTerminationInitiated) settle({ error });
-		};
-
-		for (const signal of forwardedSignals) {
-			const listener = (): void => {
-				if (forwardingError || deliveredSignals.has(signal)) return;
-				deliveredSignals.add(signal);
-				try {
-					let wasSignalDelivered: boolean;
-					if (isPosixPlatform && child.pid !== undefined) {
-						wasSignalDelivered = runtime.forwardSignal({
+					if (
+						runtime.forwardSignal({
 							pid: -child.pid,
-							signal,
-						});
-					} else {
-						wasSignalDelivered = child.kill(signal);
+							signal: selectedSignal,
+						})
+					) {
+						return true;
 					}
-					if (!wasSignalDelivered) {
-						recoverFromForwardingFailure(
-							new ShopifyE2EInfrastructureError(
-								`Could not forward ${signal} to the Playwright process`,
-							),
-						);
-					}
-				} catch (cause) {
-					recoverFromForwardingFailure(
-						new ShopifyE2EInfrastructureError(
-							`Could not forward ${signal} to the Playwright process`,
-							{ cause },
-						),
-					);
+				} catch {
+					// The direct-child fallback below remains available.
 				}
-			};
-			signalListeners.set(signal, listener);
-			runtime.addSignalListener({ listener, signal });
+			}
+			try {
+				return child.kill(selectedSignal);
+			} catch {
+				return false;
+			}
+		};
+		const forceKill = (): void => {
+			deliver("SIGKILL");
+			killTimer = setTimeout(() => {
+				settle({
+					error:
+						interruption ??
+						new ShopifyE2EInfrastructureError(
+							"Playwright process could not be terminated",
+						),
+				});
+			}, terminationGraceMs);
+			killTimer.unref();
+		};
+		function onAbort(): void {
+			if (interruption || !signal) return;
+			interruption = abortError(signal);
+			deliver(abortSignal(signal));
+			graceTimer = setTimeout(forceKill, terminationGraceMs);
+			graceTimer.unref();
 		}
 
 		child.once("error", (cause) => {
-			if (forwardingError) {
-				settle({ error: forwardingError });
+			if (interruption) {
+				settle({ error: interruption });
 				return;
 			}
 			const peerExecutable = invocation.args[0] ?? "the selected peer";
@@ -173,17 +143,17 @@ export const runChild = async ({
 			});
 		});
 
-		child.once("exit", (code, signal) => {
-			if (forwardingError) {
-				settle({ error: forwardingError });
+		child.once("exit", (code, exitSignal) => {
+			if (interruption) {
+				settle({ error: interruption });
 				return;
 			}
 			if (code !== null) {
 				settle({ exitCode: code });
 				return;
 			}
-			if (signal !== null) {
-				const exitCode = signalExitCode(signal);
+			if (exitSignal !== null) {
+				const exitCode = signalExitCode(exitSignal);
 				if (exitCode !== undefined) {
 					settle({ exitCode });
 					return;
@@ -195,5 +165,10 @@ export const runChild = async ({
 				),
 			});
 		});
+
+		if (signal) {
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) onAbort();
+		}
 	});
 };
