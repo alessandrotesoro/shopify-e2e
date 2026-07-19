@@ -1,6 +1,7 @@
 import { createJiti } from "jiti";
 
 import { ShopifyE2EPreflightError } from "../errors.js";
+import type { BrowserServerLaunchOptions } from "../playwright/peer.js";
 import {
 	type DefinedShopifyE2EConfig,
 	isDefinedShopifyE2EConfig,
@@ -18,11 +19,376 @@ export interface LoadShopifyConfigOptions {
 }
 
 export interface LoadedShopifyConfig {
+	readonly browserLaunchOptions: BrowserServerLaunchOptions;
 	readonly configPath: string;
 	readonly projectRoot: string;
 	readonly roles: readonly string[];
 	readonly testDir: string;
 }
+
+const SUPPORTED_LAUNCH_OPTION_KEYS = new Set([
+	"args",
+	"artifactsDir",
+	"channel",
+	"chromiumSandbox",
+	"downloadsPath",
+	"env",
+	"executablePath",
+	"handleSIGHUP",
+	"handleSIGINT",
+	"handleSIGTERM",
+	"headless",
+	"ignoreDefaultArgs",
+	"proxy",
+	"timeout",
+]);
+
+const isPlainRecord = (
+	value: unknown,
+): value is Record<PropertyKey, unknown> => {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return false;
+	}
+	const prototype = Object.getPrototypeOf(value) as unknown;
+	return prototype === Object.prototype || prototype === null;
+};
+
+const assertPlainRecord = (
+	value: unknown,
+	label: string,
+): Record<PropertyKey, unknown> => {
+	if (!isPlainRecord(value)) {
+		throw new ShopifyE2EPreflightError(`${label} must be a plain object`);
+	}
+	if (Object.getOwnPropertySymbols(value).length > 0) {
+		throw new ShopifyE2EPreflightError(
+			`${label} must not contain symbol properties`,
+		);
+	}
+	for (const key of Object.getOwnPropertyNames(value)) {
+		readDataProperty(value, key, label);
+	}
+	return value;
+};
+
+const readOptionalString = (
+	value: Record<PropertyKey, unknown>,
+	key: string,
+	label: string,
+): string | undefined => {
+	if (!Object.hasOwn(value, key)) return undefined;
+	const selected = readDataProperty(value, key, label);
+	if (selected === undefined) return undefined;
+	if (typeof selected !== "string" || selected.trim().length === 0) {
+		throw new ShopifyE2EPreflightError(`${label} must be a non-empty string`);
+	}
+	return selected;
+};
+
+const readOptionalBoolean = (
+	value: Record<PropertyKey, unknown>,
+	key: string,
+	label: string,
+): boolean | undefined => {
+	if (!Object.hasOwn(value, key)) return undefined;
+	const selected = readDataProperty(value, key, label);
+	if (selected === undefined) return undefined;
+	if (typeof selected !== "boolean") {
+		throw new ShopifyE2EPreflightError(`${label} must be a boolean`);
+	}
+	return selected;
+};
+
+const readOptionalNumber = (
+	value: Record<PropertyKey, unknown>,
+	key: string,
+	label: string,
+): number | undefined => {
+	if (!Object.hasOwn(value, key)) return undefined;
+	const selected = readDataProperty(value, key, label);
+	if (
+		selected === undefined ||
+		(typeof selected === "number" && Number.isFinite(selected) && selected >= 0)
+	) {
+		return selected;
+	}
+	throw new ShopifyE2EPreflightError(
+		`${label} must be a non-negative finite number`,
+	);
+};
+
+const freezeStringArray = (
+	value: unknown,
+	label: string,
+): readonly string[] => {
+	if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+		throw new ShopifyE2EPreflightError(`${label} must be an array of strings`);
+	}
+	return Object.freeze([...value]);
+};
+
+const normalizeEnvironment = (
+	value: unknown,
+): Readonly<Record<string, string | undefined>> => {
+	const input = assertPlainRecord(
+		value,
+		"Shopify config use.launchOptions.env",
+	);
+	const normalized: Record<string, string | undefined> = {};
+	for (const key of Object.getOwnPropertyNames(input)) {
+		const selected = readDataProperty(
+			input,
+			key,
+			`Shopify config use.launchOptions.env.${key}`,
+		);
+		if (selected !== undefined && typeof selected !== "string") {
+			throw new ShopifyE2EPreflightError(
+				`Shopify config use.launchOptions.env.${key} must be a string or undefined`,
+			);
+		}
+		normalized[key] = selected;
+	}
+	return Object.freeze(normalized);
+};
+
+const normalizeProxy = (
+	value: unknown,
+): NonNullable<BrowserServerLaunchOptions["proxy"]> => {
+	const input = assertPlainRecord(
+		value,
+		"Shopify config use.launchOptions.proxy",
+	);
+	const supported = new Set(["server", "bypass", "username", "password"]);
+	for (const key of Object.getOwnPropertyNames(input)) {
+		if (!supported.has(key)) {
+			throw new ShopifyE2EPreflightError(
+				`Shopify config use.launchOptions.proxy.${key} is not supported`,
+			);
+		}
+	}
+	const server = readOptionalString(
+		input,
+		"server",
+		"Shopify config use.launchOptions.proxy.server",
+	);
+	if (server === undefined) {
+		throw new ShopifyE2EPreflightError(
+			"Shopify config use.launchOptions.proxy.server must be a non-empty string",
+		);
+	}
+	return Object.freeze({
+		...(readOptionalString(
+			input,
+			"bypass",
+			"Shopify config use.launchOptions.proxy.bypass",
+		) === undefined
+			? {}
+			: {
+					bypass: readOptionalString(
+						input,
+						"bypass",
+						"Shopify config use.launchOptions.proxy.bypass",
+					),
+				}),
+		...(readOptionalString(
+			input,
+			"password",
+			"Shopify config use.launchOptions.proxy.password",
+		) === undefined
+			? {}
+			: {
+					password: readOptionalString(
+						input,
+						"password",
+						"Shopify config use.launchOptions.proxy.password",
+					),
+				}),
+		server,
+		...(readOptionalString(
+			input,
+			"username",
+			"Shopify config use.launchOptions.proxy.username",
+		) === undefined
+			? {}
+			: {
+					username: readOptionalString(
+						input,
+						"username",
+						"Shopify config use.launchOptions.proxy.username",
+					),
+				}),
+	});
+};
+
+const isRemoteDebuggingArgument = (value: string): boolean =>
+	/^\s*--remote-debugging(?:[-=]|$)/i.test(value);
+
+const normalizeBrowserLaunchOptions = (
+	config: Record<PropertyKey, unknown>,
+): BrowserServerLaunchOptions => {
+	const useValue = Object.hasOwn(config, "use")
+		? readDataProperty(config, "use", "Shopify config use")
+		: undefined;
+	const use =
+		useValue === undefined
+			? undefined
+			: assertPlainRecord(useValue, "Shopify config use");
+	const launchValue =
+		use && Object.hasOwn(use, "launchOptions")
+			? readDataProperty(
+					use,
+					"launchOptions",
+					"Shopify config use.launchOptions",
+				)
+			: undefined;
+	const launch =
+		launchValue === undefined
+			? undefined
+			: assertPlainRecord(launchValue, "Shopify config use.launchOptions");
+	if (launch) {
+		for (const key of Object.getOwnPropertyNames(launch)) {
+			if (!SUPPORTED_LAUNCH_OPTION_KEYS.has(key)) {
+				throw new ShopifyE2EPreflightError(
+					`Shopify config use.launchOptions.${key} is not supported by the shared Chromium server`,
+				);
+			}
+		}
+	}
+
+	const argsValue =
+		launch && Object.hasOwn(launch, "args")
+			? readDataProperty(
+					launch,
+					"args",
+					"Shopify config use.launchOptions.args",
+				)
+			: undefined;
+	const args =
+		argsValue === undefined
+			? undefined
+			: freezeStringArray(argsValue, "Shopify config use.launchOptions.args");
+	if (args?.some(isRemoteDebuggingArgument)) {
+		throw new ShopifyE2EPreflightError(
+			"Shopify config use.launchOptions.args must not contain --remote-debugging-* options",
+		);
+	}
+	const ignoreDefaultArgsValue =
+		launch && Object.hasOwn(launch, "ignoreDefaultArgs")
+			? readDataProperty(
+					launch,
+					"ignoreDefaultArgs",
+					"Shopify config use.launchOptions.ignoreDefaultArgs",
+				)
+			: undefined;
+	let ignoreDefaultArgs: boolean | readonly string[] | undefined;
+	if (ignoreDefaultArgsValue !== undefined) {
+		if (typeof ignoreDefaultArgsValue === "boolean") {
+			ignoreDefaultArgs = ignoreDefaultArgsValue;
+		} else {
+			ignoreDefaultArgs = freezeStringArray(
+				ignoreDefaultArgsValue,
+				"Shopify config use.launchOptions.ignoreDefaultArgs",
+			);
+		}
+	}
+
+	const launchChannel = launch
+		? readOptionalString(
+				launch,
+				"channel",
+				"Shopify config use.launchOptions.channel",
+			)
+		: undefined;
+	const useChannel = use
+		? readOptionalString(use, "channel", "Shopify config use.channel")
+		: undefined;
+	const channel = useChannel ?? launchChannel;
+	const artifactsDir = launch
+		? readOptionalString(
+				launch,
+				"artifactsDir",
+				"Shopify config use.launchOptions.artifactsDir",
+			)
+		: undefined;
+	const chromiumSandbox = launch
+		? readOptionalBoolean(
+				launch,
+				"chromiumSandbox",
+				"Shopify config use.launchOptions.chromiumSandbox",
+			)
+		: undefined;
+	const downloadsPath = launch
+		? readOptionalString(
+				launch,
+				"downloadsPath",
+				"Shopify config use.launchOptions.downloadsPath",
+			)
+		: undefined;
+	const executablePath = launch
+		? readOptionalString(
+				launch,
+				"executablePath",
+				"Shopify config use.launchOptions.executablePath",
+			)
+		: undefined;
+	const timeout = launch
+		? readOptionalNumber(
+				launch,
+				"timeout",
+				"Shopify config use.launchOptions.timeout",
+			)
+		: undefined;
+	const envValue =
+		launch && Object.hasOwn(launch, "env")
+			? readDataProperty(launch, "env", "Shopify config use.launchOptions.env")
+			: undefined;
+	const proxyValue =
+		launch && Object.hasOwn(launch, "proxy")
+			? readDataProperty(
+					launch,
+					"proxy",
+					"Shopify config use.launchOptions.proxy",
+				)
+			: undefined;
+	return Object.freeze({
+		...(args === undefined ? {} : { args }),
+		...(artifactsDir === undefined ? {} : { artifactsDir }),
+		...(channel === undefined ? {} : { channel }),
+		...(chromiumSandbox === undefined ? {} : { chromiumSandbox }),
+		...(downloadsPath === undefined ? {} : { downloadsPath }),
+		...(envValue === undefined ? {} : { env: normalizeEnvironment(envValue) }),
+		...(executablePath === undefined ? {} : { executablePath }),
+		handleSIGHUP: true,
+		handleSIGINT: false,
+		handleSIGTERM: false,
+		headless: false,
+		host: "127.0.0.1",
+		...(ignoreDefaultArgs === undefined ? {} : { ignoreDefaultArgs }),
+		port: 0,
+		...(proxyValue === undefined ? {} : { proxy: normalizeProxy(proxyValue) }),
+		...(timeout === undefined ? {} : { timeout }),
+	});
+};
+
+const debugPatternMatchesServer = (pattern: string): boolean => {
+	if (pattern.length === 0 || pattern.startsWith("-")) return false;
+	const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`^${escaped.replaceAll("*", ".*")}$`, "i").test(
+		"pw:server",
+	);
+};
+
+const assertEndpointSafeDebug = (environment: NodeJS.ProcessEnv): void => {
+	const debug = environment.DEBUG;
+	if (
+		typeof debug === "string" &&
+		debug.split(/[\s,]+/).some(debugPatternMatchesServer)
+	) {
+		throw new ShopifyE2EPreflightError(
+			"DEBUG must not enable Playwright browser endpoint logging",
+		);
+	}
+};
 
 const readDataProperty = (
 	value: Record<PropertyKey, unknown>,
@@ -74,6 +440,7 @@ export const loadShopifyConfig = async (
 	});
 	try {
 		assertReservedExecutionEnvironmentIsClear(options.environment);
+		assertEndpointSafeDebug(options.environment);
 	} catch (error) {
 		throw new ShopifyE2EPreflightError(
 			error instanceof Error
@@ -113,6 +480,9 @@ export const loadShopifyConfig = async (
 			projectRoot: options.projectRoot,
 		});
 		return {
+			browserLaunchOptions: normalizeBrowserLaunchOptions(
+				playwrightConfig as Record<PropertyKey, unknown>,
+			),
 			configPath,
 			projectRoot: options.projectRoot,
 			roles,

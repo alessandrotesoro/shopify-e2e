@@ -73,11 +73,117 @@ describe("dedicated Shopify configuration", () => {
 		});
 
 		expect(loaded).toEqual({
+			browserLaunchOptions: {
+				handleSIGHUP: true,
+				handleSIGINT: false,
+				handleSIGTERM: false,
+				headless: false,
+				host: "127.0.0.1",
+				port: 0,
+			},
 			configPath: join(project, "shopify-e2e.config.ts"),
 			projectRoot: project,
 			roles: ["admin", "customer"],
 			testDir: join(project, "shopify-tests"),
 		});
+	});
+
+	it("creates an immutable allowlisted headed Chromium launch projection", async () => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			markedConfigSource(
+				'testDir: "shopify-tests", roles: ["admin"], use: { channel: "chrome", launchOptions: { args: ["--start-maximized"], channel: "msedge", chromiumSandbox: true, headless: true, handleSIGHUP: false, handleSIGINT: true, handleSIGTERM: true, timeout: 1234 } }',
+			),
+		);
+
+		const loaded = await loadShopifyConfig({
+			environment: {},
+			projectRoot: project,
+		});
+
+		expect(loaded.browserLaunchOptions).toEqual({
+			args: ["--start-maximized"],
+			channel: "chrome",
+			chromiumSandbox: true,
+			handleSIGHUP: true,
+			handleSIGINT: false,
+			handleSIGTERM: false,
+			headless: false,
+			host: "127.0.0.1",
+			port: 0,
+			timeout: 1234,
+		});
+		expect(Object.isFrozen(loaded.browserLaunchOptions)).toBe(true);
+		expect(Object.isFrozen(loaded.browserLaunchOptions.args)).toBe(true);
+	});
+
+	it.each([
+		["deprecated logger", "logger: {}", /launchOptions\.logger/i],
+		[
+			"Firefox preferences",
+			"firefoxUserPrefs: { foo: true }",
+			/launchOptions\.firefoxUserPrefs/i,
+		],
+		[
+			"launch-server trace directory",
+			'tracesDir: "traces"',
+			/launchOptions\.tracesDir/i,
+		],
+		["unknown option", "custom: true", /launchOptions\.custom/i],
+	])("rejects the unsupported %s", async (_label, launchField, message) => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], use: { launchOptions: { ${launchField} } }`,
+			),
+		);
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(message);
+	});
+
+	it.each([
+		"--remote-debugging-port=0",
+		"--remote-debugging-address=127.0.0.1",
+		"--remote-debugging-pipe",
+	])("rejects Chromium CDP argument %s", async (argument) => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], use: { launchOptions: { args: [${JSON.stringify(argument)}] } }`,
+			),
+		);
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(/remote-debugging/i);
+	});
+
+	it.each([
+		"pw:server",
+		"pw:*",
+		"*",
+	])("rejects endpoint-revealing DEBUG=%s before config evaluation", async (debug) => {
+		const project = await makeProject();
+		const marker = join(project, "config-loaded");
+		await writeConfig(
+			project,
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "loaded"); ${markedConfigSource()}`,
+		);
+
+		const error = await loadShopifyConfig({
+			environment: { DEBUG: debug },
+			projectRoot: project,
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+		expect((error as Error).message).toMatch(/DEBUG.*browser endpoint/i);
+		expect((error as Error).message).not.toContain(debug);
+		await expect(access(marker)).rejects.toThrow();
 	});
 
 	it("ignores alternate and ordinary Playwright configs", async () => {
