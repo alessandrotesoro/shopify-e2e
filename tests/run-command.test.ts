@@ -535,7 +535,12 @@ describe("role-only run orchestration", () => {
 	it("rejects an empty interactive ready set without opening a prompt", async () => {
 		const consumer = await makeConsumer();
 		const dependencies = makeDependencies({
-			store: makeStore({ readyRoles: [] }),
+			store: makeStore({
+				list: [
+					{ role: "admin", status: "missing" },
+					{ role: "customer", status: "missing" },
+				],
+			}),
 		});
 
 		await expect(
@@ -572,9 +577,15 @@ describe("role-only run orchestration", () => {
 	it("revalidates a stale prompt result and returns state remediation", async () => {
 		const consumer = await makeConsumer();
 		const store = makeStore({
-			list: [{ role: "admin", status: "missing" }],
-			readyRoles: ["admin"],
+			list: [{ role: "admin", status: "ready" }],
 		});
+		vi.mocked(store.resolve).mockRejectedValueOnce(new Error("stale state"));
+		vi.mocked(store.list).mockResolvedValueOnce([
+			{ role: "admin", status: "ready" },
+		]);
+		vi.mocked(store.list).mockResolvedValueOnce([
+			{ role: "admin", status: "missing" },
+		]);
 		const dependencies = makeDependencies({ store });
 
 		await expect(
@@ -829,9 +840,9 @@ describe("role-only run orchestration", () => {
 			interactive = true;
 		}
 		if (checkpoint === "ready-list") {
-			vi.mocked(store.readyRoles).mockImplementationOnce(async () => {
+			vi.mocked(store.list).mockImplementationOnce(async () => {
 				abort();
-				return ["admin"];
+				return [{ role: "admin", status: "ready" }];
 			});
 		}
 		if (checkpoint === "role-prompt") {

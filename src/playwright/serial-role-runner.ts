@@ -12,37 +12,45 @@ export interface RoleRunOutcome {
 	readonly status: RoleRunStatus;
 }
 
-export interface RunRolesSeriallyArgs {
+interface RoleSelection {
+	readonly role: string;
+}
+
+export interface RunRolesSeriallyArgs<Selection extends RoleSelection> {
 	readonly browserUnexpectedClose: Promise<ShopifyE2EInfrastructureError>;
 	readonly reportActiveRole: (role: string) => void;
 	readonly reportSummary: (outcomes: readonly RoleRunOutcome[]) => void;
-	readonly roles: readonly string[];
-	readonly runRole: (role: string, signal: AbortSignal) => Promise<number>;
+	readonly runRole: (
+		selection: Selection,
+		signal: AbortSignal,
+	) => Promise<number>;
+	readonly selections: readonly Selection[];
 	readonly signal: AbortSignal;
 }
 
 const interruptionFor = (signal: AbortSignal): CommandSignalError =>
 	new CommandSignalError(commandSignalFromReason(signal.reason));
 
-export const runRolesSerially = async ({
+export const runRolesSerially = async <Selection extends RoleSelection>({
 	browserUnexpectedClose,
 	reportActiveRole,
 	reportSummary,
-	roles,
 	runRole,
+	selections,
 	signal,
-}: RunRolesSeriallyArgs): Promise<number> => {
+}: RunRolesSeriallyArgs<Selection>): Promise<number> => {
 	const browserController = new AbortController();
 	void browserUnexpectedClose.then((error) => browserController.abort(error));
 	const roleSignal = AbortSignal.any([signal, browserController.signal]);
-	const outcomes: RoleRunOutcome[] = roles.map((role) => ({
+	const outcomes: RoleRunOutcome[] = selections.map(({ role }) => ({
 		role,
 		status: "not-run",
 	}));
 	let exitCode = 0;
 	let failure: unknown;
 
-	for (const [index, role] of roles.entries()) {
+	for (const [index, selection] of selections.entries()) {
+		const { role } = selection;
 		if (signal.aborted) {
 			failure = interruptionFor(signal);
 			break;
@@ -53,7 +61,7 @@ export const runRolesSerially = async ({
 		}
 		reportActiveRole(role);
 		try {
-			const roleExitCode = await runRole(role, roleSignal);
+			const roleExitCode = await runRole(selection, roleSignal);
 			if (signal.aborted) {
 				outcomes[index] = { role, status: "interrupted" };
 				failure = interruptionFor(signal);

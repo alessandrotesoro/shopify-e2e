@@ -3,10 +3,7 @@ import { constants } from "node:os";
 
 import { ShopifyE2EInfrastructureError } from "../errors.js";
 import type { PlaywrightInvocation } from "../playwright/invocation.js";
-import {
-	CommandSignalError,
-	commandSignalFromReason,
-} from "./command-signals.js";
+import { errorFromAbortSignal } from "./command-signals.js";
 
 type ChildSignal = "SIGINT" | "SIGKILL" | "SIGTERM";
 type ChildOutcome = { error: Error } | { exitCode: number };
@@ -33,11 +30,6 @@ const isPosix = (platform: NodeJS.Platform): boolean => platform !== "win32";
 const signalExitCode = (signal: NodeJS.Signals): number | undefined => {
 	const signalNumber = constants.signals[signal];
 	return typeof signalNumber === "number" ? 128 + signalNumber : undefined;
-};
-
-const abortError = (signal: AbortSignal): Error => {
-	if (signal.reason instanceof Error) return signal.reason;
-	return new CommandSignalError(commandSignalFromReason(signal.reason));
 };
 
 const abortSignal = (signal: AbortSignal): "SIGINT" | "SIGTERM" =>
@@ -123,7 +115,7 @@ export const runChild = async ({
 		};
 		function onAbort(): void {
 			if (interruption || !signal) return;
-			interruption = abortError(signal);
+			interruption = errorFromAbortSignal(signal);
 			deliver(abortSignal(signal));
 			graceTimer = setTimeout(forceKill, terminationGraceMs);
 			graceTimer.unref();
