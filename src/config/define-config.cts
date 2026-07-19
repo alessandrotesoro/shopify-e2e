@@ -114,6 +114,23 @@ const assertProtectedSettingIsAbsent = (
 	}
 };
 
+const assertProtectedUseSettingIsAbsent = (
+	use: Record<PropertyKey, unknown>,
+	setting: "connectOptions" | "storageState",
+): void => {
+	if (!Object.hasOwn(use, setting)) return;
+	const selected = readDataProperty(
+		use,
+		setting,
+		`Shopify config use.${setting}`,
+	);
+	if (selected !== undefined) {
+		throw new TypeError(
+			`Shopify config use.${setting} is controlled by @sematico/shopify-e2e and must not be set`,
+		);
+	}
+};
+
 const validateUse = (
 	config: Record<PropertyKey, unknown>,
 ): Record<PropertyKey, unknown> | undefined => {
@@ -127,30 +144,8 @@ const validateUse = (
 	for (const key of Object.getOwnPropertyNames(use)) {
 		readDataProperty(use, key, `Shopify config use.${key}`);
 	}
-	if (Object.hasOwn(use, "storageState")) {
-		const storageState = readDataProperty(
-			use,
-			"storageState",
-			"Shopify config use.storageState",
-		);
-		if (storageState !== undefined) {
-			throw new TypeError(
-				"Shopify config use.storageState is controlled by @sematico/shopify-e2e and must not be set",
-			);
-		}
-	}
-	if (Object.hasOwn(use, "connectOptions")) {
-		const connectOptions = readDataProperty(
-			use,
-			"connectOptions",
-			"Shopify config use.connectOptions",
-		);
-		if (connectOptions !== undefined) {
-			throw new TypeError(
-				"Shopify config use.connectOptions is controlled by @sematico/shopify-e2e and must not be set",
-			);
-		}
-	}
+	assertProtectedUseSettingIsAbsent(use, "storageState");
+	assertProtectedUseSettingIsAbsent(use, "connectOptions");
 	if (Object.hasOwn(use, "browserName")) {
 		const browserName = readDataProperty(
 			use,

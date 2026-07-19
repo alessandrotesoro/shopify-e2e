@@ -26,21 +26,19 @@ export interface LaunchConsumerBrowserServerArgs {
 	readonly signal: AbortSignal;
 }
 
-type BoundedOutcome = "failed" | "succeeded" | "timed-out";
-
-const bounded = async (
+const settlesWithin = async (
 	operation: Promise<unknown>,
 	timeoutMs: number,
-): Promise<BoundedOutcome> => {
+): Promise<boolean> => {
 	let timer: NodeJS.Timeout | undefined;
-	const timeout = new Promise<"timed-out">((resolve) => {
-		timer = setTimeout(() => resolve("timed-out"), timeoutMs);
+	const timeout = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), timeoutMs);
 		timer.unref();
 	});
 	const result = await Promise.race([
 		operation.then(
-			() => "succeeded" as const,
-			() => "failed" as const,
+			() => true,
+			() => false,
 		),
 		timeout,
 	]);
@@ -52,10 +50,8 @@ const forceCloseServer = async (
 	server: ConsumerBrowserServer,
 	timeoutMs: number,
 ): Promise<void> => {
-	const closeOutcome = await bounded(server.close(), timeoutMs);
-	if (closeOutcome === "succeeded") return;
-	const killOutcome = await bounded(server.kill(), timeoutMs);
-	if (killOutcome !== "succeeded") {
+	if (await settlesWithin(server.close(), timeoutMs)) return;
+	if (!(await settlesWithin(server.kill(), timeoutMs))) {
 		throw new ShopifyE2EInfrastructureError(
 			"Consumer Chromium server cleanup could not complete",
 		);
