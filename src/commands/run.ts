@@ -189,6 +189,22 @@ interface ResolveRunSelectionArgs {
 	readonly signal: AbortSignal;
 }
 
+const resolveRolesInConfigOrder = async (
+	store: RoleStateStore,
+	configuredRoles: readonly string[],
+	selectedRoles: readonly string[],
+	signal: AbortSignal,
+): Promise<readonly RoleStateSelection[]> => {
+	const requestedRoles = new Set(selectedRoles);
+	const selections: RoleStateSelection[] = [];
+	for (const role of configuredRoles) {
+		if (requestedRoles.has(role)) {
+			selections.push(await resolveReadyRole(store, role, signal));
+		}
+	}
+	return Object.freeze(selections);
+};
+
 const resolveRunSelection = async ({
 	dependencies,
 	loadedConfig,
@@ -232,15 +248,12 @@ const resolveRunSelection = async ({
 		roles: loadedConfig.roles,
 	});
 	if (explicitRoles !== undefined) {
-		const requestedRoles = new Set(explicitRoles);
-		const orderedRoles = loadedConfig.roles.filter((role) =>
-			requestedRoles.has(role),
+		return resolveRolesInConfigOrder(
+			store,
+			loadedConfig.roles,
+			explicitRoles,
+			signal,
 		);
-		const selections: RoleStateSelection[] = [];
-		for (const role of orderedRoles) {
-			selections.push(await resolveReadyRole(store, role, signal));
-		}
-		return Object.freeze(selections);
 	}
 
 	const readyRoles = await runWithCommandSignal(
@@ -270,15 +283,12 @@ const resolveRunSelection = async ({
 	if (selectedRoles.some((role) => !readyRoles.includes(role))) {
 		throw new ShopifyE2EPreflightError("Selected role is unavailable");
 	}
-	const requestedRoles = new Set(selectedRoles);
-	const orderedRoles = loadedConfig.roles.filter((role) =>
-		requestedRoles.has(role),
+	return resolveRolesInConfigOrder(
+		store,
+		loadedConfig.roles,
+		selectedRoles,
+		signal,
 	);
-	const selections: RoleStateSelection[] = [];
-	for (const role of orderedRoles) {
-		selections.push(await resolveReadyRole(store, role, signal));
-	}
-	return Object.freeze(selections);
 };
 
 const createExecutionContextWithSignal = async (

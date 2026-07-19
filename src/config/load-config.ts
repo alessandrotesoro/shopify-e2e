@@ -176,47 +176,26 @@ const normalizeProxy = (
 			"Shopify config use.launchOptions.proxy.server must be a non-empty string",
 		);
 	}
+	const bypass = readOptionalString(
+		input,
+		"bypass",
+		"Shopify config use.launchOptions.proxy.bypass",
+	);
+	const password = readOptionalString(
+		input,
+		"password",
+		"Shopify config use.launchOptions.proxy.password",
+	);
+	const username = readOptionalString(
+		input,
+		"username",
+		"Shopify config use.launchOptions.proxy.username",
+	);
 	return Object.freeze({
-		...(readOptionalString(
-			input,
-			"bypass",
-			"Shopify config use.launchOptions.proxy.bypass",
-		) === undefined
-			? {}
-			: {
-					bypass: readOptionalString(
-						input,
-						"bypass",
-						"Shopify config use.launchOptions.proxy.bypass",
-					),
-				}),
-		...(readOptionalString(
-			input,
-			"password",
-			"Shopify config use.launchOptions.proxy.password",
-		) === undefined
-			? {}
-			: {
-					password: readOptionalString(
-						input,
-						"password",
-						"Shopify config use.launchOptions.proxy.password",
-					),
-				}),
+		...(bypass === undefined ? {} : { bypass }),
+		...(password === undefined ? {} : { password }),
 		server,
-		...(readOptionalString(
-			input,
-			"username",
-			"Shopify config use.launchOptions.proxy.username",
-		) === undefined
-			? {}
-			: {
-					username: readOptionalString(
-						input,
-						"username",
-						"Shopify config use.launchOptions.proxy.username",
-					),
-				}),
+		...(username === undefined ? {} : { username }),
 	});
 };
 
