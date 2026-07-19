@@ -607,7 +607,7 @@ export const orchestrateShopifyRun = async ({
 
 export class Run extends Command {
 	static override description =
-		"Run the dedicated Shopify Playwright E2E lane. Run controls are package-owned; arbitrary Playwright arguments are not accepted. Playwright workers, projects, file selectors, reporters, UI, and debug controls are intentionally unavailable.";
+		"Run one or more Shopify roles serially through one headed Chromium instance. Run controls are package-owned; arbitrary Playwright arguments are not accepted. Playwright workers, projects, file selectors, reporters, UI, and debug controls are intentionally unavailable.";
 
 	static override flags = {
 		grep: Flags.string({
@@ -621,7 +621,7 @@ export class Run extends Command {
 		}),
 		role: Flags.string({
 			description:
-				"Configured role whose saved browser state should run (repeatable)",
+				"Configured role to run (repeatable); omit in a terminal to select roles",
 			multiple: true,
 		}),
 	};

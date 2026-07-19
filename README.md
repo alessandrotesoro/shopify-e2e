@@ -2,7 +2,7 @@
 
 An isolated Playwright lane for Shopify end-to-end tests.
 
-The consumer owns `@playwright/test`, Chromium, its Shopify tests, and its trusted Playwright configuration. The CLI owns role-state capture, readiness checks, the selected role and storage state, the dedicated test root, and one-worker execution.
+The consumer owns `@playwright/test`, Chromium, its Shopify tests, and its trusted Playwright configuration. The CLI owns role-state capture, readiness checks, the selected roles and storage states, the dedicated test root, one-worker execution, and one visible Chromium instance for the command.
 
 ## Install
 
@@ -61,10 +61,15 @@ The following settings belong to the CLI and must not be configured by the consu
 - `grep`
 - `grepInvert`
 - `use.storageState`
+- `use.connectOptions`
+
+`use.browserName`, when set, must be `chromium`. Firefox and WebKit are not supported.
 
 Conflicts fail before Playwright starts. During a run, the CLI applies the validated absolute `testDir`, the exact selected-role filter, that role's storage-state object, and `workers: 1`. It also passes `--workers=1` as defense in depth.
 
 Everything else remains normal Playwright behavior. This includes `testMatch`, `testIgnore`, `fullyParallel`, retries, repeats, timeouts, reporters, `outputDir`, traces, screenshots, videos, global setup and teardown, `webServer`, metadata, expect settings, and other valid root settings. Paths resolve from the real Shopify config because Playwright runs that file directly.
+
+Compatible Chromium launch options from `use.launchOptions` are applied to the CLI-owned browser. The CLI always overrides browser signal handling, binds the native server to loopback on an ephemeral port, and forces `headless: false`. `use.channel` takes precedence over `use.launchOptions.channel`. Connection options and remote-debugging arguments are rejected because the CLI owns the native connection.
 
 Playwright projects are intentionally unsupported in this phase. Arbitrary Playwright arguments, file selectors, project selectors, worker overrides, UI/debug controls, and reporter overrides are also unsupported.
 
@@ -76,7 +81,7 @@ Create an ignored `.env` in the consumer root:
 SHOPIFY_STORE_URL=https://your-store.myshopify.com/
 ```
 
-Inherited shell or CI values take precedence. Only the root `.env` is loaded; `.env.local` and parent files are ignored. The value must be an absolute HTTPS URL without credentials. Path, query, and fragment are discarded when the origin is normalized.
+Inherited shell values take precedence. Only the root `.env` is loaded; `.env.local` and parent files are ignored. The value must be an absolute HTTPS URL without credentials. Path, query, and fragment are discarded when the origin is normalized.
 
 Role states are partitioned by normalized origin. A custom storefront domain and a `.myshopify.com` domain are separate partitions.
 
@@ -148,15 +153,24 @@ For a path-safe invalid state, remove and recapture it. Unsafe symlinks or non-d
 
 ```sh
 shopify-e2e run --role customer
+shopify-e2e run --role admin --role customer
 shopify-e2e run --role customer --grep "account"
 shopify-e2e run --role customer --grep-invert "draft"
 ```
 
-In an interactive terminal, omitting `--role` prompts once from configured roles that have valid state. In non-interactive use, `--role` is required. Missing, invalid, stale, or unknown roles fail before Playwright starts.
+`--role` is repeatable. Duplicate flags are ignored, and selected roles always run in the order declared by `roles` in `shopify-e2e.config.ts`.
 
-The mandatory role filter is combined with `--grep` and `--grep-invert`; these controls can only narrow the selected role lane. Execution always uses one global worker, even when `fullyParallel` is enabled.
+In an interactive terminal, omitting `--role` opens one required multi-select containing configured roles that have valid state. In non-interactive use, at least one `--role` is required. Every selected role is validated before Chromium or Playwright starts, so one missing, invalid, stale, or unknown role prevents the whole run.
 
-For CI, provision the role-state data outside the repository through your machine image, encrypted cache, or another external workflow before running. This package does not import or remotely provision bearer secrets.
+The CLI then opens one headed, consumer-provided Chromium instance and keeps it alive for the command. Roles run strictly one after another. Each role gets a normal Playwright CLI run, its own CLI-controlled storage state, and a fresh native browser connection. The previous role's Playwright process, package-managed contexts and pages, hooks, and connection must finish before the next role starts. No roles or tests run simultaneously through the package-managed path.
+
+The mandatory role filter is combined with `--grep` and `--grep-invert`; these controls can only narrow every selected role lane. Execution always uses one global worker, even when `fullyParallel` is enabled.
+
+The first failing role stops the run. Later roles are reported as `not-run`; completed roles remain `passed`, and an interrupted active role is `interrupted`. The CLI prints a config-ordered summary, closes its Chromium instance, and returns the authoritative signal, cleanup, infrastructure, or Playwright exit result.
+
+Each role remains a separate normal Playwright run. Reporters, hooks, web servers, retries, traces, screenshots, videos, and `outputDir` are not rewritten or aggregated. A later role may therefore replace files written by an earlier role when the consumer config uses the same destinations.
+
+This command is local-only and always headed. There is no CI, headless, CDP, attachment-to-existing-Chrome, parallel-role, or remote-execution contract.
 
 ## Doctor
 
@@ -174,7 +188,7 @@ Consumer config, its imports, hooks, reporters, web server, and tests are truste
 
 Saved storage state is a bearer secret. It can contain cookies, local storage, and captured IndexedDB for visited origins. Keep it outside the repository and never log or commit state, `.env`, reports, traces, screenshots, videos, or browser output.
 
-The CLI copies the selected state into an owner-only temporary execution context outside the consumer and package roots. Playwright receives the state object, never the long-lived registry path. The context remains available for Playwright-owned config evaluation and is removed after the direct Playwright child settles.
+The CLI copies the selected state into an owner-only temporary execution context outside the consumer and package roots. Playwright receives the state object, never the long-lived registry path. The context remains available for Playwright-owned config evaluation and is removed after that role's direct Playwright child settles. The native browser endpoint is added only to the active child's environment and is never written into the execution context or command arguments.
 
 Concurrent state-changing commands for the same role and origin are unsupported; callers must serialize them.
 
@@ -185,22 +199,21 @@ Concurrent state-changing commands for the same role and origin are unsupported;
 - `2`: usage, config, URL, role, TTY, boundary, or peer preflight refusal; expected doctor failure.
 - `130`: interrupted by `SIGINT` after required cleanup or rollback.
 - `143`: interrupted by `SIGTERM` after required cleanup or rollback.
-- Other numeric Playwright child exits pass through unchanged.
+- Other numeric exits from the first failing Playwright role pass through unchanged.
 
-## Breaking upgrade to 0.5.0
+## Version 0.6.0
 
-Version 0.5.0 intentionally has no compatibility or migration layer. Replace the old config with the helper-based roles list, recapture each role, and change automation to `--role`.
-
-Old local named-profile data is ignored. If it is no longer needed, manually remove the obsolete `profiles` namespace from the package's platform application-data directory after stopping all CLI processes. Do not remove the new `role-states` namespace or sibling origin partitions.
+Version 0.6.0 adds repeatable role selection and serial execution through one CLI-owned headed Chromium instance. It intentionally provides no compatibility layer for unsupported profiles, Playwright projects, headless runs, CDP, or arbitrary Playwright argument passthrough.
 
 ## Verification
 
 ```sh
 npm run verify
+npm run test:browser:roles
 ```
 
-Optional real-browser role isolation:
+The browser gate requires a local graphical session and the consumer Playwright Chromium installation. The packed-consumer gate is also available separately:
 
 ```sh
-npm run test:browser:roles
+npm run test:installed
 ```
