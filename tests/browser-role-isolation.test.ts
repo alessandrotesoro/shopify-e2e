@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import type { Browser, BrowserContext, Page } from "playwright";
+import type {
+	Browser,
+	BrowserContext,
+	BrowserServer,
+	BrowserType,
+	Page,
+} from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { startLoopbackServer } from "./fixtures/role-isolation/server.js";
@@ -21,9 +27,8 @@ interface InstalledPeerModule {
 		readonly executablePath: string;
 		readonly modulePath: string;
 	}) => Promise<{
-		readonly launch: (options: {
-			readonly headless: boolean;
-		}) => Promise<unknown>;
+		readonly connect: BrowserType["connect"];
+		readonly launchServer: BrowserType["launchServer"];
 	}>;
 	readonly resolvePlaywrightPeer: (consumerRoot: string) => Promise<{
 		readonly executablePath: string;
@@ -173,7 +178,10 @@ const expectRestoredIdentity = async (
 };
 
 describe.sequential("consumer browser role isolation", () => {
-	let browser: Browser;
+	let browserServer: BrowserServer;
+	let chromium: Awaited<
+		ReturnType<InstalledPeerModule["loadConsumerChromium"]>
+	>;
 	let server: Awaited<ReturnType<typeof startLoopbackServer>>;
 
 	beforeAll(async () => {
@@ -209,9 +217,16 @@ describe.sequential("consumer browser role isolation", () => {
 		expect(peer.modulePath.startsWith(`${consumerRoot}/node_modules/`)).toBe(
 			true,
 		);
-		const chromium = await peerModule.loadConsumerChromium(peer);
+		chromium = await peerModule.loadConsumerChromium(peer);
 		try {
-			browser = (await chromium.launch({ headless: true })) as Browser;
+			browserServer = await chromium.launchServer({
+				handleSIGHUP: true,
+				handleSIGINT: false,
+				handleSIGTERM: false,
+				headless: false,
+				host: "127.0.0.1",
+				port: 0,
+			});
 		} catch (error) {
 			throw new Error(
 				"Consumer Chromium is unavailable. Install Chromium for @playwright/test 1.61.1 in a consumer project with `npm exec playwright install chromium`, then retry the browser role gate.",
@@ -222,7 +237,7 @@ describe.sequential("consumer browser role isolation", () => {
 	}, 180_000);
 
 	afterAll(async () => {
-		await browser?.close();
+		await browserServer?.close();
 		await server?.close();
 		await Promise.all(
 			temporaryDirectories
@@ -231,26 +246,33 @@ describe.sequential("consumer browser role isolation", () => {
 		);
 	});
 
-	it("preserves A-B-A cookie, localStorage, and IndexedDB role identity", async () => {
-		const stateA = await captureIdentity(browser, server.origin, "A");
-		const stateB = await captureIdentity(browser, server.origin, "B");
+	it("keeps one headed server alive across isolated A-B-A native connections", async () => {
+		const serverPid = browserServer.process().pid;
+		expect(serverPid).toBeTypeOf("number");
+		const endpoint = browserServer.wsEndpoint();
+		const captureConnection = await chromium.connect(endpoint);
+		const stateA = await captureIdentity(captureConnection, server.origin, "A");
+		const stateB = await captureIdentity(captureConnection, server.origin, "B");
+		await captureConnection.close();
 		expect(JSON.stringify(stateA)).toContain("indexedDB");
 		expect(JSON.stringify(stateB)).toContain('"B"');
 
-		await expectRestoredIdentity(browser, server.origin, stateA, {
-			cookie: "A",
-			indexedDB: "A",
-			localStorage: "A",
-		});
-		await expectRestoredIdentity(browser, server.origin, stateB, {
-			cookie: "B",
-			indexedDB: "B",
-			localStorage: "B",
-		});
-		await expectRestoredIdentity(browser, server.origin, stateA, {
-			cookie: "A",
-			indexedDB: "A",
-			localStorage: "A",
-		});
+		for (const [state, expected] of [
+			[stateA, "A"],
+			[stateB, "B"],
+			[stateA, "A"],
+		] as const) {
+			expect(browserServer.process().pid).toBe(serverPid);
+			const connection = await chromium.connect(endpoint);
+			expect(connection.contexts()).toEqual([]);
+			await expectRestoredIdentity(connection, server.origin, state, {
+				cookie: expected,
+				indexedDB: expected,
+				localStorage: expected,
+			});
+			expect(connection.contexts()).toEqual([]);
+			await connection.close();
+		}
+		expect(browserServer.process().pid).toBe(serverPid);
 	});
 });

@@ -131,6 +131,7 @@ export const runChild = async ({
 
 		child.once("error", (cause) => {
 			if (interruption) {
+				deliver("SIGKILL");
 				settle({ error: interruption });
 				return;
 			}
@@ -145,6 +146,7 @@ export const runChild = async ({
 
 		child.once("exit", (code, exitSignal) => {
 			if (interruption) {
+				deliver("SIGKILL");
 				settle({ error: interruption });
 				return;
 			}

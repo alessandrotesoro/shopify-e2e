@@ -149,6 +149,10 @@ export const chromium = {
     await writeFile(${JSON.stringify(launchMarker)}, "launch attempted\\n");
     throw new Error("doctor must not launch Chromium");
   },
+  launchServer: async () => {
+    await writeFile(${JSON.stringify(launchMarker)}, "launch attempted\\n");
+    throw new Error("doctor must not launch Chromium");
+  },
 };
 `,
 	);
