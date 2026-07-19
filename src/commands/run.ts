@@ -61,7 +61,7 @@ export interface RunCommandOptions {
 	readonly interactive?: boolean;
 	readonly output?: NodeJS.WritableStream;
 	readonly packageRoot?: string;
-	readonly role?: string;
+	readonly role?: readonly string[];
 	readonly signal?: AbortSignal;
 }
 
@@ -94,7 +94,7 @@ export interface RunCommandDependencies {
 	readonly resolveDataRoot: typeof resolveRoleStateDataRoot;
 	readonly resolvePeer: (cwd: string) => Promise<ResolvedPlaywrightPeer>;
 	readonly runChild: (invocation: PlaywrightInvocation) => Promise<number>;
-	readonly selectRole: (options: {
+	readonly selectRoles: (options: {
 		readonly choices: readonly {
 			readonly name: string;
 			readonly value: string;
@@ -102,7 +102,7 @@ export interface RunCommandDependencies {
 		readonly input?: NodeJS.ReadableStream;
 		readonly output?: NodeJS.WritableStream;
 		readonly signal: AbortSignal;
-	}) => Promise<string>;
+	}) => Promise<readonly string[]>;
 }
 
 const defaultDependencies: RunCommandDependencies = {
@@ -119,12 +119,13 @@ const defaultDependencies: RunCommandDependencies = {
 	resolveDataRoot: resolveRoleStateDataRoot,
 	resolvePeer: resolvePlaywrightPeer,
 	runChild: (invocation) => runChild({ invocation }),
-	selectRole: ({ choices, input, output, signal }) =>
-		inquirerPrompts.select({
+	selectRoles: ({ choices, input, output, signal }) =>
+		inquirerPrompts.checkbox({
 			choices,
 			input,
-			message: "Which role should run the Shopify tests?",
+			message: "Which roles should run the Shopify tests?",
 			output,
+			required: true,
 			signal,
 		}),
 };
@@ -194,17 +195,22 @@ const resolveRunSelection = async ({
 	options,
 	origin,
 	signal,
-}: ResolveRunSelectionArgs): Promise<RoleStateSelection> => {
+}: ResolveRunSelectionArgs): Promise<readonly RoleStateSelection[]> => {
 	throwIfCommandAborted(signal);
-	if (options.role === undefined && !options.interactive) {
+	if (
+		(options.role === undefined || options.role.length === 0) &&
+		!options.interactive
+	) {
 		throw new ShopifyE2EPreflightError(
 			"A role is required in non-interactive use. Pass `--role <role>`.",
 		);
 	}
-	const explicitRole =
-		options.role === undefined
+	const explicitRoles =
+		options.role === undefined || options.role.length === 0
 			? undefined
-			: assertConfiguredRole(loadedConfig.roles, options.role);
+			: options.role.map((role) =>
+					assertConfiguredRole(loadedConfig.roles, role),
+				);
 	const dataDir = options.dataDir;
 	if (!dataDir) {
 		throw new ShopifyE2EPreflightError(
@@ -225,8 +231,16 @@ const resolveRunSelection = async ({
 		origin,
 		roles: loadedConfig.roles,
 	});
-	if (explicitRole !== undefined) {
-		return resolveReadyRole(store, explicitRole, signal);
+	if (explicitRoles !== undefined) {
+		const requestedRoles = new Set(explicitRoles);
+		const orderedRoles = loadedConfig.roles.filter((role) =>
+			requestedRoles.has(role),
+		);
+		const selections: RoleStateSelection[] = [];
+		for (const role of orderedRoles) {
+			selections.push(await resolveReadyRole(store, role, signal));
+		}
+		return Object.freeze(selections);
 	}
 
 	const readyRoles = await runWithCommandSignal(
@@ -238,20 +252,33 @@ const resolveRunSelection = async ({
 			"No configured role has ready state. Run `shopify-e2e auth capture --role <role>` for a missing role.",
 		);
 	}
-	const selectedRole = await runWithCommandSignal(
+	const selectedRoles = await runWithCommandSignal(
 		() =>
-			dependencies.selectRole({
-				choices: readyRoles.map((role) => ({ name: role, value: role })),
+			dependencies.selectRoles({
+				choices: loadedConfig.roles
+					.filter((role) => readyRoles.includes(role))
+					.map((role) => ({ name: role, value: role })),
 				input: options.input,
 				output: options.output,
 				signal,
 			}),
 		signal,
 	);
-	if (!readyRoles.includes(selectedRole)) {
+	if (selectedRoles.length === 0) {
+		throw new ShopifyE2EPreflightError("Select at least one role");
+	}
+	if (selectedRoles.some((role) => !readyRoles.includes(role))) {
 		throw new ShopifyE2EPreflightError("Selected role is unavailable");
 	}
-	return resolveReadyRole(store, selectedRole, signal);
+	const requestedRoles = new Set(selectedRoles);
+	const orderedRoles = loadedConfig.roles.filter((role) =>
+		requestedRoles.has(role),
+	);
+	const selections: RoleStateSelection[] = [];
+	for (const role of orderedRoles) {
+		selections.push(await resolveReadyRole(store, role, signal));
+	}
+	return Object.freeze(selections);
 };
 
 const createExecutionContextWithSignal = async (
@@ -345,13 +372,17 @@ export const orchestrateShopifyRun = async ({
 	);
 	assertConfiguredOriginUnchanged(environment, origin);
 	throwIfCommandAborted(signal);
-	const selection = await resolveRunSelection({
+	const selections = await resolveRunSelection({
 		dependencies,
 		loadedConfig,
 		options,
 		origin,
 		signal,
 	});
+	const selection = selections[0];
+	if (selection === undefined) {
+		throw new ShopifyE2EPreflightError("Select at least one role");
+	}
 	const peer = await runWithCommandSignal(
 		() => dependencies.resolvePeer(loadedConfig.projectRoot),
 		signal,
@@ -445,7 +476,9 @@ export class Run extends Command {
 			parse: parseNonEmptyFilter,
 		}),
 		role: Flags.string({
-			description: "Configured role whose saved browser state should run",
+			description:
+				"Configured role whose saved browser state should run (repeatable)",
+			multiple: true,
 		}),
 	};
 

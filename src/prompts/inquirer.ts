@@ -1,4 +1,4 @@
-import { confirm, select } from "@inquirer/prompts";
+import { checkbox, confirm, select } from "@inquirer/prompts";
 
 export interface PromptChoice<Value> {
 	readonly description?: string;
@@ -18,12 +18,20 @@ export interface SelectPromptOptions<Value> extends PromptContext {
 	readonly message: string;
 }
 
+export interface CheckboxPromptOptions<Value>
+	extends SelectPromptOptions<Value> {
+	readonly required?: boolean;
+}
+
 export interface ConfirmPromptOptions extends PromptContext {
 	readonly default?: boolean;
 	readonly message: string;
 }
 
 export interface PromptFunctions {
+	readonly checkbox: <Value>(
+		options: CheckboxPromptOptions<Value>,
+	) => Promise<Value[]>;
 	readonly confirm: (options: ConfirmPromptOptions) => Promise<boolean>;
 	readonly select: <Value>(
 		options: SelectPromptOptions<Value>,
@@ -41,6 +49,15 @@ const contextFrom = ({
 });
 
 export const inquirerPrompts: PromptFunctions = {
+	checkbox: (options) =>
+		checkbox(
+			{
+				choices: options.choices,
+				message: options.message,
+				required: options.required,
+			},
+			contextFrom(options),
+		),
 	confirm: (options) =>
 		confirm(
 			{
