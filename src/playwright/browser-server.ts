@@ -1,6 +1,7 @@
 import { ShopifyE2EInfrastructureError } from "../errors.js";
 import {
 	CommandSignalError,
+	commandSignalFromReason,
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
@@ -39,6 +40,23 @@ const settlesWithin = async (
 			() => true,
 			() => false,
 		),
+		timeout,
+	]);
+	if (timer) clearTimeout(timer);
+	return result;
+};
+
+const resolvesWithin = async <Value>(
+	operation: Promise<Value>,
+	timeoutMs: number,
+): Promise<Value | undefined> => {
+	let timer: NodeJS.Timeout | undefined;
+	const timeout = new Promise<undefined>((resolve) => {
+		timer = setTimeout(() => resolve(undefined), timeoutMs);
+		timer.unref();
+	});
+	const result = await Promise.race([
+		operation.catch(() => undefined),
 		timeout,
 	]);
 	if (timer) clearTimeout(timer);
@@ -129,6 +147,16 @@ const normalizeLaunchError = (error: unknown): Error => {
 	);
 };
 
+const interruptedCleanupError = (signal: AbortSignal): CommandSignalError => {
+	const interruption = new CommandSignalError(
+		commandSignalFromReason(signal.reason),
+	);
+	return new CommandSignalError(
+		interruption.signal,
+		`${interruption.message}; consumer Chromium cleanup could not complete`,
+	);
+};
+
 export const launchConsumerBrowserServer = async ({
 	chromium,
 	closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
@@ -137,19 +165,15 @@ export const launchConsumerBrowserServer = async ({
 }: LaunchConsumerBrowserServerArgs): Promise<ManagedBrowserServer> => {
 	throwIfCommandAborted(signal);
 	const launchOperation = chromium.launchServer(launchOptions);
-	let resolvedServer: ConsumerBrowserServer | undefined;
 	let interruptedLaunchCleanup: Promise<void> | undefined;
 	const cleanInterruptedLaunch = (
 		server: ConsumerBrowserServer,
 	): Promise<void> => {
-		interruptedLaunchCleanup ??= forceCloseServer(server, closeTimeoutMs).catch(
-			() => undefined,
-		);
+		interruptedLaunchCleanup ??= forceCloseServer(server, closeTimeoutMs);
 		return interruptedLaunchCleanup;
 	};
 	void launchOperation
 		.then(async (server) => {
-			resolvedServer = server;
 			if (signal.aborted) {
 				await cleanInterruptedLaunch(server);
 			}
@@ -160,21 +184,35 @@ export const launchConsumerBrowserServer = async ({
 	try {
 		server = await runWithCommandSignal(() => launchOperation, signal);
 	} catch (error) {
-		if (signal.aborted && resolvedServer) {
-			await cleanInterruptedLaunch(resolvedServer);
+		if (signal.aborted) {
+			const serverToClean = await resolvesWithin(
+				launchOperation,
+				closeTimeoutMs,
+			);
+			if (serverToClean) {
+				try {
+					await cleanInterruptedLaunch(serverToClean);
+				} catch {
+					throw interruptedCleanupError(signal);
+				}
+			}
 		}
 		throw normalizeLaunchError(error);
 	}
 
 	if (signal.aborted) {
-		await cleanInterruptedLaunch(server);
+		try {
+			await cleanInterruptedLaunch(server);
+		} catch {
+			throw interruptedCleanupError(signal);
+		}
 		throwIfCommandAborted(signal);
 	}
 
 	try {
 		return createManagedServer(server, closeTimeoutMs);
 	} catch (error) {
-		await forceCloseServer(server, closeTimeoutMs).catch(() => undefined);
+		await forceCloseServer(server, closeTimeoutMs);
 		throw normalizeLaunchError(error);
 	}
 };

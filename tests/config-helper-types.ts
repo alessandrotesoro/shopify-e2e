@@ -59,7 +59,43 @@ defineShopifyE2EConfig({
 defineShopifyE2EConfig({
 	roles: ["admin"],
 	testDir: "shopify-tests",
-	use: { browserName: "chromium" },
+	use: {
+		browserName: "chromium",
+		launchOptions: { args: ["--start-maximized"], channel: "chrome" },
+	},
+});
+
+defineShopifyE2EConfig({
+	roles: ["admin"],
+	testDir: "shopify-tests",
+	use: {
+		launchOptions: {
+			// @ts-expect-error Shared Chromium launch does not support logger.
+			logger: {},
+		},
+	},
+});
+
+defineShopifyE2EConfig({
+	roles: ["admin"],
+	testDir: "shopify-tests",
+	use: {
+		launchOptions: {
+			// @ts-expect-error Shared Chromium launch does not support Firefox preferences.
+			firefoxUserPrefs: {},
+		},
+	},
+});
+
+defineShopifyE2EConfig({
+	roles: ["admin"],
+	testDir: "shopify-tests",
+	use: {
+		launchOptions: {
+			// @ts-expect-error Shared Chromium launch does not support trace directories.
+			tracesDir: "traces",
+		},
+	},
 });
 
 defineShopifyE2EConfig({

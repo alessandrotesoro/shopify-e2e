@@ -58,7 +58,6 @@ const selected = (
 
 interface StoreOptions {
 	readonly list?: readonly RoleStateSummary[];
-	readonly readyRoles?: readonly string[];
 	readonly removableRoles?: readonly string[];
 	readonly resolve?: (role: string) => Promise<RoleStateSelection>;
 }
@@ -72,13 +71,6 @@ const makeStore = (options: StoreOptions = {}): RoleStateStore => {
 		] as const);
 	return {
 		list: vi.fn(async () => summaries),
-		readyRoles: vi.fn(
-			async () =>
-				options.readyRoles ??
-				summaries
-					.filter((summary) => summary.status === "ready")
-					.map((summary) => summary.role),
-		),
 		removableRoles: vi.fn(async () => options.removableRoles ?? []),
 		resolve: vi.fn(options.resolve ?? (async (role) => selected(role))),
 	} as unknown as RoleStateStore;
@@ -315,7 +307,6 @@ describe("role-only run orchestration", () => {
 				{ role: "customer", status: "missing" },
 				{ role: "staff", status: "ready" },
 			],
-			readyRoles: ["admin", "staff"],
 		});
 		const dependencies = makeDependencies({ store });
 		vi.mocked(dependencies.selectRoles).mockResolvedValue(["staff", "admin"]);
@@ -439,6 +430,42 @@ describe("role-only run orchestration", () => {
 				options: runOptions(consumer.projectRoot),
 			}),
 		).rejects.toThrow(/browser cleanup failed/);
+	});
+
+	it.each([
+		{ cleanupFails: false, expectedExit: 130, signal: "SIGINT" },
+		{ cleanupFails: true, expectedExit: 143, signal: "SIGTERM" },
+	] as const)("keeps $signal authoritative during final browser cleanup", async ({
+		cleanupFails,
+		expectedExit,
+		signal,
+	}) => {
+		const consumer = await makeConsumer();
+		const controller = new AbortController();
+		const close = vi.fn(async () => {
+			controller.abort(signal);
+			if (cleanupFails) throw new Error("private browser cleanup failure");
+		});
+		const dependencies = makeDependencies();
+		vi.mocked(dependencies.launchBrowser).mockResolvedValueOnce({
+			close,
+			unexpectedClose: new Promise(() => undefined),
+			wsEndpoint: "ws://127.0.0.1/playwright-test-endpoint",
+		});
+
+		const error = await orchestrateShopifyRun({
+			dependencies,
+			options: runOptions(consumer.projectRoot, {
+				signal: controller.signal,
+			}),
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toMatchObject({ exitCode: expectedExit, signal });
+		if (cleanupFails) {
+			expect(String(error)).toMatch(/cleanup could not complete/i);
+			expect(String(error)).not.toContain("private browser cleanup failure");
+		}
+		expect(close).toHaveBeenCalledOnce();
 	});
 
 	it("rejects omitted non-interactive role before state or Playwright work", async () => {

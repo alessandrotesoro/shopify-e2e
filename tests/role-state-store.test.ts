@@ -102,7 +102,6 @@ describe("role state store", () => {
 			{ role: "admin", status: "ready" },
 			{ role: "customer", status: "missing" },
 		]);
-		expect(await store.readyRoles()).toEqual(["admin"]);
 		expect(await store.resolve("admin")).toEqual({
 			role: "admin",
 			state: initial,
@@ -299,7 +298,7 @@ describe("role state store", () => {
 		expect(await store.list()).toEqual([{ role: "admin", status: "missing" }]);
 		await store.capture({ role: "admin", state: stateWithCookie("new") });
 
-		expect(await store.readyRoles()).toEqual(["admin"]);
+		expect(await store.list()).toEqual([{ role: "admin", status: "ready" }]);
 		expect(await readFile(join(legacyEntry, "sentinel-secret"), "utf8")).toBe(
 			"keep",
 		);

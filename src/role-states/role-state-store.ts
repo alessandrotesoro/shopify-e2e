@@ -72,8 +72,6 @@ export interface CaptureRoleStateArgs {
 	readonly state: unknown;
 }
 
-export interface RefreshRoleStateArgs extends CaptureRoleStateArgs {}
-
 export interface RemoveRoleStateArgs {
 	readonly role: string;
 	readonly signal?: AbortSignal;
@@ -566,7 +564,7 @@ export class RoleStateStore {
 		role,
 		signal,
 		state,
-	}: RefreshRoleStateArgs): Promise<void> {
+	}: CaptureRoleStateArgs): Promise<void> {
 		const selected = await this.resolve(role);
 		const validatedState = validateRoleState(state);
 		const roleDirectory = join(this.#statesDirectory, selected.role);
@@ -692,12 +690,6 @@ export class RoleStateStore {
 			}
 		}
 		return summaries.sort((left, right) => left.role.localeCompare(right.role));
-	}
-
-	public async readyRoles(): Promise<readonly string[]> {
-		return (await this.list())
-			.filter((summary) => summary.status === "ready")
-			.map((summary) => summary.role);
 	}
 
 	public async removableRoles(): Promise<readonly string[]> {

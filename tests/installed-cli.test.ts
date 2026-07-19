@@ -658,7 +658,6 @@ describe.sequential("installed CLI release boundary", () => {
 					`interrupted installed CLI\nstdout:\n${stdout}\nstderr:\n${stderr}`,
 				).toEqual({ code: 143, signal: null });
 				expect(stderr).toContain("Command interrupted by SIGTERM");
-				for (const pid of consumerWebServers) signalProcess(pid, "SIGTERM");
 				await Promise.all(
 					descendants.map((pid) => waitForProcessToExit(pid, 5_000)),
 				);

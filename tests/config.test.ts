@@ -93,7 +93,7 @@ describe("dedicated Shopify configuration", () => {
 		await writeConfig(
 			project,
 			markedConfigSource(
-				'testDir: "shopify-tests", roles: ["admin"], use: { channel: "chrome", launchOptions: { args: ["--start-maximized"], channel: "msedge", chromiumSandbox: true, headless: true, handleSIGHUP: false, handleSIGINT: true, handleSIGTERM: true, timeout: 1234 } }',
+				'testDir: "shopify-tests", roles: ["admin"], use: { channel: "chrome", launchOptions: { args: ["--start-maximized"], artifactsDir: "artifacts", channel: "msedge", chromiumSandbox: true, downloadsPath: "downloads", env: { SAFE_FLAG: "1" }, executablePath: "/consumer/chromium", headless: true, handleSIGHUP: false, handleSIGINT: true, handleSIGTERM: true, ignoreDefaultArgs: ["--disable-popup-blocking"], proxy: { server: "http://proxy.example", bypass: "localhost", username: "user", password: "secret" }, timeout: 1234 } }',
 			),
 		);
 
@@ -104,18 +104,34 @@ describe("dedicated Shopify configuration", () => {
 
 		expect(loaded.browserLaunchOptions).toEqual({
 			args: ["--start-maximized"],
+			artifactsDir: "artifacts",
 			channel: "chrome",
 			chromiumSandbox: true,
+			downloadsPath: "downloads",
+			env: { SAFE_FLAG: "1" },
+			executablePath: "/consumer/chromium",
 			handleSIGHUP: true,
 			handleSIGINT: false,
 			handleSIGTERM: false,
 			headless: false,
 			host: "127.0.0.1",
+			ignoreDefaultArgs: ["--disable-popup-blocking"],
 			port: 0,
+			proxy: {
+				bypass: "localhost",
+				password: "secret",
+				server: "http://proxy.example",
+				username: "user",
+			},
 			timeout: 1234,
 		});
 		expect(Object.isFrozen(loaded.browserLaunchOptions)).toBe(true);
 		expect(Object.isFrozen(loaded.browserLaunchOptions.args)).toBe(true);
+		expect(Object.isFrozen(loaded.browserLaunchOptions.env)).toBe(true);
+		expect(Object.isFrozen(loaded.browserLaunchOptions.ignoreDefaultArgs)).toBe(
+			true,
+		);
+		expect(Object.isFrozen(loaded.browserLaunchOptions.proxy)).toBe(true);
 	});
 
 	it.each([
@@ -164,6 +180,23 @@ describe("dedicated Shopify configuration", () => {
 	});
 
 	it.each([
+		["all defaults", "true"],
+		["the native transport", '["--remote-debugging-pipe"]'],
+	])("rejects ignoreDefaultArgs removing %s", async (_label, value) => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], use: { launchOptions: { ignoreDefaultArgs: ${value} } }`,
+			),
+		);
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(/ignoreDefaultArgs.*native transport/i);
+	});
+
+	it.each([
 		"pw:server",
 		"pw:*",
 		"*",
@@ -184,6 +217,30 @@ describe("dedicated Shopify configuration", () => {
 		expect((error as Error).message).toMatch(/DEBUG.*browser endpoint/i);
 		expect((error as Error).message).not.toContain(debug);
 		await expect(access(marker)).rejects.toThrow();
+	});
+
+	it("rejects endpoint logging enabled by trusted config evaluation", async () => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			`process.env.DEBUG = "pw:server"; ${markedConfigSource()}`,
+		);
+		const previousDebug = process.env.DEBUG;
+		delete process.env.DEBUG;
+
+		try {
+			const error = await loadShopifyConfig({
+				environment: process.env,
+				projectRoot: project,
+			}).catch((cause: unknown) => cause);
+
+			expect(error).toBeInstanceOf(ShopifyE2EPreflightError);
+			expect((error as Error).message).toMatch(/DEBUG.*browser endpoint/i);
+			expect((error as Error).message).not.toContain("pw:server");
+		} finally {
+			if (previousDebug === undefined) delete process.env.DEBUG;
+			else process.env.DEBUG = previousDebug;
+		}
 	});
 
 	it("ignores alternate and ordinary Playwright configs", async () => {
