@@ -624,6 +624,8 @@ export const chromium = {
 		expect(result.stdout).toMatch(/repeatable.*omit.*select roles/is);
 		expect(result.stdout).not.toContain("--profile");
 		expect(result.stdout).toMatch(/workers.*unavailable/i);
+		expect(result.stdout).toMatch(/reporter overrides.*unavailable/i);
+		expect(result.stdout).not.toMatch(/file selectors, reporters,/i);
 		expect(result.stderr).toBe("");
 	});
 

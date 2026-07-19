@@ -62,10 +62,7 @@ const signalExitCode = (signal: NodeJS.Signals): number | undefined => {
 	return typeof signalNumber === "number" ? 128 + signalNumber : undefined;
 };
 
-const playwrightAbortSignal = (signal: AbortSignal): "SIGINT" | "SIGTERM" =>
-	signal.reason === "SIGINT" || signal.reason === "SIGTERM"
-		? "SIGINT"
-		: "SIGTERM";
+const PLAYWRIGHT_GRACEFUL_SHUTDOWN_SIGNAL = "SIGINT";
 
 export interface RunChildArgs {
 	readonly invocation: PlaywrightInvocation;
@@ -167,8 +164,8 @@ export const runChild = async ({
 			if (interruption || !signal) return;
 			interruption = errorFromAbortSignal(signal);
 			// Playwright 1.61 owns graceful runner and web-server teardown on
-			// SIGINT, while the parent retains the developer's original exit code.
-			if (!deliver(playwrightAbortSignal(signal))) {
+			// SIGINT. The parent retains the original signal or infrastructure error.
+			if (!deliver(PLAYWRIGHT_GRACEFUL_SHUTDOWN_SIGNAL)) {
 				forceKill();
 				return;
 			}

@@ -167,7 +167,10 @@ const parseOriginMetadata = (value: unknown): OriginMetadata => {
 	) {
 		throw new ShopifyE2EPreflightError("Role state origin registry is invalid");
 	}
-	return value as unknown as OriginMetadata;
+	return {
+		origin: value.origin,
+		schemaVersion: value.schemaVersion,
+	};
 };
 
 const parseRoleStateMetadata = (value: unknown): RoleStateMetadata => {
@@ -179,7 +182,11 @@ const parseRoleStateMetadata = (value: unknown): RoleStateMetadata => {
 	) {
 		throw new ShopifyE2EPreflightError("Role state entry is invalid");
 	}
-	return value as unknown as RoleStateMetadata;
+	return {
+		origin: value.origin,
+		role: value.role,
+		schemaVersion: value.schemaVersion,
+	};
 };
 
 const writeOwnerOnlyJson = async (

@@ -632,7 +632,7 @@ export const orchestrateShopifyRun = async ({
 
 export class Run extends Command {
 	static override description =
-		"Run one or more Shopify roles serially through one headed Chromium instance. Run controls are package-owned; arbitrary Playwright arguments are not accepted. Playwright workers, projects, file selectors, reporters, UI, and debug controls are intentionally unavailable.";
+		"Run one or more Shopify roles serially through one headed Chromium instance. Run controls are package-owned; arbitrary Playwright arguments are not accepted. Playwright workers, projects, file selectors, reporter overrides, UI, and debug controls are intentionally unavailable.";
 
 	static override flags = {
 		grep: Flags.string({

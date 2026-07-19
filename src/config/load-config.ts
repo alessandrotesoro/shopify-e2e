@@ -8,6 +8,7 @@ import {
 	isShopifyE2EConfigContractError,
 } from "./define-config.cjs";
 import { assertPlaywrightExecutionEnvironmentIsSafe } from "./execution-environment.cjs";
+import { SHOPIFY_LAUNCH_OPTION_KEYS } from "./launch-options.cjs";
 import {
 	resolveShopifyConfigPath,
 	resolveShopifyTestDir,
@@ -26,22 +27,9 @@ export interface LoadedShopifyConfig {
 	readonly testDir: string;
 }
 
-const SUPPORTED_LAUNCH_OPTION_KEYS = new Set([
-	"args",
-	"artifactsDir",
-	"channel",
-	"chromiumSandbox",
-	"downloadsPath",
-	"env",
-	"executablePath",
-	"handleSIGHUP",
-	"handleSIGINT",
-	"handleSIGTERM",
-	"headless",
-	"ignoreDefaultArgs",
-	"proxy",
-	"timeout",
-]);
+const SUPPORTED_LAUNCH_OPTION_KEYS = new Set<string>(
+	SHOPIFY_LAUNCH_OPTION_KEYS,
+);
 
 const isPlainRecord = (
 	value: unknown,
@@ -202,6 +190,9 @@ const normalizeProxy = (
 const isRemoteDebuggingArgument = (value: string): boolean =>
 	/^\s*--remote-debugging(?:[-=]|$)/i.test(value);
 
+const isHeadlessArgument = (value: string): boolean =>
+	/^\s*--headless(?:=|$)/i.test(value);
+
 const normalizeBrowserLaunchOptions = (
 	config: Record<PropertyKey, unknown>,
 ): BrowserServerLaunchOptions => {
@@ -249,6 +240,11 @@ const normalizeBrowserLaunchOptions = (
 	if (args?.some(isRemoteDebuggingArgument)) {
 		throw new ShopifyE2EPreflightError(
 			"Shopify config use.launchOptions.args must not contain --remote-debugging-* options",
+		);
+	}
+	if (args?.some(isHeadlessArgument)) {
+		throw new ShopifyE2EPreflightError(
+			"Shopify config use.launchOptions.args must not enable headless Chromium",
 		);
 	}
 	const ignoreDefaultArgsValue =
