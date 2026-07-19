@@ -160,6 +160,20 @@ describe("defineShopifyE2EConfig", () => {
 	});
 
 	it.each([
+		["name", { name: "@shopify-e2e-role-admin" }],
+		["tag", { tag: "@shopify-e2e-role-admin" }],
+		["tag array", { tag: ["@smoke", "@shopify-e2e-role-admin"] }],
+	])("rejects reserved role tokens in the root %s", (_label, field) => {
+		expect(() =>
+			defineShopifyE2EConfig({
+				roles: ["admin", "customer"],
+				testDir: "shopify-tests",
+				...field,
+			} as never),
+		).toThrow(/reserved.*@shopify-e2e-role-/i);
+	});
+
+	it.each([
 		["empty", []],
 		["duplicate", ["admin", "admin"]],
 		["malformed", ["Admin User"]],

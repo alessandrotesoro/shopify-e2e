@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,11 +17,13 @@ import {
 class FakeChild extends EventEmitter {
 	public readonly pid = 4242;
 	public kill = vi.fn(() => true);
+	public readonly stderr = new PassThrough();
 }
 
 const makeRuntime = (platform: NodeJS.Platform = "linux") => {
 	const child = new FakeChild();
 	const forwarded: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+	const stderr = new PassThrough();
 	const runtime: ChildProcessRuntime = {
 		forwardSignal: vi.fn(({ pid, signal }) => {
 			forwarded.push({ pid, signal });
@@ -28,8 +31,9 @@ const makeRuntime = (platform: NodeJS.Platform = "linux") => {
 		}),
 		platform,
 		spawn: vi.fn(() => child as never),
+		stderr,
 	};
-	return { child, forwarded, runtime };
+	return { child, forwarded, runtime, stderr };
 };
 
 const invocation = {
@@ -77,11 +81,55 @@ describe("Playwright child lifecycle", () => {
 		await expect(result).resolves.toBe(exitCode);
 	});
 
+	it("redacts the native browser endpoint from child stderr across chunks", async () => {
+		const fake = makeRuntime();
+		const endpoint = "ws://127.0.0.1:4321/private-endpoint-token";
+		let stderr = "";
+		fake.stderr.setEncoding("utf8");
+		fake.stderr.on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		const result = runChild({
+			invocation: {
+				...invocation,
+				environment: {
+					...invocation.environment,
+					PW_TEST_CONNECT_WS_ENDPOINT: endpoint,
+				},
+			},
+			runtime: fake.runtime,
+		});
+		expect(fake.runtime.spawn).toHaveBeenCalledWith(
+			process.execPath,
+			invocation.args,
+			expect.objectContaining({ stdio: ["inherit", "inherit", "pipe"] }),
+		);
+
+		fake.child.stderr.write(`connection failed: ${endpoint.slice(0, 18)}`);
+		fake.child.stderr.end(`${endpoint.slice(18)}\n`);
+		fake.child.emit("exit", 1, null);
+
+		await expect(result).resolves.toBe(1);
+		await vi.waitFor(() => expect(stderr).toContain("[REDACTED"));
+		expect(stderr).not.toContain(endpoint);
+	});
+
 	it.each([
-		{ expected: 130, reason: "SIGINT", signal: "SIGINT" },
-		{ expected: 143, reason: "SIGTERM", signal: "SIGTERM" },
+		{
+			expected: 130,
+			forwardedSignal: "SIGINT",
+			reason: "SIGINT",
+			signal: "SIGINT",
+		},
+		{
+			expected: 143,
+			forwardedSignal: "SIGINT",
+			reason: "SIGTERM",
+			signal: "SIGTERM",
+		},
 	] as const)("uses the command abort signal as the sole $signal authority", async ({
 		expected,
+		forwardedSignal,
 		reason,
 		signal,
 	}) => {
@@ -94,14 +142,16 @@ describe("Playwright child lifecycle", () => {
 		});
 		controller.abort(reason);
 		controller.abort(reason);
-		expect(fake.forwarded).toEqual([{ pid: -fake.child.pid, signal }]);
-		fake.child.emit("exit", null, signal);
+		expect(fake.forwarded).toEqual([
+			{ pid: -fake.child.pid, signal: forwardedSignal },
+		]);
+		fake.child.emit("exit", null, forwardedSignal);
 		await expect(result).rejects.toMatchObject({
 			exitCode: expected,
 			signal,
 		});
 		expect(fake.forwarded).toEqual([
-			{ pid: -fake.child.pid, signal },
+			{ pid: -fake.child.pid, signal: forwardedSignal },
 			{ pid: -fake.child.pid, signal: "SIGKILL" },
 		]);
 	});
@@ -131,9 +181,28 @@ describe("Playwright child lifecycle", () => {
 			signal: controller.signal,
 		});
 		controller.abort("SIGTERM");
-		expect(fake.child.kill).toHaveBeenCalledWith("SIGTERM");
-		fake.child.emit("exit", null, "SIGTERM");
+		expect(fake.child.kill).toHaveBeenCalledWith("SIGINT");
+		fake.child.emit("exit", null, "SIGINT");
 		await expect(result).rejects.toMatchObject({ exitCode: 143 });
+	});
+
+	it("settles immediately when neither graceful nor forced delivery succeeds", async () => {
+		vi.useFakeTimers();
+		const fake = makeRuntime();
+		vi.mocked(fake.runtime.forwardSignal).mockReturnValue(false);
+		fake.child.kill.mockReturnValue(false);
+		const controller = new AbortController();
+		const result = runChild({
+			invocation,
+			runtime: fake.runtime,
+			signal: controller.signal,
+			terminationGraceMs: 10_000,
+		});
+		controller.abort("SIGTERM");
+
+		await expect(result).rejects.toMatchObject({ exitCode: 143 });
+		expect(fake.child.kill).toHaveBeenCalledTimes(2);
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it("escalates an unsettled child to SIGKILL after the grace period", async () => {
@@ -149,7 +218,7 @@ describe("Playwright child lifecycle", () => {
 		controller.abort("SIGTERM");
 		await vi.advanceTimersByTimeAsync(10);
 		expect(fake.forwarded).toEqual([
-			{ pid: -fake.child.pid, signal: "SIGTERM" },
+			{ pid: -fake.child.pid, signal: "SIGINT" },
 			{ pid: -fake.child.pid, signal: "SIGKILL" },
 		]);
 		fake.child.emit("exit", null, "SIGKILL");
@@ -193,7 +262,7 @@ describe("Playwright child lifecycle", () => {
 const posixTest = process.platform === "win32" ? it.skip : it;
 
 posixTest(
-	"forwards one real process-group SIGTERM and rejects with 143",
+	"forwards one real process-group SIGINT while preserving outer SIGTERM exit 143",
 	async () => {
 		const directory = await mkdtemp(join(tmpdir(), "shopify-e2e-signal-"));
 		temporaryDirectories.push(directory);
@@ -203,10 +272,10 @@ posixTest(
 		await writeFile(
 			childPath,
 			`import { appendFileSync, writeFileSync } from "node:fs";
-process.on("SIGTERM", () => {
-  appendFileSync(${JSON.stringify(signalLogPath)}, "SIGTERM\\n");
-  process.removeAllListeners("SIGTERM");
-  process.kill(process.pid, "SIGTERM");
+process.on("SIGINT", () => {
+  appendFileSync(${JSON.stringify(signalLogPath)}, "SIGINT\\n");
+  process.removeAllListeners("SIGINT");
+  process.kill(process.pid, "SIGINT");
 });
 writeFileSync(${JSON.stringify(readyPath)}, "ready");
 setInterval(() => {}, 1000);
@@ -251,7 +320,7 @@ try {
 			});
 			exited = true;
 			expect(outcome).toEqual({ code: 143, signal: null });
-			expect(await readFile(signalLogPath, "utf8")).toBe("SIGTERM\n");
+			expect(await readFile(signalLogPath, "utf8")).toBe("SIGINT\n");
 		} finally {
 			if (!exited && helper.pid) {
 				try {

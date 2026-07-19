@@ -87,6 +87,21 @@ describe("consumer Chromium BrowserServer ownership", () => {
 		expect(server.close).toHaveBeenCalledOnce();
 	});
 
+	it("sanitizes launch rejection without attempting server cleanup", async () => {
+		const launchSecret = "launch-secret";
+		const error = await launchConsumerBrowserServer({
+			chromium: launcher(async () => {
+				throw new Error(launchSecret);
+			}),
+			launchOptions,
+			signal: new AbortController().signal,
+		}).catch((cause: unknown) => cause);
+
+		expect(error).toBeInstanceOf(ShopifyE2EInfrastructureError);
+		expect((error as Error).message).toMatch(/could not launch/i);
+		expect((error as Error).message).not.toContain(launchSecret);
+	});
+
 	it("reports an unexpected server close without exposing the endpoint", async () => {
 		const server = new FakeBrowserServer();
 		const managed = await launch(server);
@@ -161,14 +176,44 @@ describe("consumer Chromium BrowserServer ownership", () => {
 		);
 		const operation = launchConsumerBrowserServer({
 			chromium: launcher(launchServer),
+			closeTimeoutMs: 50,
 			launchOptions,
 			signal: controller.signal,
 		});
 
 		controller.abort("SIGINT");
-		await expect(operation).rejects.toBeInstanceOf(CommandSignalError);
 		resolveLaunch?.(server);
+		await expect(operation).rejects.toBeInstanceOf(CommandSignalError);
 		await vi.waitFor(() => expect(server.close).toHaveBeenCalledOnce());
+	});
+
+	it("keeps signal precedence while reporting interrupted cleanup failure", async () => {
+		const controller = new AbortController();
+		const server = new FakeBrowserServer();
+		server.close.mockRejectedValue(new Error("private close failure"));
+		server.kill.mockRejectedValue(new Error("private kill failure"));
+		let resolveLaunch: ((server: ConsumerBrowserServer) => void) | undefined;
+		const operation = launchConsumerBrowserServer({
+			chromium: launcher(
+				() =>
+					new Promise<ConsumerBrowserServer>((resolve) => {
+						resolveLaunch = resolve;
+					}),
+			),
+			closeTimeoutMs: 10,
+			launchOptions,
+			signal: controller.signal,
+		});
+
+		controller.abort("SIGTERM");
+		resolveLaunch?.(server);
+		const error = await operation.catch((cause: unknown) => cause);
+
+		expect(error).toMatchObject({ exitCode: 143, signal: "SIGTERM" });
+		expect(String(error)).toMatch(/cleanup could not complete/i);
+		expect(String(error)).not.toMatch(/private close|private kill/i);
+		expect(server.close).toHaveBeenCalledOnce();
+		expect(server.kill).toHaveBeenCalledOnce();
 	});
 
 	it("cleans exactly once when launch resolution races interruption", async () => {

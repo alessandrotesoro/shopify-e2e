@@ -7,7 +7,7 @@ import {
 	isDefinedShopifyE2EConfig,
 	isShopifyE2EConfigContractError,
 } from "./define-config.cjs";
-import { assertReservedExecutionEnvironmentIsClear } from "./execution-environment.cjs";
+import { assertPlaywrightExecutionEnvironmentIsSafe } from "./execution-environment.cjs";
 import {
 	resolveShopifyConfigPath,
 	resolveShopifyTestDir,
@@ -261,6 +261,11 @@ const normalizeBrowserLaunchOptions = (
 			: undefined;
 	let ignoreDefaultArgs: boolean | readonly string[] | undefined;
 	if (ignoreDefaultArgsValue !== undefined) {
+		if (ignoreDefaultArgsValue === true) {
+			throw new ShopifyE2EPreflightError(
+				"Shopify config use.launchOptions.ignoreDefaultArgs must not disable Chromium's required native transport",
+			);
+		}
 		if (typeof ignoreDefaultArgsValue === "boolean") {
 			ignoreDefaultArgs = ignoreDefaultArgsValue;
 		} else {
@@ -268,6 +273,11 @@ const normalizeBrowserLaunchOptions = (
 				ignoreDefaultArgsValue,
 				"Shopify config use.launchOptions.ignoreDefaultArgs",
 			);
+			if (ignoreDefaultArgs.includes("--remote-debugging-pipe")) {
+				throw new ShopifyE2EPreflightError(
+					"Shopify config use.launchOptions.ignoreDefaultArgs must not remove Chromium's required native transport",
+				);
+			}
 		}
 	}
 
@@ -349,26 +359,6 @@ const normalizeBrowserLaunchOptions = (
 	});
 };
 
-const debugPatternMatchesServer = (pattern: string): boolean => {
-	if (pattern.length === 0 || pattern.startsWith("-")) return false;
-	const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-	return new RegExp(`^${escaped.replaceAll("*", ".*")}$`, "i").test(
-		"pw:server",
-	);
-};
-
-const assertEndpointSafeDebug = (environment: NodeJS.ProcessEnv): void => {
-	const debug = environment.DEBUG;
-	if (
-		typeof debug === "string" &&
-		debug.split(/[\s,]+/).some(debugPatternMatchesServer)
-	) {
-		throw new ShopifyE2EPreflightError(
-			"DEBUG must not enable Playwright browser endpoint logging",
-		);
-	}
-};
-
 const readDataProperty = (
 	value: Record<PropertyKey, unknown>,
 	key: string,
@@ -411,15 +401,11 @@ const withConfigContext = (
 	);
 };
 
-export const loadShopifyConfig = async (
-	options: LoadShopifyConfigOptions,
-): Promise<LoadedShopifyConfig> => {
-	const configPath = await resolveShopifyConfigPath({
-		projectRoot: options.projectRoot,
-	});
+const assertExecutionEnvironmentIsSafe = (
+	environment: NodeJS.ProcessEnv,
+): void => {
 	try {
-		assertReservedExecutionEnvironmentIsClear(options.environment);
-		assertEndpointSafeDebug(options.environment);
+		assertPlaywrightExecutionEnvironmentIsSafe(environment);
 	} catch (error) {
 		throw new ShopifyE2EPreflightError(
 			error instanceof Error
@@ -428,6 +414,15 @@ export const loadShopifyConfig = async (
 			{ cause: error },
 		);
 	}
+};
+
+export const loadShopifyConfig = async (
+	options: LoadShopifyConfigOptions,
+): Promise<LoadedShopifyConfig> => {
+	const configPath = await resolveShopifyConfigPath({
+		projectRoot: options.projectRoot,
+	});
+	assertExecutionEnvironmentIsSafe(options.environment);
 
 	try {
 		const jiti = createJiti(import.meta.url, {
@@ -437,6 +432,7 @@ export const loadShopifyConfig = async (
 		});
 		const moduleNamespace =
 			await jiti.import<Record<PropertyKey, unknown>>(configPath);
+		assertExecutionEnvironmentIsSafe(options.environment);
 		if (!Object.hasOwn(moduleNamespace, "default")) {
 			throw new ShopifyE2EPreflightError(
 				`Dedicated Shopify config must have a default export: ${configPath}`,

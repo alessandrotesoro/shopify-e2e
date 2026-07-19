@@ -2,7 +2,10 @@ import type { PlaywrightTestConfig } from "@playwright/test";
 
 import { readPlaywrightExecutionContext } from "../playwright/execution-context.cjs";
 import { validateRoleList } from "../roles/role-name.cjs";
-import { buildRoleTokenPattern } from "../roles/role-token.cjs";
+import {
+	buildRoleTokenPattern,
+	ROLE_TOKEN_PREFIX,
+} from "../roles/role-token.cjs";
 import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "./execution-environment.cjs";
 
 const CONFIG_BRAND = Symbol.for("@sematico/shopify-e2e/config/defined");
@@ -21,6 +24,28 @@ type ProtectedRootSetting = (typeof PROTECTED_ROOT_SETTINGS)[number];
 type PlaywrightUse<TestArgs, WorkerArgs> = NonNullable<
 	PlaywrightTestConfig<TestArgs, WorkerArgs>["use"]
 >;
+type PlaywrightLaunchOptions<TestArgs, WorkerArgs> = NonNullable<
+	PlaywrightUse<TestArgs, WorkerArgs>["launchOptions"]
+>;
+type ShopifyLaunchOptionKey =
+	| "args"
+	| "artifactsDir"
+	| "channel"
+	| "chromiumSandbox"
+	| "downloadsPath"
+	| "env"
+	| "executablePath"
+	| "handleSIGHUP"
+	| "handleSIGINT"
+	| "handleSIGTERM"
+	| "headless"
+	| "ignoreDefaultArgs"
+	| "proxy"
+	| "timeout";
+type ShopifyLaunchOptions<TestArgs, WorkerArgs> = Pick<
+	PlaywrightLaunchOptions<TestArgs, WorkerArgs>,
+	ShopifyLaunchOptionKey
+>;
 
 export type ShopifyE2EConfig<TestArgs = object, WorkerArgs = object> = Omit<
 	PlaywrightTestConfig<TestArgs, WorkerArgs>,
@@ -33,10 +58,11 @@ export type ShopifyE2EConfig<TestArgs = object, WorkerArgs = object> = Omit<
 	readonly testDir: string;
 	readonly use?: Omit<
 		PlaywrightUse<TestArgs, WorkerArgs>,
-		"browserName" | "connectOptions" | "storageState"
+		"browserName" | "connectOptions" | "launchOptions" | "storageState"
 	> & {
 		readonly browserName?: "chromium";
 		readonly connectOptions?: never;
+		readonly launchOptions?: ShopifyLaunchOptions<TestArgs, WorkerArgs>;
 		readonly storageState?: never;
 	};
 	readonly workers?: never;
@@ -131,6 +157,28 @@ const assertProtectedUseSettingIsAbsent = (
 	}
 };
 
+const assertRoleTokenIsAbsent = (
+	config: Record<PropertyKey, unknown>,
+	setting: "name" | "tag",
+): void => {
+	if (!Object.hasOwn(config, setting)) return;
+	const selected = readDataProperty(
+		config,
+		setting,
+		`Shopify config ${setting}`,
+	);
+	const values = Array.isArray(selected) ? selected : [selected];
+	if (
+		values.some(
+			(value) => typeof value === "string" && value.includes(ROLE_TOKEN_PREFIX),
+		)
+	) {
+		throw new TypeError(
+			`Shopify config ${setting} must not contain the reserved ${ROLE_TOKEN_PREFIX} token prefix`,
+		);
+	}
+};
+
 const validateUse = (
 	config: Record<PropertyKey, unknown>,
 ): Record<PropertyKey, unknown> | undefined => {
@@ -178,6 +226,8 @@ const validateInput = (
 	for (const setting of PROTECTED_ROOT_SETTINGS) {
 		assertProtectedSettingIsAbsent(input, setting);
 	}
+	assertRoleTokenIsAbsent(input, "name");
+	assertRoleTokenIsAbsent(input, "tag");
 
 	const testDir = readDataProperty(input, "testDir", "Shopify config testDir");
 	if (typeof testDir !== "string" || testDir.trim().length === 0) {

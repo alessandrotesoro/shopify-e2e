@@ -1,6 +1,9 @@
 import { Command, Errors, Flags } from "@oclif/core";
 
-import { buildPlaywrightChildEnvironment } from "../config/execution-environment.cjs";
+import {
+	assertPlaywrightExecutionEnvironmentIsSafe,
+	buildPlaywrightChildEnvironment,
+} from "../config/execution-environment.cjs";
 import {
 	type LoadedShopifyConfig,
 	loadShopifyConfig,
@@ -405,6 +408,21 @@ const assertConfiguredOriginUnchanged = (
 	}
 };
 
+const assertExecutionEnvironmentSafe = (
+	environment: NodeJS.ProcessEnv,
+): void => {
+	try {
+		assertPlaywrightExecutionEnvironmentIsSafe(environment);
+	} catch (cause) {
+		throw new ShopifyE2EPreflightError(
+			cause instanceof Error
+				? cause.message
+				: "Playwright execution environment is unsafe",
+			{ cause },
+		);
+	}
+};
+
 export interface OrchestrateShopifyRunArgs {
 	readonly dependencies?: RunCommandDependencies;
 	readonly options: RunCommandOptions;
@@ -521,6 +539,7 @@ export const orchestrateShopifyRun = async ({
 		signal,
 	);
 	assertConfiguredOriginUnchanged(environment, origin);
+	assertExecutionEnvironmentSafe(environment);
 	throwIfCommandAborted(signal);
 	const selections = await resolveRunSelection({
 		dependencies,
@@ -538,6 +557,7 @@ export const orchestrateShopifyRun = async ({
 		signal,
 	);
 	throwIfCommandAborted(signal);
+	assertExecutionEnvironmentSafe(environment);
 	const chromium = await runWithCommandSignal(
 		() => dependencies.loadChromium(peer),
 		signal,
@@ -588,8 +608,17 @@ export const orchestrateShopifyRun = async ({
 		browserCleanupError = error;
 	}
 	if (signal.aborted) {
-		if (runError instanceof CommandSignalError) throw runError;
-		throwIfCommandAborted(signal);
+		const interruption =
+			runError instanceof CommandSignalError
+				? runError
+				: new CommandSignalError(commandSignalFromReason(signal.reason));
+		if (browserCleanupError !== undefined) {
+			throw new CommandSignalError(
+				interruption.signal,
+				`${interruption.message}; consumer Chromium cleanup could not complete`,
+			);
+		}
+		throw interruption;
 	}
 	if (browserCleanupError !== undefined) throw browserCleanupError;
 	if (runError !== undefined) throw runError;
