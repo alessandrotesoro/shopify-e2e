@@ -621,6 +621,7 @@ export const chromium = {
 		expect(result.stdout).toContain("-g");
 		expect(result.stdout).toContain("--grep-invert");
 		expect(result.stdout).toContain("--role");
+		expect(result.stdout).toMatch(/repeatable.*omit.*select roles/is);
 		expect(result.stdout).not.toContain("--profile");
 		expect(result.stdout).toMatch(/workers.*unavailable/i);
 		expect(result.stderr).toBe("");
