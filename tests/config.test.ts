@@ -180,6 +180,24 @@ describe("dedicated Shopify configuration", () => {
 	});
 
 	it.each([
+		"--headless",
+		"--headless=new",
+		" --HEADLESS=old",
+	])("rejects Chromium headless argument %s", async (argument) => {
+		const project = await makeProject();
+		await writeConfig(
+			project,
+			markedConfigSource(
+				`testDir: "shopify-tests", roles: ["admin"], use: { launchOptions: { args: [${JSON.stringify(argument)}] } }`,
+			),
+		);
+
+		await expect(
+			loadShopifyConfig({ environment: {}, projectRoot: project }),
+		).rejects.toThrow(/headless Chromium/i);
+	});
+
+	it.each([
 		["all defaults", "true"],
 		["the native transport", '["--remote-debugging-pipe"]'],
 	])("rejects ignoreDefaultArgs removing %s", async (_label, value) => {

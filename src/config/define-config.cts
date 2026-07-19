@@ -7,6 +7,7 @@ import {
 	ROLE_TOKEN_PREFIX,
 } from "../roles/role-token.cjs";
 import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "./execution-environment.cjs";
+import type { ShopifyLaunchOptionKey } from "./launch-options.cjs";
 
 const CONFIG_BRAND = Symbol.for("@sematico/shopify-e2e/config/defined");
 const CONFIG_ERROR_BRAND = Symbol.for(
@@ -27,21 +28,6 @@ type PlaywrightUse<TestArgs, WorkerArgs> = NonNullable<
 type PlaywrightLaunchOptions<TestArgs, WorkerArgs> = NonNullable<
 	PlaywrightUse<TestArgs, WorkerArgs>["launchOptions"]
 >;
-type ShopifyLaunchOptionKey =
-	| "args"
-	| "artifactsDir"
-	| "channel"
-	| "chromiumSandbox"
-	| "downloadsPath"
-	| "env"
-	| "executablePath"
-	| "handleSIGHUP"
-	| "handleSIGINT"
-	| "handleSIGTERM"
-	| "headless"
-	| "ignoreDefaultArgs"
-	| "proxy"
-	| "timeout";
 type ShopifyLaunchOptions<TestArgs, WorkerArgs> = Pick<
 	PlaywrightLaunchOptions<TestArgs, WorkerArgs>,
 	ShopifyLaunchOptionKey

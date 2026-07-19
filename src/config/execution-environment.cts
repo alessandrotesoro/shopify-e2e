@@ -8,13 +8,13 @@ export const PLAYWRIGHT_WS_ENDPOINT_ENV = "PW_TEST_CONNECT_WS_ENDPOINT";
 // Playwright 1.61.x maps these documented test-runner variables to the public
 // use.connectOptions fixture path. Keep the names centralized so peer-version
 // support cannot widen without exercising this boundary.
-export const PLAYWRIGHT_CONNECTION_ENVIRONMENT_KEYS = Object.freeze([
+const PLAYWRIGHT_CONNECTION_ENVIRONMENT_KEYS = Object.freeze([
 	PLAYWRIGHT_WS_ENDPOINT_ENV,
 	"PW_TEST_CONNECT_HEADERS",
 	"PW_TEST_CONNECT_EXPOSE_NETWORK",
 ] as const);
 
-export const RESERVED_EXECUTION_ENVIRONMENT_KEYS = Object.freeze([
+const RESERVED_EXECUTION_ENVIRONMENT_KEYS = Object.freeze([
 	SHOPIFY_E2E_EXECUTION_CONTEXT_ENV,
 	...PLAYWRIGHT_CONNECTION_ENVIRONMENT_KEYS,
 ] as const);

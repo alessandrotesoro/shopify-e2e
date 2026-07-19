@@ -69,7 +69,7 @@ Conflicts fail before Playwright starts. During a run, the CLI applies the valid
 
 Everything else remains normal Playwright behavior. This includes `testMatch`, `testIgnore`, `fullyParallel`, retries, repeats, timeouts, reporters, `outputDir`, traces, screenshots, videos, global setup and teardown, `webServer`, metadata, expect settings, and other valid root settings. Paths resolve from the real Shopify config because Playwright runs that file directly.
 
-Compatible Chromium launch options from `use.launchOptions` are applied to the CLI-owned browser. The CLI always overrides browser signal handling, binds the native server to loopback on an ephemeral port, and forces `headless: false`. `use.channel` takes precedence over `use.launchOptions.channel`. Connection options and remote-debugging arguments are rejected because the CLI owns the native connection.
+Compatible Chromium launch options from `use.launchOptions` are applied to the CLI-owned browser. The CLI always overrides browser signal handling, binds the native server to loopback on an ephemeral port, and forces `headless: false`. `use.channel` takes precedence over `use.launchOptions.channel`. Connection options, remote-debugging arguments, and headless Chromium arguments are rejected because the CLI owns the native connection and visible browser mode.
 
 Playwright projects are intentionally unsupported in this phase. Arbitrary Playwright arguments, file selectors, project selectors, worker overrides, UI/debug controls, and reporter overrides are also unsupported.
 

@@ -237,7 +237,10 @@ describe("Playwright child lifecycle", () => {
 			signal: controller.signal,
 		});
 		controller.abort(failure);
-		fake.child.emit("exit", null, "SIGTERM");
+		expect(fake.forwarded).toEqual([
+			{ pid: -fake.child.pid, signal: "SIGINT" },
+		]);
+		fake.child.emit("exit", null, "SIGINT");
 		await expect(result).rejects.toBe(failure);
 	});
 
