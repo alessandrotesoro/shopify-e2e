@@ -1,7 +1,7 @@
 import type { Locator } from "@playwright/test";
 import { describe, expect, it, vi } from "vitest";
 
-import { typeLikeHuman } from "../src/playwright/type-like-human.cjs";
+import { typeLikeHuman } from "../src/playwright/type-like-human.js";
 
 const makeLocator = () => {
 	const pressSequentially = vi.fn(async () => undefined);

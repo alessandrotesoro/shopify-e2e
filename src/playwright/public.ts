@@ -2,9 +2,9 @@ export {
 	type ShopifyFixtures,
 	type StorefrontFixture,
 	shopifyFixtures,
-} from "./fixtures.cjs";
-export { unlockStorefront } from "./storefront.cjs";
+} from "./fixtures.js";
+export { unlockStorefront } from "./storefront.js";
 export {
 	type TypeLikeHumanOptions,
 	typeLikeHuman,
-} from "./type-like-human.cjs";
+} from "./type-like-human.js";

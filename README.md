@@ -2,7 +2,7 @@
 
 An isolated Playwright lane for Shopify end-to-end tests.
 
-The consumer owns `@playwright/test`, Chromium, its Shopify tests, and its trusted Playwright configuration. The CLI owns role-state capture, readiness checks, the selected roles and storage states, the dedicated test root, one-worker execution, and one visible Chromium instance for the command.
+The consumer owns `@playwright/test`, Chromium, its Shopify tests, and its trusted Playwright configuration. The CLI owns role-state capture, readiness checks, the selected roles and storage states, the dedicated test root, one-worker execution, and one visible Chromium instance for the command. The package is ESM-only.
 
 ## Install
 
@@ -34,17 +34,6 @@ export default defineShopifyE2EConfig({
 		screenshot: "only-on-failure",
 		video: "retain-on-failure",
 	},
-});
-```
-
-CommonJS consumers can require the same helper from their TypeScript config:
-
-```js
-const { defineShopifyE2EConfig } = require("@sematico/shopify-e2e/config");
-
-export default defineShopifyE2EConfig({
-	testDir: "tests/shopify-e2e",
-	roles: ["admin"],
 });
 ```
 

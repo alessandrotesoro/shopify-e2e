@@ -1,4 +1,4 @@
-import { defineShopifyE2EConfig } from "../src/config/public.cjs";
+import { defineShopifyE2EConfig } from "../src/config/public.js";
 
 defineShopifyE2EConfig({
 	fullyParallel: true,

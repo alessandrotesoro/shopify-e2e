@@ -5,7 +5,7 @@ import {
 	serializeStorageState,
 	validateParsedStorageState,
 	validateStorageState,
-} from "../src/storage-state/schema.cjs";
+} from "../src/storage-state/schema.js";
 
 const configuredOrigin = "https://shop.example";
 

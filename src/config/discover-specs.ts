@@ -6,16 +6,16 @@ import { ShopifyE2EPreflightError } from "../errors.js";
 // Doctor proves only source-file plausibility. Playwright owns matcher and
 // git-ignore semantics during an actual run.
 const playwrightLoadableSourceExtensions = new Set([
-	".js",
-	".jsx",
+	".cjs",
+	".cjsx",
 	".ts",
 	".tsx",
 	".mjs",
 	".mjsx",
 	".mts",
 	".mtsx",
-	".cjs",
-	".cjsx",
+	".js",
+	".jsx",
 	".cts",
 	".ctsx",
 ]);

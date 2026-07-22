@@ -45,11 +45,11 @@ interface InstalledPeerModule {
 }
 
 type InstalledExecutionModules = Pick<
-	typeof import("../src/config/execution-environment.cjs"),
+	typeof import("../src/config/execution-environment.js"),
 	"buildPlaywrightChildEnvironment"
 > &
 	Pick<
-		typeof import("../src/playwright/execution-context.cjs"),
+		typeof import("../src/playwright/execution-context.js"),
 		"createPlaywrightExecutionContext"
 	> &
 	Pick<
@@ -234,14 +234,12 @@ describe.sequential("consumer browser role isolation", () => {
 		const [environmentModule, executionContextModule, invocationModule] =
 			await Promise.all([
 				import(
-					pathToFileURL(
-						join(packageRoot, "config", "execution-environment.cjs"),
-					).href
+					pathToFileURL(join(packageRoot, "config", "execution-environment.js"))
+						.href
 				),
 				import(
-					pathToFileURL(
-						join(packageRoot, "playwright", "execution-context.cjs"),
-					).href
+					pathToFileURL(join(packageRoot, "playwright", "execution-context.js"))
+						.href
 				),
 				import(
 					pathToFileURL(join(packageRoot, "playwright", "invocation.js")).href

@@ -3,7 +3,7 @@ import { Command, Errors, Flags } from "@oclif/core";
 import {
 	assertPlaywrightExecutionEnvironmentIsSafe,
 	buildPlaywrightChildEnvironment,
-} from "../config/execution-environment.cjs";
+} from "../config/execution-environment.js";
 import {
 	type LoadedShopifyConfig,
 	loadShopifyConfig,
@@ -24,7 +24,7 @@ import {
 import {
 	createPlaywrightExecutionContext,
 	type PlaywrightExecutionContextArtifact,
-} from "../playwright/execution-context.cjs";
+} from "../playwright/execution-context.js";
 import {
 	type BuildPlaywrightInvocationOptions,
 	buildPlaywrightInvocation,
@@ -51,7 +51,7 @@ import {
 } from "../process/command-signals.js";
 import { runChild } from "../process/run-child.js";
 import { inquirerPrompts } from "../prompts/inquirer.js";
-import { normalizeConfiguredOrigin } from "../role-states/configured-origin.cjs";
+import { normalizeConfiguredOrigin } from "../role-states/configured-origin.js";
 import { resolveRoleStateDataRoot } from "../role-states/data-root.js";
 import {
 	assertConfiguredRole,

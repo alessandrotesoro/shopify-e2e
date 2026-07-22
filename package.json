@@ -6,16 +6,12 @@
 	"type": "module",
 	"exports": {
 		"./config": {
-			"types": "./dist/config/public.d.cts",
-			"import": "./dist/config/public.cjs",
-			"require": "./dist/config/public.cjs",
-			"default": "./dist/config/public.cjs"
+			"types": "./dist/config/public.d.ts",
+			"import": "./dist/config/public.js"
 		},
 		"./playwright": {
-			"types": "./dist/playwright/public.d.cts",
-			"import": "./dist/playwright/public.cjs",
-			"require": "./dist/playwright/public.cjs",
-			"default": "./dist/playwright/public.cjs"
+			"types": "./dist/playwright/public.d.ts",
+			"import": "./dist/playwright/public.js"
 		}
 	},
 	"bin": {

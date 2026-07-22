@@ -14,9 +14,9 @@ import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../src/errors.js";
-import { configuredOriginKey } from "../src/role-states/configured-origin.cjs";
+import { configuredOriginKey } from "../src/role-states/configured-origin.js";
 import { createRoleStateStore } from "../src/role-states/role-state-store.js";
-import type { PlaywrightStorageState } from "../src/storage-state/schema.cjs";
+import type { PlaywrightStorageState } from "../src/storage-state/schema.js";
 import {
 	authOptions,
 	createAuthFixtureScope,
@@ -413,7 +413,7 @@ describe("role-only auth command orchestration", () => {
 	it("allows trusted config imports while package-owned list avoids Playwright", async () => {
 		const fixture = await makeFixture(["admin"]);
 		const sentinel = join(fixture.projectRoot, "trusted-import-ran");
-		const helperPath = resolve(import.meta.dirname, "../src/config/public.cts");
+		const helperPath = resolve(import.meta.dirname, "../src/config/public.ts");
 		await writeFile(
 			join(fixture.projectRoot, "shopify-e2e.config.ts"),
 			`import { writeFileSync } from "node:fs"; import { defineShopifyE2EConfig } from ${JSON.stringify(helperPath)}; writeFileSync(${JSON.stringify(sentinel)}, "ran"); export default defineShopifyE2EConfig({ roles: ["admin"], testDir: "shopify-tests" });\n`,

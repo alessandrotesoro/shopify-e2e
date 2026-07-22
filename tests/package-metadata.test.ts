@@ -41,16 +41,12 @@ describe("package metadata", () => {
 		expect(packageJson.files).toEqual(["bin", "dist", "LICENSE"]);
 		expect(packageJson.exports).toEqual({
 			"./config": {
-				default: "./dist/config/public.cjs",
-				import: "./dist/config/public.cjs",
-				require: "./dist/config/public.cjs",
-				types: "./dist/config/public.d.cts",
+				import: "./dist/config/public.js",
+				types: "./dist/config/public.d.ts",
 			},
 			"./playwright": {
-				default: "./dist/playwright/public.cjs",
-				import: "./dist/playwright/public.cjs",
-				require: "./dist/playwright/public.cjs",
-				types: "./dist/playwright/public.d.cts",
+				import: "./dist/playwright/public.js",
+				types: "./dist/playwright/public.d.ts",
 			},
 		});
 	});

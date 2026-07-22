@@ -1,7 +1,7 @@
 import type { ElementHandle, Locator, Page, Response } from "@playwright/test";
 
-import { configuredOriginFromEnvironment } from "../role-states/configured-origin.cjs";
-import { typeLikeHuman } from "./type-like-human.cjs";
+import { configuredOriginFromEnvironment } from "../role-states/configured-origin.js";
+import { typeLikeHuman } from "./type-like-human.js";
 
 const PASSWORD_INPUT_SELECTOR = 'input[type="password"]';
 const FORM_SELECTOR = "form";

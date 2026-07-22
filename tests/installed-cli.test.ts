@@ -358,83 +358,12 @@ test("customer after failure lane", { tag: "@shopify-e2e-role-customer" }, () =>
 	return consumer;
 };
 
-const prepareCjsConsumer = async (
-	tarballPath: string,
-): Promise<InstalledConsumer> => {
-	const root = await makeTemporaryDirectory("shopify-e2e-installed-cjs-");
-	const dataRoot = await makeTemporaryDirectory(
-		"shopify-e2e-installed-cjs-role-states-",
-	);
-	const runtimeTempRoot = await makeTemporaryDirectory(
-		"shopify-e2e-installed-cjs-runtime-",
-	);
-	await writeFile(
-		join(root, "package.json"),
-		'{"name":"installed-cjs-consumer","private":true,"type":"commonjs"}\n',
-	);
-	await installPackedPackage({
-		consumerRoot: root,
-		hasPlaywright: true,
-		tarballPath,
-	});
-	await mkdir(join(root, "node_modules", "fixture-dependency"));
-	await writeFile(
-		join(root, "node_modules", "fixture-dependency", "package.json"),
-		'{"name":"fixture-dependency","type":"commonjs","main":"index.cjs"}\n',
-	);
-	await writeFile(
-		join(root, "node_modules", "fixture-dependency", "index.cjs"),
-		'module.exports = { dependencyMarker: "commonjs-dependency", retryCount: 0 };\n',
-	);
-	await mkdir(join(root, "shopify-tests"));
-	await writeFile(
-		join(root, "config-helper.ts"),
-		`import type { PlaywrightTestConfig } from "@playwright/test";
-const { devices } = require("@playwright/test");
-const { dependencyMarker, retryCount } = require("fixture-dependency");
-export const settings = {
-  metadata: { dependencyMarker },
-  retries: retryCount,
-  use: { ...devices["Desktop Chrome"], trace: "off" },
-} satisfies PlaywrightTestConfig;
-`,
-	);
-	await writeFile(
-		join(root, "shopify-e2e.config.ts"),
-		`const { defineShopifyE2EConfig } = require("@sematico/shopify-e2e/config");
-const { settings } = require("./config-helper.ts");
-export default defineShopifyE2EConfig({ ...settings, roles: ["admin"], testDir: "shopify-tests" });
-`,
-	);
-	await writeFile(
-		join(root, "shopify-tests", "admin.spec.ts"),
-		`const { expect, test } = require("@playwright/test");
-test("cjs admin", { tag: "@shopify-e2e-role-admin" }, ({}, testInfo) => {
-  expect(testInfo.config.metadata.dependencyMarker).toBe("commonjs-dependency");
-  expect(testInfo.project.retries).toBe(0);
-  expect(testInfo.project.use.trace).toBe("off");
-  expect(testInfo.project.use.viewport).toEqual({ height: 720, width: 1280 });
-});
-`,
-	);
-	const consumer = { dataRoot, root, runtimeTempRoot };
-	await createRoleStateStore({ dataRoot, origin, roles: ["admin"] }).capture({
-		role: "admin",
-		state: { cookies: [], origins: [] },
-	});
-	return consumer;
-};
-
 describe.sequential("installed CLI release boundary", () => {
 	let esm: InstalledConsumer;
-	let cjs: InstalledConsumer;
 
 	beforeAll(async () => {
 		const tarballPath = await packVerifiedPackage(projectRoot);
-		[esm, cjs] = await Promise.all([
-			prepareEsmConsumer(tarballPath),
-			prepareCjsConsumer(tarballPath),
-		]);
+		esm = await prepareEsmConsumer(tarballPath);
 	}, 240_000);
 
 	afterAll(cleanupInstalledCliFixture);
@@ -694,20 +623,6 @@ describe.sequential("installed CLI release boundary", () => {
 		20_000,
 	);
 
-	it("loads and runs the packed helper from a CommonJS consumer", () => {
-		const helper = spawnSync(
-			process.execPath,
-			[
-				"-e",
-				'const c=require("@sematico/shopify-e2e/config"); if(typeof c.defineShopifyE2EConfig!=="function") process.exit(9)',
-			],
-			{ cwd: cjs.root, encoding: "utf8" },
-		);
-		expect(helper.status, helper.stderr).toBe(0);
-		const result = runCli(cjs, ["run", "--role", "admin"]);
-		expect(result.status, result.stderr).toBe(0);
-	});
-
 	it("lists and removes exactly one packed role state without loading Playwright", () => {
 		const list = runCli(esm, ["auth", "list"]);
 		expect(list.status, list.stderr).toBe(0);
@@ -727,11 +642,9 @@ describe.sequential("installed CLI release boundary", () => {
 	});
 
 	it("leaves no package-created execution context after packed runs", async () => {
-		for (const consumer of [esm, cjs]) {
-			const entries = await readdir(consumer.runtimeTempRoot);
-			expect(
-				entries.some((entry) => entry.startsWith("shopify-e2e-context-")),
-			).toBe(false);
-		}
+		const entries = await readdir(esm.runtimeTempRoot);
+		expect(
+			entries.some((entry) => entry.startsWith("shopify-e2e-context-")),
+		).toBe(false);
 	});
 });

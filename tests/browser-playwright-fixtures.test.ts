@@ -6,7 +6,7 @@ import {
 } from "@playwright/test";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { unlockStorefront } from "../src/playwright/storefront.cjs";
+import { unlockStorefront } from "../src/playwright/storefront.js";
 
 const origin = "https://fixture.shop.test";
 const testPassword = "not-a-secret";
