@@ -1,4 +1,4 @@
-import type { Locator, Page, Response } from "@playwright/test";
+import type { ElementHandle, Locator, Page, Response } from "@playwright/test";
 
 import { configuredOriginFromEnvironment } from "../role-states/configured-origin.cjs";
 import { typeLikeHuman } from "./type-like-human.cjs";
@@ -61,85 +61,182 @@ export const openStorefront = async (page: Page): Promise<void> => {
 };
 
 interface PasswordChallenge {
-	readonly form: Locator;
-	readonly input: Locator;
+	readonly form: ElementHandle<HTMLFormElement>;
+	readonly input: ElementHandle<HTMLInputElement>;
 }
+
+const disposeChallenge = async (
+	challenge: PasswordChallenge,
+): Promise<void> => {
+	await Promise.allSettled([
+		challenge.form.dispose(),
+		challenge.input.dispose(),
+	]);
+};
+
+const sameElement = async <T extends Node>(
+	left: ElementHandle<T>,
+	right: ElementHandle<T>,
+): Promise<boolean> => {
+	try {
+		return await left.evaluate(
+			(element, candidate) => element === candidate,
+			right,
+		);
+	} catch {
+		return false;
+	}
+};
 
 const inspectPasswordChallenge = async (
 	page: Page,
 	configuredOrigin: string,
 ): Promise<PasswordChallenge | null> => {
-	const passwordInputs = page.locator(PASSWORD_INPUT_SELECTOR);
-	const forms = page.locator(FORM_SELECTOR);
-	const [passwordInputCount, formCount] = await Promise.all([
-		passwordInputs.count(),
-		forms.count(),
-	]);
-
-	if (passwordInputCount === 0 && formCount === 0) return null;
-	if (passwordInputCount > 1) {
-		throw unsafePasswordChallenge();
+	const rawPasswordInputs = await page
+		.locator(PASSWORD_INPUT_SELECTOR)
+		.elementHandles();
+	let rawForms: ElementHandle<Node>[];
+	try {
+		rawForms = await page.locator(FORM_SELECTOR).elementHandles();
+	} catch (error) {
+		await Promise.allSettled(rawPasswordInputs.map((input) => input.dispose()));
+		throw error;
 	}
+	const passwordInputs = rawPasswordInputs as ElementHandle<HTMLInputElement>[];
+	const forms = rawForms as ElementHandle<HTMLFormElement>[];
+	const passwordInputCount = passwordInputs.length;
+	const formCount = forms.length;
+	let retainedChallenge: PasswordChallenge | undefined;
 
-	const inspectedForms: Array<{
-		readonly destination?: URL;
-		readonly form: Locator;
-		readonly method: string | null;
-		readonly nestedCount: number;
-		readonly visible: boolean;
-	}> = [];
-	for (let index = 0; index < formCount; index += 1) {
-		const form = forms.nth(index);
-		const [method, action, visible, nestedCount] = await Promise.all([
-			form.getAttribute("method"),
-			form.getAttribute("action"),
-			form.isVisible(),
-			form.locator(PASSWORD_INPUT_SELECTOR).count(),
-		]);
-		let destination: URL | undefined;
-		try {
-			if (action !== null) destination = new URL(action, page.url());
-		} catch {
-			// The common safe error below intentionally omits the untrusted action.
+	try {
+		if (passwordInputCount === 0 && formCount === 0) return null;
+		if (passwordInputCount > 1) {
+			throw unsafePasswordChallenge();
 		}
-		inspectedForms.push({ destination, form, method, nestedCount, visible });
-	}
 
-	const challengeForms = inspectedForms.filter(
-		(candidate) => candidate.nestedCount > 0,
-	);
-	if (passwordInputCount === 0 && challengeForms.length === 0) {
-		const hasIncompletePasswordForm = inspectedForms.some(
-			(candidate) => candidate.destination?.pathname === "/password",
+		const inspectedForms: Array<{
+			readonly destination?: URL;
+			readonly form: ElementHandle<HTMLFormElement>;
+			readonly method: string | null;
+			readonly nestedCount: number;
+			readonly visible: boolean;
+		}> = [];
+		for (let index = 0; index < formCount; index += 1) {
+			const form = forms[index];
+			if (form === undefined) throw unsafePasswordChallenge();
+			const nestedInputs = await form.$$(PASSWORD_INPUT_SELECTOR);
+			let method: string | null;
+			let action: string | null;
+			let visible: boolean;
+			let connected: boolean;
+			try {
+				[method, action, visible, connected] = await Promise.all([
+					form.getAttribute("method"),
+					form.getAttribute("action"),
+					form.isVisible(),
+					form.evaluate((element) => element.isConnected),
+				]);
+			} finally {
+				await Promise.allSettled(nestedInputs.map((input) => input.dispose()));
+			}
+			const nestedCount = nestedInputs.length;
+			let destination: URL | undefined;
+			try {
+				if (action !== null) destination = new URL(action, page.url());
+			} catch {
+				// The common safe error below intentionally omits the untrusted action.
+			}
+			inspectedForms.push({
+				destination,
+				form,
+				method,
+				nestedCount,
+				visible: visible && connected,
+			});
+		}
+
+		const challengeForms = inspectedForms.filter(
+			(candidate) => candidate.nestedCount > 0,
 		);
-		if (!hasIncompletePasswordForm) return null;
-	}
-	if (passwordInputCount !== 1 || challengeForms.length !== 1) {
-		throw unsafePasswordChallenge();
-	}
+		if (passwordInputCount === 0 && challengeForms.length === 0) {
+			const hasIncompletePasswordForm = inspectedForms.some(
+				(candidate) => candidate.destination?.pathname === "/password",
+			);
+			if (!hasIncompletePasswordForm) return null;
+		}
+		if (passwordInputCount !== 1 || challengeForms.length !== 1) {
+			throw unsafePasswordChallenge();
+		}
 
-	const challengeForm = challengeForms[0];
-	if (challengeForm === undefined) {
-		throw unsafePasswordChallenge();
-	}
-	const input = passwordInputs.nth(0);
-	const [inputVisible, inputEnabled] = await Promise.all([
-		input.isVisible(),
-		input.isEnabled(),
-	]);
+		const challengeForm = challengeForms[0];
+		if (challengeForm === undefined) {
+			throw unsafePasswordChallenge();
+		}
+		const input = passwordInputs[0];
+		if (input === undefined) throw unsafePasswordChallenge();
+		const [inputVisible, inputEnabled, inputConnected, formContainsInput] =
+			await Promise.all([
+				input.isVisible(),
+				input.isEnabled(),
+				input.evaluate((element) => element.isConnected),
+				challengeForm.form.evaluate(
+					(form, passwordInput) => form.contains(passwordInput),
+					input,
+				),
+			]);
 
-	if (
-		challengeForm.method?.toUpperCase() !== "POST" ||
-		challengeForm.destination?.href !== `${configuredOrigin}/password` ||
-		!challengeForm.visible ||
-		!inputVisible ||
-		!inputEnabled ||
-		challengeForm.nestedCount !== 1
-	) {
-		throw unsafePasswordChallenge();
-	}
+		if (
+			challengeForm.method?.toUpperCase() !== "POST" ||
+			challengeForm.destination?.href !== `${configuredOrigin}/password` ||
+			!challengeForm.visible ||
+			!inputVisible ||
+			!inputEnabled ||
+			!inputConnected ||
+			!formContainsInput ||
+			challengeForm.nestedCount !== 1
+		) {
+			throw unsafePasswordChallenge();
+		}
 
-	return { form: challengeForm.form, input };
+		retainedChallenge = { form: challengeForm.form, input };
+		return retainedChallenge;
+	} finally {
+		await Promise.allSettled(
+			[...forms, ...passwordInputs]
+				.filter(
+					(handle) =>
+						handle !== retainedChallenge?.form &&
+						handle !== retainedChallenge?.input,
+				)
+				.map((handle) => handle.dispose()),
+		);
+	}
+};
+
+const verifyPinnedChallenge = async (
+	page: Page,
+	configuredOrigin: string,
+	pinned: PasswordChallenge,
+): Promise<boolean> => {
+	if (!hasConfiguredOrigin(page, configuredOrigin)) return false;
+
+	let current: PasswordChallenge | null;
+	try {
+		current = await inspectPasswordChallenge(page, configuredOrigin);
+	} catch {
+		return false;
+	}
+	if (current === null) return false;
+
+	try {
+		const [sameForm, sameInput] = await Promise.all([
+			sameElement(pinned.form, current.form),
+			sameElement(pinned.input, current.input),
+		]);
+		return sameForm && sameInput;
+	} finally {
+		await disposeChallenge(current);
+	}
 };
 
 export const unlockStorefront = async (page: Page): Promise<void> => {
@@ -170,9 +267,14 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 		);
 	}
 	if (challenge === null) return;
+	if (!(await verifyPinnedChallenge(page, configuredOrigin, challenge))) {
+		await disposeChallenge(challenge);
+		throw unsafePasswordChallenge();
+	}
 
 	const password = process.env.SHOPIFY_STOREFRONT_PASSWORD;
 	if (!password || password.trim().length === 0) {
+		await disposeChallenge(challenge);
 		throw storefrontError(
 			"SHOPIFY_STOREFRONT_PASSWORD is required when the configured storefront is password protected.",
 		);
@@ -180,11 +282,31 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 
 	let response: Response | null;
 	try {
+		const pinnedInput = {
+			pressSequentially: (
+				text: string,
+				options?: { readonly delay?: number },
+			) => challenge.input.type(text, options),
+		} as Locator;
 		[, response] = await Promise.all([
-			typeLikeHuman(challenge.input, password).then(() =>
-				challenge.form.evaluate((form) => {
-					(form as HTMLFormElement).requestSubmit();
-				}),
+			typeLikeHuman(pinnedInput, password).then(() =>
+				challenge.form.evaluate(
+					(form, submission) => {
+						const { configuredOrigin, input } = submission;
+						if (
+							form.ownerDocument.location.origin !== configuredOrigin ||
+							!form.isConnected ||
+							!input.isConnected ||
+							!form.contains(input) ||
+							form.method.toUpperCase() !== "POST" ||
+							form.action !== `${configuredOrigin}/password`
+						) {
+							throw new Error("Unsafe storefront password form");
+						}
+						form.requestSubmit();
+					},
+					{ configuredOrigin, input: challenge.input },
+				),
 			),
 			page.waitForNavigation({ waitUntil: "domcontentloaded" }),
 		]);
@@ -192,6 +314,8 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 		throw storefrontError(
 			"The storefront password challenge could not be submitted successfully.",
 		);
+	} finally {
+		await disposeChallenge(challenge);
 	}
 
 	if (!isSuccessfulResponse(response)) {
@@ -214,6 +338,7 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 		);
 	}
 	if (remainingChallenge !== null) {
+		await disposeChallenge(remainingChallenge);
 		throw storefrontError(
 			"The storefront password submission did not unlock the store.",
 		);

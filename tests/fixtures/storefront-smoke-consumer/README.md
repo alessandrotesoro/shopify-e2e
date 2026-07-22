@@ -42,7 +42,7 @@ shopify-e2e auth capture --role guest
 shopify-e2e auth capture --role storefront-access
 ```
 
-Capture the roles in their intended starting state and confirm each save in the terminal. The tracked test never receives a password argument and never attaches or unlocks fixtures automatically.
+Capture and confirm both role states. Their saved storefront-access cookie does not affect this acceptance: the tracked test clears cookies only for the Levelogy `.myshopify.com` domain before each role, then requires the password challenge to appear. It never receives a password argument and never attaches or unlocks fixtures automatically.
 
 ## 2. Run both roles serially
 
@@ -53,9 +53,9 @@ shopify-e2e run --role guest --role storefront-access
 The CLI runs the configured order, `guest` then `storefront-access`, with one worker and no simultaneous tests. Each tagged test manually uses the consumer-owned fixture:
 
 - `storefront.open()` opens the configured store.
-- The first explicit `storefront.unlock()` unlocks the store when challenged or safely does nothing when the saved state is already unlocked.
-- The second explicit `storefront.unlock()` proves the already-unlocked no-op.
-- The test verifies a stable visible page with no remaining password challenge.
+- Each role clears the Levelogy store cookies, proves the Shopify password challenge is visible, then explicitly unlocks it with the password from `.env`.
+- Each role calls `storefront.unlock()` again after access is established to prove the safe no-op path.
+- Both roles require the Levelogy home URL and its `main#MainContent` storefront marker, not merely a visible page body.
 
 ## 3. Repeat the same run
 
@@ -63,7 +63,7 @@ The CLI runs the configured order, `guest` then `storefront-access`, with one wo
 shopify-e2e run --role guest --role storefront-access
 ```
 
-Expected: both roles pass again, still strictly serially, with one visible Chromium window for the command and no password form left after either test.
+Expected: both roles pass again, still strictly serially, with one visible Chromium window for the command. Each role starts locked, visibly enters the password, and ends on the Levelogy home page before the next role begins.
 
 ## Troubleshooting
 
