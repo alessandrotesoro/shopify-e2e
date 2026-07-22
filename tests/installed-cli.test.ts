@@ -452,7 +452,7 @@ describe.sequential("installed CLI release boundary", () => {
 		expect(runHelp.stdout).not.toContain("--profile");
 		expect(runHelp.stdout).not.toContain("--config");
 		expect(authHelp.stdout).not.toContain("--profile");
-		expect(version.stdout).toContain("0.6.0");
+		expect(version.stdout).toContain("0.7.0");
 	});
 
 	it("runs packed ESM roles serially in one CLI browser lifecycle", async () => {

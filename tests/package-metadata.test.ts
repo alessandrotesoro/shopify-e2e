@@ -30,11 +30,11 @@ const readPackageLock = async (): Promise<{
 };
 
 describe("package metadata", () => {
-	it("publishes the intended CLI-only package shell", async () => {
+	it("publishes the intended CLI and Playwright fixture package shell", async () => {
 		const packageJson = await readPackage();
 
 		expect(packageJson.name).toBe("@sematico/shopify-e2e");
-		expect(packageJson.version).toBe("0.6.0");
+		expect(packageJson.version).toBe("0.7.0");
 		expect(packageJson.engines).toEqual({ node: ">=20" });
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.bin).toEqual({ "shopify-e2e": "./bin/run.js" });
@@ -45,6 +45,12 @@ describe("package metadata", () => {
 				import: "./dist/config/public.cjs",
 				require: "./dist/config/public.cjs",
 				types: "./dist/config/public.d.cts",
+			},
+			"./playwright": {
+				default: "./dist/playwright/public.cjs",
+				import: "./dist/playwright/public.cjs",
+				require: "./dist/playwright/public.cjs",
+				types: "./dist/playwright/public.d.cts",
 			},
 		});
 	});
@@ -79,14 +85,14 @@ describe("package metadata", () => {
 		expect(lockfile.packages["node_modules/jiti"]?.version).toBe("2.7.0");
 	});
 
-	it("coordinates the 0.6.0 release and prompt pin in the lockfile", async () => {
+	it("coordinates the 0.7.0 release and prompt pin in the lockfile", async () => {
 		const lockfile = await readPackageLock();
 
-		expect(lockfile.version).toBe("0.6.0");
+		expect(lockfile.version).toBe("0.7.0");
 		expect(lockfile.packages[""]).toMatchObject({
 			dependencies: { "@inquirer/prompts": "7.10.1" },
 			engines: { node: ">=20" },
-			version: "0.6.0",
+			version: "0.7.0",
 		});
 		expect(lockfile.packages["node_modules/@inquirer/prompts"]?.version).toBe(
 			"7.10.1",
@@ -115,12 +121,14 @@ describe("package metadata", () => {
 		const packageJson = await readPackage();
 
 		expect(packageJson.scripts).toMatchObject({
+			"test:browser:fixtures":
+				"npm run build && vitest run tests/browser-playwright-fixtures.test.ts",
 			"test:browser:roles":
 				"npm run build && vitest run tests/browser-role-isolation.test.ts",
 			"test:fast":
-				"vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/browser-role-isolation.test.ts",
+				"vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/installed-playwright-fixtures.test.ts --exclude tests/browser-role-isolation.test.ts --exclude tests/browser-playwright-fixtures.test.ts",
 			"test:installed:built":
-				"vitest run tests/installed-cli.test.ts tests/installed-doctor-cli.test.ts",
+				"vitest run tests/installed-cli.test.ts tests/installed-doctor-cli.test.ts tests/installed-playwright-fixtures.test.ts",
 			verify:
 				"npm run lint && npm run typecheck && npm run build && npm run test:fast && npm run test:installed:built",
 		});
