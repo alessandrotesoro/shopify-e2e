@@ -5,13 +5,13 @@ const { openStorefront, unlockStorefront } = vi.hoisted(() => ({
 	unlockStorefront: vi.fn(async () => undefined),
 }));
 
-vi.mock("../src/playwright/storefront.cjs", () => ({
+vi.mock("../src/playwright/storefront.js", () => ({
 	openStorefront,
 	unlockStorefront,
 }));
 
-import { shopifyFixtures } from "../src/playwright/fixtures.cjs";
-import * as publicApi from "../src/playwright/public.cjs";
+import { shopifyFixtures } from "../src/playwright/fixtures.js";
+import * as publicApi from "../src/playwright/public.js";
 
 const storefrontFixture = () => {
 	const fixture = shopifyFixtures.storefront;

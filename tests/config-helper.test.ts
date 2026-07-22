@@ -7,28 +7,21 @@ import { describe, expect, it } from "vitest";
 import {
 	defineShopifyE2EConfig,
 	isDefinedShopifyE2EConfig,
-} from "../src/config/define-config.cjs";
-import { createPlaywrightExecutionContext } from "../src/playwright/execution-context.cjs";
+} from "../src/config/define-config.js";
+import { createPlaywrightExecutionContext } from "../src/playwright/execution-context.js";
 
 describe("defineShopifyE2EConfig", () => {
-	it.each([
-		{
-			args: ["--input-type=module"],
-			label: "ESM import",
-			source:
-				'import { defineShopifyE2EConfig } from "@sematico/shopify-e2e/config"; console.log(defineShopifyE2EConfig({ testDir: "tests", roles: ["admin"] }).roles[0]);',
-		},
-		{
-			args: [],
-			label: "CommonJS require",
-			source:
-				'const { defineShopifyE2EConfig } = require("@sematico/shopify-e2e/config"); console.log(defineShopifyE2EConfig({ testDir: "tests", roles: ["admin"] }).roles[0]);',
-		},
-	])("loads the public helper through $label", ({ args, source }) => {
-		const result = spawnSync(process.execPath, [...args, "--eval", source], {
-			cwd: resolve(import.meta.dirname, ".."),
-			encoding: "utf8",
-		});
+	it("loads the public helper through ESM", () => {
+		const source =
+			'import { defineShopifyE2EConfig } from "@sematico/shopify-e2e/config"; console.log(defineShopifyE2EConfig({ testDir: "tests", roles: ["admin"] }).roles[0]);';
+		const result = spawnSync(
+			process.execPath,
+			["--input-type=module", "--eval", source],
+			{
+				cwd: resolve(import.meta.dirname, ".."),
+				encoding: "utf8",
+			},
+		);
 
 		expect(result.status, result.stderr).toBe(0);
 		expect(result.stdout.trim()).toBe("admin");
@@ -37,12 +30,12 @@ describe("defineShopifyE2EConfig", () => {
 	it("emits no runtime Playwright dependency from the public helper closure", () => {
 		const projectRoot = resolve(import.meta.dirname, "..");
 		const emittedClosure = [
-			readFileSync(resolve(projectRoot, "dist/config/public.cjs"), "utf8"),
+			readFileSync(resolve(projectRoot, "dist/config/public.js"), "utf8"),
 			readFileSync(
-				resolve(projectRoot, "dist/config/define-config.cjs"),
+				resolve(projectRoot, "dist/config/define-config.js"),
 				"utf8",
 			),
-			readFileSync(resolve(projectRoot, "dist/roles/role-name.cjs"), "utf8"),
+			readFileSync(resolve(projectRoot, "dist/roles/role-name.js"), "utf8"),
 		].join("\n");
 
 		expect(emittedClosure).not.toContain("@playwright/test");

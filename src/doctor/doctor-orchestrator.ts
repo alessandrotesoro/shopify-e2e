@@ -15,7 +15,7 @@ import {
 	runWithCommandSignal,
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
-import { configuredOriginFromEnvironment } from "../role-states/configured-origin.cjs";
+import { configuredOriginFromEnvironment } from "../role-states/configured-origin.js";
 
 export const DOCTOR_CHECK_ORDER = [
 	"project",

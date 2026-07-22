@@ -17,11 +17,11 @@ import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildPlaywrightChildEnvironment } from "../src/config/execution-environment.cjs";
+import { buildPlaywrightChildEnvironment } from "../src/config/execution-environment.js";
 import {
 	createPlaywrightExecutionContext,
 	readPlaywrightExecutionContext,
-} from "../src/playwright/execution-context.cjs";
+} from "../src/playwright/execution-context.js";
 import { buildPlaywrightInvocation } from "../src/playwright/invocation.js";
 import { resolvePlaywrightPeer } from "../src/playwright/peer.js";
 
@@ -314,10 +314,8 @@ describe("Playwright execution context", () => {
 		expect((readError as Error).message).not.toContain(artifact.contextPath);
 	});
 
-	it.each([
-		"module",
-		"commonjs",
-	] as const)("keeps the pointer through pinned Playwright evaluations for a %s consumer", async (moduleType) => {
+	it("keeps the pointer through pinned Playwright evaluations for an ESM consumer", async () => {
+		const moduleType = "module";
 		const projectRoot = await realpath(
 			await mkdtemp(join(tmpdir(), `shopify-e2e-${moduleType}-consumer-`)),
 		);
@@ -357,9 +355,7 @@ describe("Playwright execution context", () => {
 appendFileSync(${JSON.stringify(evaluationLog)}, JSON.stringify({ argv: process.argv.slice(1), hasPointer: typeof process.env.SHOPIFY_E2E_EXECUTION_CONTEXT === "string", pid: process.pid }) + "\\n");
 const passthrough = { metadata: { markerLabel }, reporter: [["json", { outputFile: "results.json" }]], use: { ...devices["Desktop Chrome"], trace: "off" } };
 `;
-		const configSource =
-			moduleType === "module"
-				? `import type { PlaywrightTestConfig } from "@playwright/test";
+		const configSource = `import type { PlaywrightTestConfig } from "@playwright/test";
 import { appendFileSync } from "node:fs";
 import { devices } from "@playwright/test";
 import { defineShopifyE2EConfig } from "@sematico/shopify-e2e/config";
@@ -369,16 +365,6 @@ const { markerLabel } = fixtureDependency;
 ${sharedBody}
 const typed: Pick<PlaywrightTestConfig, "metadata"> = { metadata: passthrough.metadata };
 export default defineShopifyE2EConfig({ ...passthrough, ...typed, roles: ["admin"], testDir: configuredTestDir });
-`
-				: `import type { PlaywrightTestConfig } from "@playwright/test";
-const { appendFileSync } = require("node:fs");
-const { devices } = require("@playwright/test");
-const { defineShopifyE2EConfig } = require("@sematico/shopify-e2e/config");
-const { markerLabel } = require("fixture-dependency");
-const { configuredTestDir } = require("./config-support");
-${sharedBody}
-const typed: Pick<PlaywrightTestConfig, "metadata"> = { metadata: passthrough.metadata };
-module.exports = defineShopifyE2EConfig({ ...passthrough, ...typed, roles: ["admin"], testDir: configuredTestDir });
 `;
 		await writeFile(configPath, configSource);
 		await writeFile(

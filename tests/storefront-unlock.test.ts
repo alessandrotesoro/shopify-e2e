@@ -5,12 +5,12 @@ const typeLikeHuman = vi.hoisted(() =>
 	vi.fn(async (_locator: Locator, _text: string): Promise<void> => undefined),
 );
 
-vi.mock("../src/playwright/type-like-human.cjs", () => ({ typeLikeHuman }));
+vi.mock("../src/playwright/type-like-human.js", () => ({ typeLikeHuman }));
 
 import {
 	openStorefront,
 	unlockStorefront,
-} from "../src/playwright/storefront.cjs";
+} from "../src/playwright/storefront.js";
 
 const origin = "https://shop.example";
 const password = "controlled-test-password";

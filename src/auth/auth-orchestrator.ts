@@ -36,7 +36,7 @@ import {
 	type RoleStateStore,
 	type RoleStateSummary,
 } from "../role-states/role-state-store.js";
-import type { PlaywrightStorageState } from "../storage-state/schema.cjs";
+import type { PlaywrightStorageState } from "../storage-state/schema.js";
 import { captureBrowserRoleState } from "./capture-role-state.js";
 
 export type AuthAction = "capture" | "list" | "menu" | "refresh" | "remove";

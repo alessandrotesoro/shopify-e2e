@@ -7,7 +7,7 @@ import {
 	configuredOriginFromEnvironment,
 	configuredOriginKey,
 	normalizeConfiguredOrigin,
-} from "../src/role-states/configured-origin.cjs";
+} from "../src/role-states/configured-origin.js";
 import { resolveRoleStateDataRoot } from "../src/role-states/data-root.js";
 
 const temporaryDirectories: string[] = [];

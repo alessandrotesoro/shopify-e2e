@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { assertRoleName, isValidRoleName } from "../src/roles/role-name.cjs";
+import { assertRoleName, isValidRoleName } from "../src/roles/role-name.js";
 import {
 	buildRoleToken,
 	buildRoleTokenPattern,
-} from "../src/roles/role-token.cjs";
+} from "../src/roles/role-token.js";
 
 describe("role names", () => {
 	it.each([

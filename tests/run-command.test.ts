@@ -16,7 +16,7 @@ import {
 	ShopifyE2EPreflightError,
 } from "../src/errors.js";
 import { PACKAGE_ROOT } from "../src/package-root.js";
-import type { PlaywrightExecutionContextArtifact } from "../src/playwright/execution-context.cjs";
+import type { PlaywrightExecutionContextArtifact } from "../src/playwright/execution-context.js";
 import { CommandSignalError } from "../src/process/command-signals.js";
 import type {
 	RoleStateSelection,
@@ -26,7 +26,7 @@ import type {
 
 const EMPTY_STATE = { cookies: [], origins: [] } as const;
 const helperUrl = pathToFileURL(
-	resolve(import.meta.dirname, "../dist/config/public.cjs"),
+	resolve(import.meta.dirname, "../dist/config/public.js"),
 ).href;
 const temporaryDirectories: string[] = [];
 

@@ -4,7 +4,7 @@ import type {
 	PlaywrightWorkerArgs,
 } from "@playwright/test";
 
-import { openStorefront, unlockStorefront } from "./storefront.cjs";
+import { openStorefront, unlockStorefront } from "./storefront.js";
 
 export interface StorefrontFixture {
 	open(): Promise<void>;

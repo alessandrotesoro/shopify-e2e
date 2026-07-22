@@ -67,28 +67,15 @@ describe.sequential("installed Playwright fixture release boundary", () => {
 
 	afterAll(cleanupInstalledCliFixture);
 
-	it("imports the exact runtime API through ESM and CommonJS", () => {
+	it("imports the exact runtime API through ESM", () => {
 		const esm = runNode(consumerRoot, [
 			"--input-type=module",
 			"--eval",
 			`const api = await import("@sematico/shopify-e2e/playwright");
-const keys = Object.keys(api).filter(key => !["__esModule", "default", "module.exports"].includes(key)).sort();
-const defaultKeys = Object.keys(api.default ?? {}).sort();
-console.log(JSON.stringify({ keys, defaultKeys }));`,
+console.log(JSON.stringify(Object.keys(api).sort()));`,
 		]);
 		expectSuccess(esm, "ESM fixture import");
-		expect(JSON.parse(String(esm.stdout).trim())).toEqual({
-			defaultKeys: expectedRuntimeExports,
-			keys: expectedRuntimeExports,
-		});
-
-		const commonJs = runNode(consumerRoot, [
-			"--input-type=commonjs",
-			"--eval",
-			'console.log(JSON.stringify(Object.keys(require("@sematico/shopify-e2e/playwright")).sort()));',
-		]);
-		expectSuccess(commonJs, "CommonJS fixture require");
-		expect(JSON.parse(String(commonJs.stdout).trim())).toEqual(
+		expect(JSON.parse(String(esm.stdout).trim())).toEqual(
 			expectedRuntimeExports,
 		);
 	});
@@ -161,11 +148,11 @@ composed("composed", async ({ consumerValue, storefront }) => {
 
 	it("ships a peer-free runtime closure without private Playwright internals", async () => {
 		const closurePaths = [
-			"dist/playwright/public.cjs",
-			"dist/playwright/fixtures.cjs",
-			"dist/playwright/storefront.cjs",
-			"dist/playwright/type-like-human.cjs",
-			"dist/role-states/configured-origin.cjs",
+			"dist/playwright/public.js",
+			"dist/playwright/fixtures.js",
+			"dist/playwright/storefront.js",
+			"dist/playwright/type-like-human.js",
+			"dist/role-states/configured-origin.js",
 		];
 		const closure = await Promise.all(
 			closurePaths.map(async (path) => ({

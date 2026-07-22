@@ -14,7 +14,7 @@ import {
 	createRoleStateStore,
 	type RoleStateStore,
 } from "../../src/role-states/role-state-store.js";
-import type { PlaywrightStorageState } from "../../src/storage-state/schema.cjs";
+import type { PlaywrightStorageState } from "../../src/storage-state/schema.js";
 
 export const DEFAULT_ROLES = ["admin", "customer"] as const;
 export const EMPTY_STORAGE_STATE: PlaywrightStorageState = {
@@ -29,7 +29,7 @@ export interface AuthCommandFixture {
 
 const configHelperPath = resolve(
 	import.meta.dirname,
-	"../../src/config/public.cts",
+	"../../src/config/public.ts",
 );
 
 export const createAuthFixtureScope = (): {

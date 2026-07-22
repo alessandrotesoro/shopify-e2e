@@ -9,7 +9,7 @@ import {
 	orchestrateAuth,
 } from "../src/auth/auth-orchestrator.js";
 import { ShopifyE2EInfrastructureError } from "../src/errors.js";
-import { configuredOriginKey } from "../src/role-states/configured-origin.cjs";
+import { configuredOriginKey } from "../src/role-states/configured-origin.js";
 import {
 	createRoleStateStore,
 	type RoleStateStore,

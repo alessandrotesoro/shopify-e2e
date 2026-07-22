@@ -1,13 +1,13 @@
 import type { PlaywrightTestConfig } from "@playwright/test";
 
-import { readPlaywrightExecutionContext } from "../playwright/execution-context.cjs";
-import { validateRoleList } from "../roles/role-name.cjs";
+import { readPlaywrightExecutionContext } from "../playwright/execution-context.js";
+import { validateRoleList } from "../roles/role-name.js";
 import {
 	buildRoleTokenPattern,
 	ROLE_TOKEN_PREFIX,
-} from "../roles/role-token.cjs";
-import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "./execution-environment.cjs";
-import type { ShopifyLaunchOptionKey } from "./launch-options.cjs";
+} from "../roles/role-token.js";
+import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "./execution-environment.js";
+import type { ShopifyLaunchOptionKey } from "./launch-options.js";
 
 const CONFIG_BRAND = Symbol.for("@sematico/shopify-e2e/config/defined");
 const CONFIG_ERROR_BRAND = Symbol.for(
