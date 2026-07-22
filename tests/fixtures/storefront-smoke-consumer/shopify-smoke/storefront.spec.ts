@@ -1,39 +1,35 @@
-import { expect, type Page, test } from "@playwright/test";
+import { test as base, expect } from "@playwright/test";
+import {
+	type ShopifyFixtures,
+	shopifyFixtures,
+} from "@sematico/shopify-e2e/playwright";
 
-const configuredStoreOrigin = (): string => {
-	const configuredStoreUrl = process.env.SHOPIFY_STORE_URL;
-	if (!configuredStoreUrl) throw new Error("SHOPIFY_STORE_URL is required");
-	const url = new URL(configuredStoreUrl);
-	if (url.protocol !== "https:") {
-		throw new Error("SHOPIFY_STORE_URL must be an absolute HTTPS URL");
-	}
-	return url.origin;
-};
+const test = base.extend<ShopifyFixtures>(shopifyFixtures);
 
-const passwordChallenge = (page: Page) =>
-	page.locator(
-		'form[action="/password"] input[type="password"], input#Password',
-	);
+const passwordChallenge = 'form:has(input[type="password"])';
 
-test("saved storefront access role bypasses the storefront password challenge", {
+test("saved storefront access remains stable when unlock is already satisfied", {
 	tag: "@shopify-e2e-role-storefront-access",
-}, async ({ page }) => {
-	const response = await page.goto(configuredStoreOrigin(), {
-		waitUntil: "domcontentloaded",
-	});
-	expect(response).not.toBeNull();
-	expect(response?.ok()).toBe(true);
-	await expect(passwordChallenge(page)).toHaveCount(0);
+}, async ({ page, storefront }) => {
+	await storefront.open();
+	await storefront.unlock();
+	const unlockedUrl = page.url();
+	await storefront.unlock();
+
+	expect(page.url()).toBe(unlockedUrl);
+	await expect(page.locator(passwordChallenge)).toHaveCount(0);
 	await expect(page.locator("body")).toBeVisible();
 });
 
-test("guest role reaches the storefront password challenge", {
+test("guest explicitly unlocks the password-protected storefront", {
 	tag: "@shopify-e2e-role-guest",
-}, async ({ page }) => {
-	const response = await page.goto(configuredStoreOrigin(), {
-		waitUntil: "domcontentloaded",
-	});
-	expect(response).not.toBeNull();
-	expect(response?.ok()).toBe(true);
-	await expect(passwordChallenge(page).first()).toBeVisible();
+}, async ({ page, storefront }) => {
+	await storefront.open();
+	await storefront.unlock();
+	const unlockedUrl = page.url();
+	await storefront.unlock();
+
+	expect(page.url()).toBe(unlockedUrl);
+	await expect(page.locator(passwordChallenge)).toHaveCount(0);
+	await expect(page.locator("body")).toBeVisible();
 });
