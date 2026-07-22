@@ -79,12 +79,13 @@ describe.sequential("headed Playwright storefront fixture contract", () => {
 		await page.goto(`${origin}/protected`, { waitUntil: "commit" });
 		await unlockStorefront(page);
 
+		const decodedBody = decodeURIComponent(submittedBody);
 		expect(await page.locator("#unlocked").isVisible()).toBe(true);
-		expect(decodeURIComponent(submittedBody)).toContain(testPassword);
-		expect(decodeURIComponent(submittedBody)).toContain("keydown");
-		expect(decodeURIComponent(submittedBody)).toContain("keypress");
-		expect(decodeURIComponent(submittedBody)).toContain("input");
-		expect(decodeURIComponent(submittedBody)).toContain("keyup");
+		expect(decodedBody).toContain(testPassword);
+		expect(decodedBody).toContain("keydown");
+		expect(decodedBody).toContain("keypress");
+		expect(decodedBody).toContain("input");
+		expect(decodedBody).toContain("keyup");
 	});
 
 	it("rejects real cross-origin and unrelated password forms before typing", async () => {
@@ -104,14 +105,9 @@ describe.sequential("headed Playwright storefront fixture contract", () => {
 	it("rejects a replacement challenge after a real submission", async () => {
 		await page.unrouteAll({ behavior: "wait" });
 		await page.route(`${origin}/**`, async (route) => {
-			const request = route.request();
 			await route.fulfill({
 				body: protectedMarkup(),
 				contentType: "text/html",
-				status:
-					request.method() === "POST" && request.url().endsWith("/password")
-						? 200
-						: 200,
 			});
 		});
 		await page.goto(`${origin}/rejected`);
