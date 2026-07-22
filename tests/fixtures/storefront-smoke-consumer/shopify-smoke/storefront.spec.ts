@@ -8,28 +8,29 @@ const test = base.extend<ShopifyFixtures>(shopifyFixtures);
 
 const passwordChallenge = 'form:has(input[type="password"])';
 
-test("saved storefront access remains stable when unlock is already satisfied", {
-	tag: "@shopify-e2e-role-storefront-access",
-}, async ({ page, storefront }) => {
-	await storefront.open();
-	await storefront.unlock();
-	const unlockedUrl = page.url();
-	await storefront.unlock();
+const roleCases = [
+	{
+		name: "guest explicitly unlocks the password-protected storefront",
+		role: "guest",
+	},
+	{
+		name: "saved storefront access remains stable when unlock is already satisfied",
+		role: "storefront-access",
+	},
+] as const;
 
-	expect(page.url()).toBe(unlockedUrl);
-	await expect(page.locator(passwordChallenge)).toHaveCount(0);
-	await expect(page.locator("body")).toBeVisible();
-});
+for (const { name, role } of roleCases) {
+	test(name, { tag: `@shopify-e2e-role-${role}` }, async ({
+		page,
+		storefront,
+	}) => {
+		await storefront.open();
+		await storefront.unlock();
+		const unlockedUrl = page.url();
+		await storefront.unlock();
 
-test("guest explicitly unlocks the password-protected storefront", {
-	tag: "@shopify-e2e-role-guest",
-}, async ({ page, storefront }) => {
-	await storefront.open();
-	await storefront.unlock();
-	const unlockedUrl = page.url();
-	await storefront.unlock();
-
-	expect(page.url()).toBe(unlockedUrl);
-	await expect(page.locator(passwordChallenge)).toHaveCount(0);
-	await expect(page.locator("body")).toBeVisible();
-});
+		expect(page.url()).toBe(unlockedUrl);
+		await expect(page.locator(passwordChallenge)).toHaveCount(0);
+		await expect(page.locator("body")).toBeVisible();
+	});
+}
