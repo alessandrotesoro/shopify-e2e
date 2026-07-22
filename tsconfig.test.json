@@ -6,7 +6,8 @@
 		"noEmit": true,
 		"baseUrl": ".",
 		"paths": {
-			"@sematico/shopify-e2e/config": ["./src/config/public.cts"]
+			"@sematico/shopify-e2e/config": ["./src/config/public.cts"],
+			"@sematico/shopify-e2e/playwright": ["./src/playwright/public.cts"]
 		},
 		"rootDir": ".",
 		"types": ["node", "vitest/globals"]
