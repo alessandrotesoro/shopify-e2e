@@ -26,10 +26,16 @@ const runNpm = (
 	cwd: string,
 	timeout = 90_000,
 ): CommandResult => {
+	const environment: NodeJS.ProcessEnv = {
+		...process.env,
+		PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+	};
+	delete environment.npm_config_dry_run;
+	delete environment.NPM_CONFIG_DRY_RUN;
 	const result = spawnSync(npmExecutable, args, {
 		cwd,
 		encoding: "utf8",
-		env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" },
+		env: environment,
 		killSignal: "SIGKILL",
 		maxBuffer: 10 * 1024 * 1024,
 		timeout,
@@ -55,7 +61,7 @@ export const packPackageForConsumer = async (
 	packDirectory: string,
 ): Promise<PackedPackage> => {
 	const result = runNpm(
-		["pack", "--json", "--pack-destination", packDirectory],
+		["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory],
 		projectRoot,
 	);
 	assertNpmSuccess("npm pack", result);
