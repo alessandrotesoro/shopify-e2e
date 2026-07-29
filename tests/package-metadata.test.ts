@@ -103,8 +103,9 @@ describe("package metadata", () => {
 			build: "npm run clean && tsc -p tsconfig.json",
 			clean:
 				"node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-			prepack: "npm run build",
+			prepack: "npm run build && npm run readme",
 			prepublishOnly: "npm run verify",
+			readme: "oclif readme",
 		});
 		expect(packageJson.oclif).toMatchObject({
 			bin: "shopify-e2e",

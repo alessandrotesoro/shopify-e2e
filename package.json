@@ -44,8 +44,9 @@
 		"build": "npm run clean && tsc -p tsconfig.json",
 		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
 		"lint": "biome check bin src tests package.json tsconfig.json tsconfig.test.json vitest.config.ts biome.json",
-		"prepack": "npm run build",
+		"prepack": "npm run build && npm run readme",
 		"prepublishOnly": "npm run verify",
+		"readme": "oclif readme",
 		"test": "npm run build && npm run test:fast",
 		"test:fast": "vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/installed-playwright-fixtures.test.ts --exclude tests/browser-role-isolation.test.ts --exclude tests/browser-playwright-fixtures.test.ts",
 		"test:browser:fixtures": "npm run build && vitest run tests/browser-playwright-fixtures.test.ts",
@@ -67,6 +68,7 @@
 		"@playwright/test": "1.61.1",
 		"@types/node": "^24.10.13",
 		"@types/semver": "^7.7.1",
+		"oclif": "4.23.29",
 		"typescript": "^5.9.3",
 		"vite": "6.4.3",
 		"vitest": "3.2.7"
