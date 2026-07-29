@@ -54,11 +54,17 @@ export const assertPlaywrightExecutionEnvironmentIsSafe = (
 	}
 };
 
-export const buildPlaywrightChildEnvironment = (
-	parentEnvironment: NodeJS.ProcessEnv,
-	contextPath: string,
-	wsEndpoint?: string,
-): NodeJS.ProcessEnv => {
+export interface BuildPlaywrightChildEnvironmentArgs {
+	parentEnvironment: NodeJS.ProcessEnv;
+	contextPath: string;
+	wsEndpoint?: string;
+}
+
+export const buildPlaywrightChildEnvironment = ({
+	parentEnvironment,
+	contextPath,
+	wsEndpoint,
+}: BuildPlaywrightChildEnvironmentArgs): NodeJS.ProcessEnv => {
 	if (!isAbsolute(contextPath)) {
 		throw new TypeError(
 			"Shopify E2E execution context pointer must be an absolute path",

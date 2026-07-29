@@ -60,10 +60,15 @@ export const prepareDoctorReadyConsumer = async (
 	return { consumer, importSentinels, launchSentinel };
 };
 
-export const waitForPath = async (
-	path: string,
-	timeoutMs: number,
-): Promise<void> => {
+export interface WaitForPathArgs {
+	path: string;
+	timeoutMs: number;
+}
+
+export const waitForPath = async ({
+	path,
+	timeoutMs,
+}: WaitForPathArgs): Promise<void> => {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (existsSync(path)) return;
@@ -72,10 +77,15 @@ export const waitForPath = async (
 	throw new Error(`Timed out waiting for ${path}`);
 };
 
-export const waitForChildOutcome = (
-	child: ChildProcess,
-	timeoutMs: number,
-): Promise<ChildOutcome> => {
+export interface WaitForChildOutcomeArgs {
+	child: ChildProcess;
+	timeoutMs: number;
+}
+
+export const waitForChildOutcome = ({
+	child,
+	timeoutMs,
+}: WaitForChildOutcomeArgs): Promise<ChildOutcome> => {
 	if (child.exitCode !== null || child.signalCode !== null) {
 		return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
 	}

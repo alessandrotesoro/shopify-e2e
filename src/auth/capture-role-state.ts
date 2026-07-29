@@ -22,26 +22,38 @@ export interface CapturePage extends CaptureEventSource {
 	goto(url: string): Promise<unknown>;
 }
 
+export interface CaptureStorageStateOptions {
+	readonly indexedDB: true;
+}
+
 export interface CaptureContext extends CaptureEventSource {
 	close(): Promise<unknown>;
 	newPage(): Promise<CapturePage>;
-	storageState(options: { readonly indexedDB: true }): Promise<unknown>;
+	storageState(options: CaptureStorageStateOptions): Promise<unknown>;
+}
+
+export interface CaptureBrowserContextOptions {
+	readonly storageState: PlaywrightStorageState;
 }
 
 export interface CaptureBrowser extends CaptureEventSource {
 	close(): Promise<unknown>;
-	newContext(options: {
-		readonly storageState: PlaywrightStorageState;
-	}): Promise<CaptureContext>;
+	newContext(options: CaptureBrowserContextOptions): Promise<CaptureContext>;
+}
+
+export interface ConfirmCaptureOptions {
+	readonly signal: AbortSignal;
+}
+
+export interface LaunchCaptureBrowserOptions {
+	readonly headless: false;
 }
 
 export interface CaptureRoleStateDependencies {
-	readonly confirmSave: (options: {
-		readonly signal: AbortSignal;
-	}) => Promise<boolean>;
-	readonly launchChromium: (options: {
-		readonly headless: false;
-	}) => Promise<CaptureBrowser>;
+	readonly confirmSave: (options: ConfirmCaptureOptions) => Promise<boolean>;
+	readonly launchChromium: (
+		options: LaunchCaptureBrowserOptions,
+	) => Promise<CaptureBrowser>;
 	readonly report: (message: string) => void;
 }
 
@@ -201,10 +213,15 @@ export const captureBrowserRoleState = async ({
 			.catch(() => undefined);
 	};
 
-	const addClosureListener = (
-		source: CaptureEventSource,
-		event: string,
-	): void => {
+	interface AddClosureListenerArgs {
+		source: CaptureEventSource;
+		event: string;
+	}
+
+	const addClosureListener = ({
+		source,
+		event,
+	}: AddClosureListenerArgs): void => {
 		const listener = () => lifecycleAbort.abort("browser-closed");
 		source.on(event, listener);
 		listeners.push({ event, listener, source });
@@ -231,19 +248,19 @@ export const captureBrowserRoleState = async ({
 			);
 		}
 		throwIfCaptureAborted(signal);
-		addClosureListener(browser, "disconnected");
+		addClosureListener({ source: browser, event: "disconnected" });
 		const contextOperation = browser.newContext({
 			storageState: validatedInitialState,
 		});
 		closeResourceIfItResolvesLate(contextOperation);
 		context = await awaitCaptureOperation(contextOperation);
 		throwIfCaptureAborted(signal);
-		addClosureListener(context, "close");
+		addClosureListener({ source: context, event: "close" });
 		const pageOperation = context.newPage();
 		closeResourceIfItResolvesLate(pageOperation);
 		page = await awaitCaptureOperation(pageOperation);
 		throwIfCaptureAborted(signal);
-		addClosureListener(page, "close");
+		addClosureListener({ source: page, event: "close" });
 		await awaitCaptureOperation(page.goto(origin));
 		throwIfCaptureAborted(signal);
 

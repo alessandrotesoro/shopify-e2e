@@ -51,7 +51,7 @@ export const packVerifiedPackage = async (
 	projectRoot: string,
 ): Promise<string> => {
 	const packDirectory = await makeTemporaryDirectory("shopify-e2e-pack-");
-	const artifact = await packPackageForConsumer(projectRoot, packDirectory);
+	const artifact = await packPackageForConsumer({ projectRoot, packDirectory });
 	expect(basename(artifact.tarballPath)).toMatch(
 		/^sematico-shopify-e2e-.*\.tgz$/,
 	);
@@ -102,11 +102,17 @@ const markerDirectory = process.env.SHOPIFY_E2E_MARKER_DIR;
 if (markerDirectory) writeFileSync(join(markerDirectory, ${JSON.stringify(doctorDedicatedSpecMarker)}), "loaded");
 `;
 
-const prepareDoctorConsumer = async (
-	fixtureRoot: string,
-	tarballPath: string,
-	chromiumInstalled: boolean,
-): Promise<DoctorConsumerFixture> => {
+interface PrepareDoctorConsumerArgs {
+	fixtureRoot: string;
+	tarballPath: string;
+	chromiumInstalled: boolean;
+}
+
+const prepareDoctorConsumer = async ({
+	fixtureRoot,
+	tarballPath,
+	chromiumInstalled,
+}: PrepareDoctorConsumerArgs): Promise<DoctorConsumerFixture> => {
 	const consumerRoot = await makeTemporaryDirectory(
 		chromiumInstalled
 			? "shopify-e2e-doctor-ready-"
@@ -172,10 +178,15 @@ export const chromium = {
 	return { consumerRoot, launchMarker };
 };
 
-const prepareMissingPeerConsumer = async (
-	fixtureRoot: string,
-	tarballPath: string,
-): Promise<string> => {
+interface PrepareMissingPeerConsumerArgs {
+	fixtureRoot: string;
+	tarballPath: string;
+}
+
+const prepareMissingPeerConsumer = async ({
+	fixtureRoot,
+	tarballPath,
+}: PrepareMissingPeerConsumerArgs): Promise<string> => {
 	const consumerRoot = await makeTemporaryDirectory(
 		"shopify-e2e-doctor-missing-peer-",
 	);
@@ -197,9 +208,17 @@ export const prepareInstalledDoctorCliFixture = async ({
 }): Promise<InstalledDoctorCliFixture> => {
 	const tarballPath = await packVerifiedPackage(projectRoot);
 	const [ready, missingChromium, missingPeerConsumerRoot] = await Promise.all([
-		prepareDoctorConsumer(fixtureRoot, tarballPath, true),
-		prepareDoctorConsumer(fixtureRoot, tarballPath, false),
-		prepareMissingPeerConsumer(fixtureRoot, tarballPath),
+		prepareDoctorConsumer({
+			fixtureRoot,
+			tarballPath,
+			chromiumInstalled: true,
+		}),
+		prepareDoctorConsumer({
+			fixtureRoot,
+			tarballPath,
+			chromiumInstalled: false,
+		}),
+		prepareMissingPeerConsumer({ fixtureRoot, tarballPath }),
 	]);
 	return { missingChromium, missingPeerConsumerRoot, ready };
 };

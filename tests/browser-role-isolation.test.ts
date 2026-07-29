@@ -201,7 +201,7 @@ describe.sequential("consumer browser role isolation", () => {
 			join(consumerRoot, "package.json"),
 			'{"name":"role-isolation-consumer","private":true,"type":"module"}\n',
 		);
-		const packed = await packPackageForConsumer(projectRoot, packDirectory);
+		const packed = await packPackageForConsumer({ projectRoot, packDirectory });
 		await installPackedPackage({
 			consumerRoot,
 			hasPlaywright: true,
@@ -358,8 +358,8 @@ for (const role of ["admin", "customer"]) {
 				testDir,
 			});
 			try {
-				const environment = executionModules.buildPlaywrightChildEnvironment(
-					{
+				const environment = executionModules.buildPlaywrightChildEnvironment({
+					parentEnvironment: {
 						...process.env,
 						BROWSER_PID_MARKER: browserPidMarker,
 						EXPECTED_ROLE_IDENTITY: expected,
@@ -367,9 +367,9 @@ for (const role of ["admin", "customer"]) {
 						ROLE_TEST_ORIGIN: server.origin,
 						SHOPIFY_STORE_URL: "https://shop.example",
 					},
-					context.contextPath,
-					endpoint,
-				);
+					contextPath: context.contextPath,
+					wsEndpoint: endpoint,
+				});
 				const invocation = executionModules.buildPlaywrightInvocation({
 					configPath,
 					environment,

@@ -42,10 +42,15 @@ export const throwIfCommandAborted = (signal: AbortSignal): void => {
 	}
 };
 
-export const runWithAbortSignal = async <Value>(
-	operation: () => Promise<Value>,
-	signal: AbortSignal,
-): Promise<Value> => {
+export interface RunWithAbortSignalArgs<Value> {
+	operation: () => Promise<Value>;
+	signal: AbortSignal;
+}
+
+export const runWithAbortSignal = async <Value>({
+	operation,
+	signal,
+}: RunWithAbortSignalArgs<Value>): Promise<Value> => {
 	throwIfAborted(signal);
 	const pending = operation();
 	return new Promise<Value>((resolve, reject) => {
@@ -69,10 +74,15 @@ export const runWithAbortSignal = async <Value>(
 	});
 };
 
-const awaitWithCommandSignal = async <Value>(
-	operation: Promise<Value>,
-	signal: AbortSignal,
-): Promise<Value> => {
+interface AwaitWithCommandSignalArgs<Value> {
+	operation: Promise<Value>;
+	signal: AbortSignal;
+}
+
+const awaitWithCommandSignal = async <Value>({
+	operation,
+	signal,
+}: AwaitWithCommandSignalArgs<Value>): Promise<Value> => {
 	if (signal.aborted) {
 		// The operation may have started just before the abort. Consume its eventual
 		// rejection even though the signal outcome wins this call.
@@ -102,12 +112,17 @@ const awaitWithCommandSignal = async <Value>(
 	});
 };
 
-export const runWithCommandSignal = <Value>(
-	operation: () => Promise<Value>,
-	signal: AbortSignal,
-): Promise<Value> => {
+export interface RunWithCommandSignalArgs<Value> {
+	operation: () => Promise<Value>;
+	signal: AbortSignal;
+}
+
+export const runWithCommandSignal = <Value>({
+	operation,
+	signal,
+}: RunWithCommandSignalArgs<Value>): Promise<Value> => {
 	throwIfCommandAborted(signal);
-	return awaitWithCommandSignal(operation(), signal);
+	return awaitWithCommandSignal({ operation: operation(), signal });
 };
 
 export const createCommandSignalScope = (): CommandSignalScope => {

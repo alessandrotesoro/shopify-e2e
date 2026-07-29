@@ -18,6 +18,7 @@ import {
 } from "../errors.js";
 import { PACKAGE_ROOT } from "../package-root.js";
 import {
+	type LaunchConsumerBrowserServerArgs,
 	launchConsumerBrowserServer,
 	type ManagedBrowserServer,
 } from "../playwright/browser-server.js";
@@ -50,7 +51,10 @@ import {
 	throwIfCommandAborted,
 } from "../process/command-signals.js";
 import { runChild } from "../process/run-child.js";
-import { inquirerPrompts } from "../prompts/inquirer.js";
+import {
+	type CheckboxPromptOptions,
+	inquirerPrompts,
+} from "../prompts/inquirer.js";
 import { normalizeConfiguredOrigin } from "../role-states/configured-origin.js";
 import { resolveRoleStateDataRoot } from "../role-states/data-root.js";
 import {
@@ -94,23 +98,14 @@ export interface RunCommandDependencies {
 	readonly createExecutionContext: (
 		options: Parameters<typeof createPlaywrightExecutionContext>[0],
 	) => Promise<PlaywrightExecutionContextArtifact>;
-	readonly createStore: (options: {
-		readonly dataRoot: string;
-		readonly origin: string;
-		readonly roles: readonly string[];
-	}) => RoleStateStore;
+	readonly createStore: typeof createRoleStateStore;
 	readonly loadEnvironment: (
 		options: LoadEnvironmentOptions,
 	) => Promise<string>;
-	readonly loadConfig: (options: {
-		readonly environment: NodeJS.ProcessEnv;
-		readonly projectRoot: string;
-	}) => Promise<LoadedShopifyConfig>;
-	readonly launchBrowser: (options: {
-		readonly chromium: ConsumerChromiumLauncher;
-		readonly launchOptions: LoadedShopifyConfig["browserLaunchOptions"];
-		readonly signal: AbortSignal;
-	}) => Promise<ManagedBrowserServer>;
+	readonly loadConfig: typeof loadShopifyConfig;
+	readonly launchBrowser: (
+		options: LaunchConsumerBrowserServerArgs,
+	) => Promise<ManagedBrowserServer>;
 	readonly loadChromium: (
 		peer: ResolvedPlaywrightPeer,
 	) => Promise<ConsumerChromiumLauncher>;
@@ -118,19 +113,10 @@ export interface RunCommandDependencies {
 	readonly reportSummary: (outcomes: readonly RoleRunOutcome[]) => void;
 	readonly resolveDataRoot: typeof resolveRoleStateDataRoot;
 	readonly resolvePeer: (cwd: string) => Promise<ResolvedPlaywrightPeer>;
-	readonly runChild: (
-		invocation: PlaywrightInvocation,
-		signal: AbortSignal,
-	) => Promise<number>;
-	readonly selectRoles: (options: {
-		readonly choices: readonly {
-			readonly name: string;
-			readonly value: string;
-		}[];
-		readonly input?: NodeJS.ReadableStream;
-		readonly output?: NodeJS.WritableStream;
-		readonly signal: AbortSignal;
-	}) => Promise<readonly string[]>;
+	readonly runChild: typeof runChild;
+	readonly selectRoles: (
+		options: Omit<CheckboxPromptOptions<string>, "message" | "required">,
+	) => Promise<readonly string[]>;
 }
 
 const defaultDependencies: RunCommandDependencies = {
@@ -156,7 +142,7 @@ const defaultDependencies: RunCommandDependencies = {
 	},
 	resolveDataRoot: resolveRoleStateDataRoot,
 	resolvePeer: resolvePlaywrightPeer,
-	runChild: (invocation, signal) => runChild({ invocation, signal }),
+	runChild,
 	selectRoles: ({ choices, input, output, signal }) =>
 		inquirerPrompts.checkbox({
 			choices,
@@ -177,41 +163,63 @@ const parseNonEmptyFilter = async (input: string): Promise<string> => {
 	return input;
 };
 
-const throwForUnavailableState = async (
-	store: RoleStateStore,
-	role: string,
-	signal: AbortSignal,
-	status: RoleStateStatus | undefined,
-): Promise<never> => {
+interface ThrowForUnavailableStateArgs {
+	store: RoleStateStore;
+	role: string;
+	signal: AbortSignal;
+	status: RoleStateStatus | undefined;
+}
+
+const throwForUnavailableState = async ({
+	store,
+	role,
+	signal,
+	status,
+}: ThrowForUnavailableStateArgs): Promise<never> => {
 	if (status === "missing") throw missingState(role);
 	if (status === "invalid") {
-		const removableRoles = await runWithCommandSignal(
-			() => store.removableRoles(),
+		const removableRoles = await runWithCommandSignal({
+			operation: () => store.removableRoles(),
 			signal,
-		);
-		throw invalidStateForRole(role, removableRoles);
+		});
+		throw invalidStateForRole({ role, removableRoles });
 	}
 	throw unknownRole(role);
 };
 
-const resolveReadyRole = async (
-	store: RoleStateStore,
-	role: string,
-	signal: AbortSignal,
-	status: RoleStateStatus | undefined,
-): Promise<RoleStateSelection> => {
+interface ResolveReadyRoleArgs {
+	store: RoleStateStore;
+	role: string;
+	signal: AbortSignal;
+	status: RoleStateStatus | undefined;
+}
+
+const resolveReadyRole = async ({
+	store,
+	role,
+	signal,
+	status,
+}: ResolveReadyRoleArgs): Promise<RoleStateSelection> => {
 	if (status !== "ready") {
-		await throwForUnavailableState(store, role, signal, status);
+		await throwForUnavailableState({ store, role, signal, status });
 	}
 	try {
-		return await runWithCommandSignal(() => store.resolve(role), signal);
+		return await runWithCommandSignal({
+			operation: () => store.resolve(role),
+			signal,
+		});
 	} catch (error) {
 		if (error instanceof CommandSignalError) throw error;
 		const latest = (
-			await runWithCommandSignal(() => store.list(), signal)
+			await runWithCommandSignal({ operation: () => store.list(), signal })
 		).find((candidate) => candidate.role === role);
 		if (latest?.status !== "ready") {
-			await throwForUnavailableState(store, role, signal, latest?.status);
+			await throwForUnavailableState({
+				store,
+				role,
+				signal,
+				status: latest?.status,
+			});
 		}
 		throw error;
 	}
@@ -225,19 +233,32 @@ interface ResolveRunSelectionArgs {
 	readonly signal: AbortSignal;
 }
 
-const resolveRolesInConfigOrder = async (
-	store: RoleStateStore,
-	configuredRoles: readonly string[],
-	selectedRoles: readonly string[],
-	signal: AbortSignal,
-	statuses: ReadonlyMap<string, RoleStateStatus>,
-): Promise<readonly RoleStateSelection[]> => {
+interface ResolveRolesInConfigOrderArgs {
+	store: RoleStateStore;
+	configuredRoles: readonly string[];
+	selectedRoles: readonly string[];
+	signal: AbortSignal;
+	statuses: ReadonlyMap<string, RoleStateStatus>;
+}
+
+const resolveRolesInConfigOrder = async ({
+	store,
+	configuredRoles,
+	selectedRoles,
+	signal,
+	statuses,
+}: ResolveRolesInConfigOrderArgs): Promise<readonly RoleStateSelection[]> => {
 	const requestedRoles = new Set(selectedRoles);
 	const selections: RoleStateSelection[] = [];
 	for (const role of configuredRoles) {
 		if (requestedRoles.has(role)) {
 			selections.push(
-				await resolveReadyRole(store, role, signal, statuses.get(role)),
+				await resolveReadyRole({
+					store,
+					role,
+					signal,
+					status: statuses.get(role),
+				}),
 			);
 		}
 	}
@@ -264,7 +285,7 @@ const resolveRunSelection = async ({
 		options.role === undefined || options.role.length === 0
 			? undefined
 			: options.role.map((role) =>
-					assertConfiguredRole(loadedConfig.roles, role),
+					assertConfiguredRole({ roles: loadedConfig.roles, role }),
 				);
 	const dataDir = options.dataDir;
 	if (!dataDir) {
@@ -272,32 +293,35 @@ const resolveRunSelection = async ({
 			"Role-state data directory is unavailable",
 		);
 	}
-	const dataRoot = await runWithCommandSignal(
-		() =>
+	const dataRoot = await runWithCommandSignal({
+		operation: () =>
 			dependencies.resolveDataRoot({
 				dataDir,
 				packageRoot: options.packageRoot ?? PACKAGE_ROOT,
 				projectRoot: loadedConfig.projectRoot,
 			}),
 		signal,
-	);
+	});
 	const store = dependencies.createStore({
 		dataRoot,
 		origin,
 		roles: loadedConfig.roles,
 	});
-	const summaries = await runWithCommandSignal(() => store.list(), signal);
+	const summaries = await runWithCommandSignal({
+		operation: () => store.list(),
+		signal,
+	});
 	const statuses = new Map(
 		summaries.map(({ role, status }) => [role, status] as const),
 	);
 	if (explicitRoles !== undefined) {
-		return resolveRolesInConfigOrder(
+		return resolveRolesInConfigOrder({
 			store,
-			loadedConfig.roles,
-			explicitRoles,
+			configuredRoles: loadedConfig.roles,
+			selectedRoles: explicitRoles,
 			signal,
 			statuses,
-		);
+		});
 	}
 
 	const readyRoles = loadedConfig.roles.filter(
@@ -308,8 +332,8 @@ const resolveRunSelection = async ({
 			"No configured role has ready state. Run `shopify-e2e auth capture --role <role>` for a missing role.",
 		);
 	}
-	const selectedRoles = await runWithCommandSignal(
-		() =>
+	const selectedRoles = await runWithCommandSignal({
+		operation: () =>
 			dependencies.selectRoles({
 				choices: loadedConfig.roles
 					.filter((role) => readyRoles.includes(role))
@@ -319,31 +343,37 @@ const resolveRunSelection = async ({
 				signal,
 			}),
 		signal,
-	);
+	});
 	if (selectedRoles.length === 0) {
 		throw new ShopifyE2EPreflightError("Select at least one role");
 	}
 	if (selectedRoles.some((role) => !readyRoles.includes(role))) {
 		throw new ShopifyE2EPreflightError("Selected role is unavailable");
 	}
-	return resolveRolesInConfigOrder(
+	return resolveRolesInConfigOrder({
 		store,
-		loadedConfig.roles,
+		configuredRoles: loadedConfig.roles,
 		selectedRoles,
 		signal,
 		statuses,
-	);
+	});
 };
 
-const createExecutionContextWithSignal = async (
-	dependencies: RunCommandDependencies,
-	options: Parameters<typeof createPlaywrightExecutionContext>[0],
-	signal: AbortSignal,
-): Promise<PlaywrightExecutionContextArtifact> => {
+interface CreateExecutionContextWithSignalArgs {
+	dependencies: RunCommandDependencies;
+	options: Parameters<typeof createPlaywrightExecutionContext>[0];
+	signal: AbortSignal;
+}
+
+const createExecutionContextWithSignal = async ({
+	dependencies,
+	options,
+	signal,
+}: CreateExecutionContextWithSignalArgs): Promise<PlaywrightExecutionContextArtifact> => {
 	throwIfAborted(signal);
 	const creation = dependencies.createExecutionContext(options);
 	try {
-		return await runWithAbortSignal(() => creation, signal);
+		return await runWithAbortSignal({ operation: () => creation, signal });
 	} catch (error) {
 		if (signal.aborted) {
 			let artifact: PlaywrightExecutionContextArtifact;
@@ -356,7 +386,10 @@ const createExecutionContextWithSignal = async (
 				await artifact.cleanup();
 			} catch {
 				if (error instanceof CommandSignalError) {
-					await retryExecutionContextCleanupAfterInterruption(artifact, error);
+					await retryExecutionContextCleanupAfterInterruption({
+						artifact,
+						interruption: error,
+					});
 				}
 				throw new ShopifyE2EInfrastructureError(
 					"Temporary Playwright cleanup could not complete",
@@ -367,10 +400,15 @@ const createExecutionContextWithSignal = async (
 	}
 };
 
-const retryExecutionContextCleanupAfterInterruption = async (
-	artifact: PlaywrightExecutionContextArtifact,
-	interruption: CommandSignalError,
-): Promise<never> => {
+interface RetryExecutionContextCleanupAfterInterruptionArgs {
+	artifact: PlaywrightExecutionContextArtifact;
+	interruption: CommandSignalError;
+}
+
+const retryExecutionContextCleanupAfterInterruption = async ({
+	artifact,
+	interruption,
+}: RetryExecutionContextCleanupAfterInterruptionArgs): Promise<never> => {
 	try {
 		await artifact.cleanup();
 	} catch {
@@ -382,10 +420,15 @@ const retryExecutionContextCleanupAfterInterruption = async (
 	throw interruption;
 };
 
-const assertConfiguredOriginUnchanged = (
-	environment: NodeJS.ProcessEnv,
-	expectedOrigin: string,
-): void => {
+interface AssertConfiguredOriginUnchangedArgs {
+	environment: NodeJS.ProcessEnv;
+	expectedOrigin: string;
+}
+
+const assertConfiguredOriginUnchanged = ({
+	environment,
+	expectedOrigin,
+}: AssertConfiguredOriginUnchangedArgs): void => {
 	const configuredUrl = environment.SHOPIFY_STORE_URL;
 	if (!configuredUrl) {
 		throw new ShopifyE2EPreflightError(
@@ -451,9 +494,9 @@ const runSelectedRole = async ({
 	signal,
 	wsEndpoint,
 }: RunSelectedRoleArgs): Promise<number> => {
-	const executionContext = await createExecutionContextWithSignal(
+	const executionContext = await createExecutionContextWithSignal({
 		dependencies,
-		{
+		options: {
 			configPath: loadedConfig.configPath,
 			normalizedOrigin: origin,
 			packageRoot: options.packageRoot ?? PACKAGE_ROOT,
@@ -463,7 +506,7 @@ const runSelectedRole = async ({
 			testDir: loadedConfig.testDir,
 		},
 		signal,
-	);
+	});
 
 	let roleError: unknown;
 	let exitCode: number | undefined;
@@ -477,15 +520,15 @@ const runSelectedRole = async ({
 					? {}
 					: { grepInvert: options.grepInvert }),
 			},
-			environment: buildPlaywrightChildEnvironment(
-				environment,
-				executionContext.contextPath,
+			environment: buildPlaywrightChildEnvironment({
+				parentEnvironment: environment,
+				contextPath: executionContext.contextPath,
 				wsEndpoint,
-			),
+			}),
 			peer,
 		});
 		throwIfAborted(signal);
-		exitCode = await dependencies.runChild(invocation, signal);
+		exitCode = await dependencies.runChild({ invocation, signal });
 	} catch (error) {
 		roleError = error;
 	}
@@ -504,10 +547,10 @@ const runSelectedRole = async ({
 			commandSignalFromReason(signal.reason),
 		);
 		if (cleanupError !== undefined) {
-			await retryExecutionContextCleanupAfterInterruption(
-				executionContext,
+			await retryExecutionContextCleanupAfterInterruption({
+				artifact: executionContext,
 				interruption,
-			);
+			});
 		}
 		throw interruption;
 	}
@@ -528,17 +571,18 @@ export const orchestrateShopifyRun = async ({
 }: OrchestrateShopifyRunArgs): Promise<number> => {
 	const environment = options.environment ?? process.env;
 	const signal = options.signal ?? new AbortController().signal;
-	const projectRoot = await runWithCommandSignal(
-		() => dependencies.loadEnvironment({ cwd: options.cwd, environment }),
+	const projectRoot = await runWithCommandSignal({
+		operation: () =>
+			dependencies.loadEnvironment({ cwd: options.cwd, environment }),
 		signal,
-	);
+	});
 	throwIfCommandAborted(signal);
 	const origin = configuredOriginForCommand(environment);
-	const loadedConfig = await runWithCommandSignal(
-		() => dependencies.loadConfig({ environment, projectRoot }),
+	const loadedConfig = await runWithCommandSignal({
+		operation: () => dependencies.loadConfig({ environment, projectRoot }),
 		signal,
-	);
-	assertConfiguredOriginUnchanged(environment, origin);
+	});
+	assertConfiguredOriginUnchanged({ environment, expectedOrigin: origin });
 	assertExecutionEnvironmentSafe(environment);
 	throwIfCommandAborted(signal);
 	const selections = await resolveRunSelection({
@@ -552,16 +596,16 @@ export const orchestrateShopifyRun = async ({
 	if (selection === undefined) {
 		throw new ShopifyE2EPreflightError("Select at least one role");
 	}
-	const peer = await runWithCommandSignal(
-		() => dependencies.resolvePeer(loadedConfig.projectRoot),
+	const peer = await runWithCommandSignal({
+		operation: () => dependencies.resolvePeer(loadedConfig.projectRoot),
 		signal,
-	);
+	});
 	throwIfCommandAborted(signal);
 	assertExecutionEnvironmentSafe(environment);
-	const chromium = await runWithCommandSignal(
-		() => dependencies.loadChromium(peer),
+	const chromium = await runWithCommandSignal({
+		operation: () => dependencies.loadChromium(peer),
 		signal,
-	);
+	});
 	throwIfCommandAborted(signal);
 	const browser = await dependencies.launchBrowser({
 		chromium,

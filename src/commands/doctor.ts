@@ -20,7 +20,15 @@ const CHECK_LABELS = {
 	"store-url": "Store URL",
 } as const satisfies Readonly<Record<DoctorCheckId, string>>;
 
-const renderDoctorReport = (command: Command, report: DoctorReport): void => {
+interface RenderDoctorReportArgs {
+	command: Command;
+	report: DoctorReport;
+}
+
+const renderDoctorReport = ({
+	command,
+	report,
+}: RenderDoctorReportArgs): void => {
 	for (const check of report.checks) {
 		command.log(`${check.status} ${CHECK_LABELS[check.id]}: ${check.detail}`);
 	}
@@ -57,7 +65,7 @@ export class Doctor extends Command {
 			signals.dispose();
 		}
 
-		renderDoctorReport(this, report);
+		renderDoctorReport({ command: this, report });
 		if (report.exitCode !== 0) this.exit(report.exitCode);
 	}
 }

@@ -101,18 +101,35 @@ class PlaywrightExecutionContextError extends TypeError {
 const invalidContext = (detail: string): PlaywrightExecutionContextError =>
 	new PlaywrightExecutionContextError(detail);
 
-const identityFromStats = (metadata: {
+interface IdentityFromStatsArgs {
 	readonly dev: number;
 	readonly ino: number;
-}): FileIdentity => ({ device: metadata.dev, inode: metadata.ino });
+}
 
-const identitiesMatch = (left: FileIdentity, right: FileIdentity): boolean =>
+const identityFromStats = (metadata: IdentityFromStatsArgs): FileIdentity => ({
+	device: metadata.dev,
+	inode: metadata.ino,
+});
+
+interface IdentitiesMatchArgs {
+	left: FileIdentity;
+	right: FileIdentity;
+}
+
+const identitiesMatch = ({ left, right }: IdentitiesMatchArgs): boolean =>
 	left.device === right.device && left.inode === right.inode;
 
-const assertOwnerOnly = (
-	metadata: { readonly mode: number; readonly uid: number },
-	label: string,
-): void => {
+interface AssertOwnerOnlyArgs {
+	metadata: OwnerOnlyMetadata;
+	label: string;
+}
+
+interface OwnerOnlyMetadata {
+	readonly mode: number;
+	readonly uid: number;
+}
+
+const assertOwnerOnly = ({ metadata, label }: AssertOwnerOnlyArgs): void => {
 	if ((metadata.mode & 0o077) !== 0) {
 		throw invalidContext(`${label} permissions must be owner-only`);
 	}
@@ -124,11 +141,20 @@ const assertOwnerOnly = (
 	}
 };
 
-const assertPhysicalPath = async (
-	selectedPath: string,
-	kind: "directory" | "file",
-	label: string,
-): Promise<{ readonly identity: FileIdentity; readonly path: string }> => {
+interface AssertPhysicalPathArgs {
+	selectedPath: string;
+	kind: "directory" | "file";
+	label: string;
+}
+
+const assertPhysicalPath = async ({
+	selectedPath,
+	kind,
+	label,
+}: AssertPhysicalPathArgs): Promise<{
+	readonly identity: FileIdentity;
+	readonly path: string;
+}> => {
 	if (!isAbsolute(selectedPath)) {
 		throw invalidContext(`${label} must be absolute`);
 	}
@@ -178,9 +204,21 @@ export const createPlaywrightExecutionContext = async ({
 	const selectedState = JSON.parse(serializeStorageState(state)) as unknown;
 	const [project, config, tests, physicalPackageRoot, physicalTemporaryRoot] =
 		await Promise.all([
-			assertPhysicalPath(projectRoot, "directory", "project root"),
-			assertPhysicalPath(configPath, "file", "config path"),
-			assertPhysicalPath(testDir, "directory", "test directory"),
+			assertPhysicalPath({
+				selectedPath: projectRoot,
+				kind: "directory",
+				label: "project root",
+			}),
+			assertPhysicalPath({
+				selectedPath: configPath,
+				kind: "file",
+				label: "config path",
+			}),
+			assertPhysicalPath({
+				selectedPath: testDir,
+				kind: "directory",
+				label: "test directory",
+			}),
 			realpath(packageRoot),
 			realpath(tmpdir()),
 		]);
@@ -241,10 +279,15 @@ export const createPlaywrightExecutionContext = async ({
 	});
 };
 
-const readBoundedDescriptor = (
-	descriptor: number,
-	expectedSize: number,
-): string => {
+interface ReadBoundedDescriptorArgs {
+	descriptor: number;
+	expectedSize: number;
+}
+
+const readBoundedDescriptor = ({
+	descriptor,
+	expectedSize,
+}: ReadBoundedDescriptorArgs): string => {
 	if (expectedSize <= 0 || expectedSize > MAX_EXECUTION_CONTEXT_BYTES) {
 		throw invalidContext("file size exceeds the bounded 64 MiB state limit");
 	}
@@ -275,7 +318,7 @@ const readContextFile = (contextPath: string): unknown => {
 	if (!inspected.isFile()) {
 		throw invalidContext("path must be a regular file");
 	}
-	assertOwnerOnly(inspected, "file");
+	assertOwnerOnly({ metadata: inspected, label: "file" });
 	if (inspected.size > MAX_EXECUTION_CONTEXT_BYTES) {
 		throw invalidContext("file size exceeds the bounded 64 MiB state limit");
 	}
@@ -285,13 +328,19 @@ const readContextFile = (contextPath: string): unknown => {
 	try {
 		const opened = fstatSync(descriptor);
 		if (!opened.isFile()) throw invalidContext("path must be a regular file");
-		assertOwnerOnly(opened, "file");
+		assertOwnerOnly({ metadata: opened, label: "file" });
 		if (
-			!identitiesMatch(identityFromStats(inspected), identityFromStats(opened))
+			!identitiesMatch({
+				left: identityFromStats(inspected),
+				right: identityFromStats(opened),
+			})
 		) {
 			throw invalidContext("file identity changed before opening");
 		}
-		const source = readBoundedDescriptor(descriptor, opened.size);
+		const source = readBoundedDescriptor({
+			descriptor,
+			expectedSize: opened.size,
+		});
 		try {
 			return JSON.parse(source) as unknown;
 		} catch {
@@ -305,7 +354,12 @@ const readContextFile = (contextPath: string): unknown => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
-const readString = (record: Record<string, unknown>, key: string): string => {
+interface ReadStringArgs {
+	record: Record<string, unknown>;
+	key: string;
+}
+
+const readString = ({ record, key }: ReadStringArgs): string => {
 	const value = record[key];
 	if (typeof value !== "string" || value.length === 0) {
 		throw invalidContext(`${key} is malformed`);
@@ -313,10 +367,12 @@ const readString = (record: Record<string, unknown>, key: string): string => {
 	return value;
 };
 
-const readIdentity = (
-	record: Record<string, unknown>,
-	key: string,
-): FileIdentity => {
+interface ReadIdentityArgs {
+	record: Record<string, unknown>;
+	key: string;
+}
+
+const readIdentity = ({ record, key }: ReadIdentityArgs): FileIdentity => {
 	const value = record[key];
 	if (
 		!isRecord(value) ||
@@ -349,12 +405,19 @@ const assertExactKeys = (record: Record<string, unknown>): void => {
 	}
 };
 
-const assertCurrentIdentity = (
-	selectedPath: string,
-	expected: FileIdentity,
-	kind: "directory" | "file",
-	label: string,
-): string => {
+interface AssertCurrentIdentityArgs {
+	selectedPath: string;
+	expected: FileIdentity;
+	kind: "directory" | "file";
+	label: string;
+}
+
+const assertCurrentIdentity = ({
+	selectedPath,
+	expected,
+	kind,
+	label,
+}: AssertCurrentIdentityArgs): string => {
 	if (!isAbsolute(selectedPath))
 		throw invalidContext(`${label} must be absolute`);
 	let physicalPath: string;
@@ -370,17 +433,22 @@ const assertCurrentIdentity = (
 	if (
 		(kind === "file" && !metadata.isFile()) ||
 		(kind === "directory" && !metadata.isDirectory()) ||
-		!identitiesMatch(identityFromStats(metadata), expected)
+		!identitiesMatch({ left: identityFromStats(metadata), right: expected })
 	) {
 		throw invalidContext(`${label} physical identity changed`);
 	}
 	return physicalPath;
 };
 
-const assertCanonicalTemporaryParent = (
-	contextPath: string,
-	packageRoot: string,
-): void => {
+interface AssertCanonicalTemporaryParentArgs {
+	contextPath: string;
+	packageRoot: string;
+}
+
+const assertCanonicalTemporaryParent = ({
+	contextPath,
+	packageRoot,
+}: AssertCanonicalTemporaryParentArgs): void => {
 	if (!isAbsolute(contextPath)) {
 		throw invalidContext(
 			"pointer must be an absolute path under the temporary root",
@@ -401,7 +469,7 @@ const assertCanonicalTemporaryParent = (
 	if (parentInspected.isSymbolicLink() || !parentInspected.isDirectory()) {
 		throw invalidContext("pointer parent must be a non-symlinked directory");
 	}
-	assertOwnerOnly(parentInspected, "parent directory");
+	assertOwnerOnly({ metadata: parentInspected, label: "parent directory" });
 	if (realpathSync(parent) !== parent) {
 		throw invalidContext("pointer parent must remain canonical");
 	}
@@ -411,21 +479,26 @@ const assertCanonicalTemporaryParent = (
 	}
 };
 
-const assertCanonicalConfigArgument = (
-	argv: readonly string[],
-	configPath: string,
-): void => {
+interface AssertCanonicalConfigArgumentArgs {
+	argv: readonly string[];
+	configPath: string;
+}
+
+const assertCanonicalConfigArgument = ({
+	argv,
+	configPath,
+}: AssertCanonicalConfigArgumentArgs): void => {
 	const argumentsAfterScript = argv.slice(2);
-	const exposesInitialInvocation = argumentsAfterScript[0] === "test";
-	if (!exposesInitialInvocation) {
-		const exposesConfigOption = argumentsAfterScript.some(
+	const hasInitialInvocation = argumentsAfterScript[0] === "test";
+	if (!hasInitialInvocation) {
+		const hasConfigOption = argumentsAfterScript.some(
 			(argument) =>
 				argument === "--config" ||
 				argument === "-c" ||
 				argument.startsWith("--config=") ||
 				argument.startsWith("-c="),
 		);
-		if (!exposesConfigOption) return;
+		if (!hasConfigOption) return;
 		throw invalidContext(
 			"initial process must expose one exact --config argument",
 		);
@@ -476,29 +549,29 @@ const readPlaywrightExecutionContextUnchecked = ({
 	if (typeof contextPath !== "string" || contextPath.length === 0) {
 		throw invalidContext("reserved pointer is missing");
 	}
-	assertCanonicalTemporaryParent(contextPath, packageRoot);
+	assertCanonicalTemporaryParent({ contextPath, packageRoot });
 	const parsed = readContextFile(contextPath);
 	if (!isRecord(parsed)) throw invalidContext("schema is malformed");
 	assertExactKeys(parsed);
 
-	const projectRoot = assertCurrentIdentity(
-		readString(parsed, "projectRoot"),
-		readIdentity(parsed, "projectIdentity"),
-		"directory",
-		"project root",
-	);
-	const configPath = assertCurrentIdentity(
-		readString(parsed, "configPath"),
-		readIdentity(parsed, "configIdentity"),
-		"file",
-		"config path",
-	);
-	const testDir = assertCurrentIdentity(
-		readString(parsed, "testDir"),
-		readIdentity(parsed, "testDirIdentity"),
-		"directory",
-		"test directory",
-	);
+	const projectRoot = assertCurrentIdentity({
+		selectedPath: readString({ record: parsed, key: "projectRoot" }),
+		expected: readIdentity({ record: parsed, key: "projectIdentity" }),
+		kind: "directory",
+		label: "project root",
+	});
+	const configPath = assertCurrentIdentity({
+		selectedPath: readString({ record: parsed, key: "configPath" }),
+		expected: readIdentity({ record: parsed, key: "configIdentity" }),
+		kind: "file",
+		label: "config path",
+	});
+	const testDir = assertCurrentIdentity({
+		selectedPath: readString({ record: parsed, key: "testDir" }),
+		expected: readIdentity({ record: parsed, key: "testDirIdentity" }),
+		kind: "directory",
+		label: "test directory",
+	});
 	if (
 		!isPathStrictlyContained({ candidate: configPath, parent: projectRoot })
 	) {
@@ -514,7 +587,7 @@ const readPlaywrightExecutionContextUnchecked = ({
 	}
 
 	const normalizedOrigin = normalizeConfiguredOrigin(
-		readString(parsed, "normalizedOrigin"),
+		readString({ record: parsed, key: "normalizedOrigin" }),
 	);
 	if (normalizedOrigin !== parsed.normalizedOrigin) {
 		throw invalidContext("stored origin must already be normalized");
@@ -526,9 +599,9 @@ const readPlaywrightExecutionContextUnchecked = ({
 	) {
 		throw invalidContext("configured store origin changed");
 	}
-	const role = assertRoleName(readString(parsed, "role"));
+	const role = assertRoleName(readString({ record: parsed, key: "role" }));
 	const state = validateStorageState(parsed.state);
-	assertCanonicalConfigArgument(argv, configPath);
+	assertCanonicalConfigArgument({ argv, configPath });
 
 	return deepFreeze({
 		configPath,

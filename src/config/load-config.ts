@@ -41,10 +41,15 @@ const isPlainRecord = (
 	return prototype === Object.prototype || prototype === null;
 };
 
-const assertPlainRecord = (
-	value: unknown,
-	label: string,
-): Record<PropertyKey, unknown> => {
+interface AssertPlainRecordArgs {
+	value: unknown;
+	label: string;
+}
+
+const assertPlainRecord = ({
+	value,
+	label,
+}: AssertPlainRecordArgs): Record<PropertyKey, unknown> => {
 	if (!isPlainRecord(value)) {
 		throw new ShopifyE2EPreflightError(`${label} must be a plain object`);
 	}
@@ -54,18 +59,24 @@ const assertPlainRecord = (
 		);
 	}
 	for (const key of Object.getOwnPropertyNames(value)) {
-		readDataProperty(value, key, label);
+		readDataProperty({ value, key, configPath: label });
 	}
 	return value;
 };
 
-const readOptionalString = (
-	value: Record<PropertyKey, unknown>,
-	key: string,
-	label: string,
-): string | undefined => {
+interface ReadOptionalStringArgs {
+	value: Record<PropertyKey, unknown>;
+	key: string;
+	label: string;
+}
+
+const readOptionalString = ({
+	value,
+	key,
+	label,
+}: ReadOptionalStringArgs): string | undefined => {
 	if (!Object.hasOwn(value, key)) return undefined;
-	const selected = readDataProperty(value, key, label);
+	const selected = readDataProperty({ value, key, configPath: label });
 	if (selected === undefined) return undefined;
 	if (typeof selected !== "string" || selected.trim().length === 0) {
 		throw new ShopifyE2EPreflightError(`${label} must be a non-empty string`);
@@ -73,13 +84,19 @@ const readOptionalString = (
 	return selected;
 };
 
-const readOptionalBoolean = (
-	value: Record<PropertyKey, unknown>,
-	key: string,
-	label: string,
-): boolean | undefined => {
+interface ReadOptionalBooleanArgs {
+	value: Record<PropertyKey, unknown>;
+	key: string;
+	label: string;
+}
+
+const readOptionalBoolean = ({
+	value,
+	key,
+	label,
+}: ReadOptionalBooleanArgs): boolean | undefined => {
 	if (!Object.hasOwn(value, key)) return undefined;
-	const selected = readDataProperty(value, key, label);
+	const selected = readDataProperty({ value, key, configPath: label });
 	if (selected === undefined) return undefined;
 	if (typeof selected !== "boolean") {
 		throw new ShopifyE2EPreflightError(`${label} must be a boolean`);
@@ -87,13 +104,19 @@ const readOptionalBoolean = (
 	return selected;
 };
 
-const readOptionalNumber = (
-	value: Record<PropertyKey, unknown>,
-	key: string,
-	label: string,
-): number | undefined => {
+interface ReadOptionalNumberArgs {
+	value: Record<PropertyKey, unknown>;
+	key: string;
+	label: string;
+}
+
+const readOptionalNumber = ({
+	value,
+	key,
+	label,
+}: ReadOptionalNumberArgs): number | undefined => {
 	if (!Object.hasOwn(value, key)) return undefined;
-	const selected = readDataProperty(value, key, label);
+	const selected = readDataProperty({ value, key, configPath: label });
 	if (
 		selected === undefined ||
 		(typeof selected === "number" && Number.isFinite(selected) && selected >= 0)
@@ -105,10 +128,15 @@ const readOptionalNumber = (
 	);
 };
 
-const freezeStringArray = (
-	value: unknown,
-	label: string,
-): readonly string[] => {
+interface FreezeStringArrayArgs {
+	value: unknown;
+	label: string;
+}
+
+const freezeStringArray = ({
+	value,
+	label,
+}: FreezeStringArrayArgs): readonly string[] => {
 	if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
 		throw new ShopifyE2EPreflightError(`${label} must be an array of strings`);
 	}
@@ -118,17 +146,17 @@ const freezeStringArray = (
 const normalizeEnvironment = (
 	value: unknown,
 ): Readonly<Record<string, string | undefined>> => {
-	const input = assertPlainRecord(
+	const input = assertPlainRecord({
 		value,
-		"Shopify config use.launchOptions.env",
-	);
+		label: "Shopify config use.launchOptions.env",
+	});
 	const normalized: Record<string, string | undefined> = {};
 	for (const key of Object.getOwnPropertyNames(input)) {
-		const selected = readDataProperty(
-			input,
+		const selected = readDataProperty({
+			value: input,
 			key,
-			`Shopify config use.launchOptions.env.${key}`,
-		);
+			configPath: `Shopify config use.launchOptions.env.${key}`,
+		});
 		if (selected !== undefined && typeof selected !== "string") {
 			throw new ShopifyE2EPreflightError(
 				`Shopify config use.launchOptions.env.${key} must be a string or undefined`,
@@ -142,10 +170,10 @@ const normalizeEnvironment = (
 const normalizeProxy = (
 	value: unknown,
 ): NonNullable<BrowserServerLaunchOptions["proxy"]> => {
-	const input = assertPlainRecord(
+	const input = assertPlainRecord({
 		value,
-		"Shopify config use.launchOptions.proxy",
-	);
+		label: "Shopify config use.launchOptions.proxy",
+	});
 	const supported = new Set(["server", "bypass", "username", "password"]);
 	for (const key of Object.getOwnPropertyNames(input)) {
 		if (!supported.has(key)) {
@@ -154,31 +182,31 @@ const normalizeProxy = (
 			);
 		}
 	}
-	const server = readOptionalString(
-		input,
-		"server",
-		"Shopify config use.launchOptions.proxy.server",
-	);
+	const server = readOptionalString({
+		value: input,
+		key: "server",
+		label: "Shopify config use.launchOptions.proxy.server",
+	});
 	if (server === undefined) {
 		throw new ShopifyE2EPreflightError(
 			"Shopify config use.launchOptions.proxy.server must be a non-empty string",
 		);
 	}
-	const bypass = readOptionalString(
-		input,
-		"bypass",
-		"Shopify config use.launchOptions.proxy.bypass",
-	);
-	const password = readOptionalString(
-		input,
-		"password",
-		"Shopify config use.launchOptions.proxy.password",
-	);
-	const username = readOptionalString(
-		input,
-		"username",
-		"Shopify config use.launchOptions.proxy.username",
-	);
+	const bypass = readOptionalString({
+		value: input,
+		key: "bypass",
+		label: "Shopify config use.launchOptions.proxy.bypass",
+	});
+	const password = readOptionalString({
+		value: input,
+		key: "password",
+		label: "Shopify config use.launchOptions.proxy.password",
+	});
+	const username = readOptionalString({
+		value: input,
+		key: "username",
+		label: "Shopify config use.launchOptions.proxy.username",
+	});
 	return Object.freeze({
 		...(bypass === undefined ? {} : { bypass }),
 		...(password === undefined ? {} : { password }),
@@ -197,24 +225,31 @@ const normalizeBrowserLaunchOptions = (
 	config: Record<PropertyKey, unknown>,
 ): BrowserServerLaunchOptions => {
 	const useValue = Object.hasOwn(config, "use")
-		? readDataProperty(config, "use", "Shopify config use")
+		? readDataProperty({
+				value: config,
+				key: "use",
+				configPath: "Shopify config use",
+			})
 		: undefined;
 	const use =
 		useValue === undefined
 			? undefined
-			: assertPlainRecord(useValue, "Shopify config use");
+			: assertPlainRecord({ value: useValue, label: "Shopify config use" });
 	const launchValue =
 		use && Object.hasOwn(use, "launchOptions")
-			? readDataProperty(
-					use,
-					"launchOptions",
-					"Shopify config use.launchOptions",
-				)
+			? readDataProperty({
+					value: use,
+					key: "launchOptions",
+					configPath: "Shopify config use.launchOptions",
+				})
 			: undefined;
 	const launch =
 		launchValue === undefined
 			? undefined
-			: assertPlainRecord(launchValue, "Shopify config use.launchOptions");
+			: assertPlainRecord({
+					value: launchValue,
+					label: "Shopify config use.launchOptions",
+				});
 	if (launch) {
 		for (const key of Object.getOwnPropertyNames(launch)) {
 			if (!SUPPORTED_LAUNCH_OPTION_KEYS.has(key)) {
@@ -227,16 +262,19 @@ const normalizeBrowserLaunchOptions = (
 
 	const argsValue =
 		launch && Object.hasOwn(launch, "args")
-			? readDataProperty(
-					launch,
-					"args",
-					"Shopify config use.launchOptions.args",
-				)
+			? readDataProperty({
+					value: launch,
+					key: "args",
+					configPath: "Shopify config use.launchOptions.args",
+				})
 			: undefined;
 	const args =
 		argsValue === undefined
 			? undefined
-			: freezeStringArray(argsValue, "Shopify config use.launchOptions.args");
+			: freezeStringArray({
+					value: argsValue,
+					label: "Shopify config use.launchOptions.args",
+				});
 	if (args?.some(isRemoteDebuggingArgument)) {
 		throw new ShopifyE2EPreflightError(
 			"Shopify config use.launchOptions.args must not contain --remote-debugging-* options",
@@ -249,11 +287,11 @@ const normalizeBrowserLaunchOptions = (
 	}
 	const ignoreDefaultArgsValue =
 		launch && Object.hasOwn(launch, "ignoreDefaultArgs")
-			? readDataProperty(
-					launch,
-					"ignoreDefaultArgs",
-					"Shopify config use.launchOptions.ignoreDefaultArgs",
-				)
+			? readDataProperty({
+					value: launch,
+					key: "ignoreDefaultArgs",
+					configPath: "Shopify config use.launchOptions.ignoreDefaultArgs",
+				})
 			: undefined;
 	let ignoreDefaultArgs: boolean | readonly string[] | undefined;
 	if (ignoreDefaultArgsValue !== undefined) {
@@ -265,10 +303,10 @@ const normalizeBrowserLaunchOptions = (
 		if (typeof ignoreDefaultArgsValue === "boolean") {
 			ignoreDefaultArgs = ignoreDefaultArgsValue;
 		} else {
-			ignoreDefaultArgs = freezeStringArray(
-				ignoreDefaultArgsValue,
-				"Shopify config use.launchOptions.ignoreDefaultArgs",
-			);
+			ignoreDefaultArgs = freezeStringArray({
+				value: ignoreDefaultArgsValue,
+				label: "Shopify config use.launchOptions.ignoreDefaultArgs",
+			});
 			if (ignoreDefaultArgs.includes("--remote-debugging-pipe")) {
 				throw new ShopifyE2EPreflightError(
 					"Shopify config use.launchOptions.ignoreDefaultArgs must not remove Chromium's required native transport",
@@ -278,62 +316,70 @@ const normalizeBrowserLaunchOptions = (
 	}
 
 	const launchChannel = launch
-		? readOptionalString(
-				launch,
-				"channel",
-				"Shopify config use.launchOptions.channel",
-			)
+		? readOptionalString({
+				value: launch,
+				key: "channel",
+				label: "Shopify config use.launchOptions.channel",
+			})
 		: undefined;
 	const useChannel = use
-		? readOptionalString(use, "channel", "Shopify config use.channel")
+		? readOptionalString({
+				value: use,
+				key: "channel",
+				label: "Shopify config use.channel",
+			})
 		: undefined;
 	const channel = useChannel ?? launchChannel;
 	const artifactsDir = launch
-		? readOptionalString(
-				launch,
-				"artifactsDir",
-				"Shopify config use.launchOptions.artifactsDir",
-			)
+		? readOptionalString({
+				value: launch,
+				key: "artifactsDir",
+				label: "Shopify config use.launchOptions.artifactsDir",
+			})
 		: undefined;
 	const chromiumSandbox = launch
-		? readOptionalBoolean(
-				launch,
-				"chromiumSandbox",
-				"Shopify config use.launchOptions.chromiumSandbox",
-			)
+		? readOptionalBoolean({
+				value: launch,
+				key: "chromiumSandbox",
+				label: "Shopify config use.launchOptions.chromiumSandbox",
+			})
 		: undefined;
 	const downloadsPath = launch
-		? readOptionalString(
-				launch,
-				"downloadsPath",
-				"Shopify config use.launchOptions.downloadsPath",
-			)
+		? readOptionalString({
+				value: launch,
+				key: "downloadsPath",
+				label: "Shopify config use.launchOptions.downloadsPath",
+			})
 		: undefined;
 	const executablePath = launch
-		? readOptionalString(
-				launch,
-				"executablePath",
-				"Shopify config use.launchOptions.executablePath",
-			)
+		? readOptionalString({
+				value: launch,
+				key: "executablePath",
+				label: "Shopify config use.launchOptions.executablePath",
+			})
 		: undefined;
 	const timeout = launch
-		? readOptionalNumber(
-				launch,
-				"timeout",
-				"Shopify config use.launchOptions.timeout",
-			)
+		? readOptionalNumber({
+				value: launch,
+				key: "timeout",
+				label: "Shopify config use.launchOptions.timeout",
+			})
 		: undefined;
 	const envValue =
 		launch && Object.hasOwn(launch, "env")
-			? readDataProperty(launch, "env", "Shopify config use.launchOptions.env")
+			? readDataProperty({
+					value: launch,
+					key: "env",
+					configPath: "Shopify config use.launchOptions.env",
+				})
 			: undefined;
 	const proxyValue =
 		launch && Object.hasOwn(launch, "proxy")
-			? readDataProperty(
-					launch,
-					"proxy",
-					"Shopify config use.launchOptions.proxy",
-				)
+			? readDataProperty({
+					value: launch,
+					key: "proxy",
+					configPath: "Shopify config use.launchOptions.proxy",
+				})
 			: undefined;
 	return Object.freeze({
 		...(args === undefined ? {} : { args }),
@@ -355,11 +401,17 @@ const normalizeBrowserLaunchOptions = (
 	});
 };
 
-const readDataProperty = (
-	value: Record<PropertyKey, unknown>,
-	key: string,
-	configPath: string,
-): unknown => {
+interface ReadDataPropertyArgs {
+	value: Record<PropertyKey, unknown>;
+	key: string;
+	configPath: string;
+}
+
+const readDataProperty = ({
+	value,
+	key,
+	configPath,
+}: ReadDataPropertyArgs): unknown => {
 	const descriptor = Object.getOwnPropertyDescriptor(value, key);
 	if (!descriptor || !("value" in descriptor)) {
 		throw new ShopifyE2EPreflightError(
@@ -369,10 +421,15 @@ const readDataProperty = (
 	return descriptor.value;
 };
 
-const markedConfig = (
-	configPath: string,
-	value: unknown,
-): DefinedShopifyE2EConfig => {
+interface MarkedConfigArgs {
+	configPath: string;
+	value: unknown;
+}
+
+const markedConfig = ({
+	configPath,
+	value,
+}: MarkedConfigArgs): DefinedShopifyE2EConfig => {
 	if (!isDefinedShopifyE2EConfig(value)) {
 		throw new ShopifyE2EPreflightError(
 			`Dedicated Shopify config must default-export the direct result of defineShopifyE2EConfig. Import it from @sematico/shopify-e2e/config and use export default defineShopifyE2EConfig({...}): ${configPath}`,
@@ -381,10 +438,15 @@ const markedConfig = (
 	return value;
 };
 
-const withConfigContext = (
-	configPath: string,
-	error: unknown,
-): ShopifyE2EPreflightError => {
+interface WithConfigContextArgs {
+	configPath: string;
+	error: unknown;
+}
+
+const withConfigContext = ({
+	configPath,
+	error,
+}: WithConfigContextArgs): ShopifyE2EPreflightError => {
 	if (error instanceof ShopifyE2EPreflightError) return error;
 	if (isShopifyE2EConfigContractError(error)) {
 		return new ShopifyE2EPreflightError(`${error.message}: ${configPath}`, {
@@ -435,17 +497,20 @@ export const loadShopifyConfig = async (
 			);
 		}
 
-		const playwrightConfig = markedConfig(configPath, moduleNamespace.default);
-		const roles = readDataProperty(
-			playwrightConfig as Record<PropertyKey, unknown>,
-			"roles",
+		const playwrightConfig = markedConfig({
 			configPath,
-		) as readonly string[];
-		const configuredTestDir = readDataProperty(
-			playwrightConfig as Record<PropertyKey, unknown>,
-			"testDir",
+			value: moduleNamespace.default,
+		});
+		const roles = readDataProperty({
+			value: playwrightConfig as Record<PropertyKey, unknown>,
+			key: "roles",
 			configPath,
-		) as string;
+		}) as readonly string[];
+		const configuredTestDir = readDataProperty({
+			value: playwrightConfig as Record<PropertyKey, unknown>,
+			key: "testDir",
+			configPath,
+		}) as string;
 		const testDir = await resolveShopifyTestDir({
 			configuredTestDir,
 			projectRoot: options.projectRoot,
@@ -460,6 +525,6 @@ export const loadShopifyConfig = async (
 			testDir,
 		};
 	} catch (error) {
-		throw withConfigContext(configPath, error);
+		throw withConfigContext({ configPath, error });
 	}
 };

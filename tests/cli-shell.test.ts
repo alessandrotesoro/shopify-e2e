@@ -392,11 +392,11 @@ export const chromium = {
 			child.stderr?.on("data", (chunk: string) => {
 				stderr += chunk;
 			});
-			const outcomePromise = waitForChildOutcome(child, 10_000);
+			const outcomePromise = waitForChildOutcome({ child, timeoutMs: 10_000 });
 			let didExit = false;
 
 			try {
-				await waitForPath(inspectionStarted, 5_000);
+				await waitForPath({ path: inspectionStarted, timeoutMs: 5_000 });
 				expect(child.pid).toBeTypeOf("number");
 				process.kill(child.pid as number, signal);
 				const outcome = await outcomePromise;
@@ -414,7 +414,9 @@ export const chromium = {
 			} finally {
 				if (!didExit && child.exitCode === null && child.signalCode === null) {
 					child.kill("SIGKILL");
-					await waitForChildOutcome(child, 2_000).catch(() => undefined);
+					await waitForChildOutcome({ child, timeoutMs: 2_000 }).catch(
+						() => undefined,
+					);
 				}
 			}
 		},

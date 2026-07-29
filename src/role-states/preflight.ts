@@ -20,10 +20,15 @@ export const unknownRole = (role: string): ShopifyE2EPreflightError =>
 		`Role ${role} is not configured. Run \`shopify-e2e auth list\` or omit --role in an interactive terminal.`,
 	);
 
-export const assertConfiguredRole = (
-	roles: readonly string[],
-	role: string,
-): string => {
+export interface AssertConfiguredRoleArgs {
+	roles: readonly string[];
+	role: string;
+}
+
+export const assertConfiguredRole = ({
+	roles,
+	role,
+}: AssertConfiguredRoleArgs): string => {
 	let selectedRole: string;
 	try {
 		selectedRole = assertRoleName(role);
@@ -52,8 +57,13 @@ export const unsafeCollision = (role: string): ShopifyE2EPreflightError =>
 		`Role ${role} has an unsafe filesystem collision. Manual cleanup is required; the CLI will not follow or remove it.`,
 	);
 
-export const invalidStateForRole = (
-	role: string,
-	removableRoles: readonly string[],
-): ShopifyE2EPreflightError =>
+export interface InvalidStateForRoleArgs {
+	role: string;
+	removableRoles: readonly string[];
+}
+
+export const invalidStateForRole = ({
+	role,
+	removableRoles,
+}: InvalidStateForRoleArgs): ShopifyE2EPreflightError =>
 	removableRoles.includes(role) ? invalidState(role) : unsafeCollision(role);

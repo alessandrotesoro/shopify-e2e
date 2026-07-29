@@ -80,7 +80,10 @@ describe("Playwright execution context", () => {
 			PATH: "/usr/bin",
 			SHOPIFY_E2E_EXECUTION_CONTEXT: "parent-secret-value",
 		};
-		const child = buildPlaywrightChildEnvironment(parent, "/tmp/fresh.json");
+		const child = buildPlaywrightChildEnvironment({
+			parentEnvironment: parent,
+			contextPath: "/tmp/fresh.json",
+		});
 
 		expect(child).toEqual({
 			PATH: "/usr/bin",
@@ -89,18 +92,21 @@ describe("Playwright execution context", () => {
 		expect(parent.SHOPIFY_E2E_EXECUTION_CONTEXT).toBe("parent-secret-value");
 		expect(JSON.stringify(child)).not.toContain("parent-secret-value");
 		expect(() =>
-			buildPlaywrightChildEnvironment(parent, "relative-context.json"),
+			buildPlaywrightChildEnvironment({
+				parentEnvironment: parent,
+				contextPath: "relative-context.json",
+			}),
 		).toThrow(/absolute/i);
 	});
 
 	it("injects only the active native endpoint and rejects inherited connection controls", () => {
 		const endpoint = "ws://127.0.0.1:4321/active-secret";
 		const parent = { PATH: "/usr/bin" };
-		const child = buildPlaywrightChildEnvironment(
-			parent,
-			"/tmp/fresh.json",
-			endpoint,
-		);
+		const child = buildPlaywrightChildEnvironment({
+			parentEnvironment: parent,
+			contextPath: "/tmp/fresh.json",
+			wsEndpoint: endpoint,
+		});
 
 		expect(child).toEqual({
 			PATH: "/usr/bin",
@@ -117,11 +123,11 @@ describe("Playwright execution context", () => {
 			const inherited = "inherited-secret";
 			let error: unknown;
 			try {
-				buildPlaywrightChildEnvironment(
-					{ [key]: inherited },
-					"/tmp/fresh.json",
-					endpoint,
-				);
+				buildPlaywrightChildEnvironment({
+					parentEnvironment: { [key]: inherited },
+					contextPath: "/tmp/fresh.json",
+					wsEndpoint: endpoint,
+				});
 			} catch (cause) {
 				error = cause;
 			}
@@ -136,7 +142,11 @@ describe("Playwright execution context", () => {
 		temporaryDirectories.push(dirname(artifact.contextPath));
 		const endpoint = "ws://127.0.0.1:4321/artifact-secret";
 
-		buildPlaywrightChildEnvironment({}, artifact.contextPath, endpoint);
+		buildPlaywrightChildEnvironment({
+			parentEnvironment: {},
+			contextPath: artifact.contextPath,
+			wsEndpoint: endpoint,
+		});
 
 		expect(await readFile(artifact.contextPath, "utf8")).not.toContain(
 			endpoint,
@@ -387,10 +397,10 @@ test("runtime overlay", { tag: "@shopify-e2e-role-admin" }, () => writeFileSync(
 			SHOPIFY_E2E_EXECUTION_CONTEXT: "stale-parent-value",
 			SHOPIFY_STORE_URL: "https://shop.example/path",
 		};
-		const environment = buildPlaywrightChildEnvironment(
-			inherited,
-			context.contextPath,
-		);
+		const environment = buildPlaywrightChildEnvironment({
+			parentEnvironment: inherited,
+			contextPath: context.contextPath,
+		});
 		const peer = await resolvePlaywrightPeer(process.cwd());
 		const invocation = buildPlaywrightInvocation({
 			configPath,

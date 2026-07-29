@@ -29,10 +29,15 @@ export interface AuthCommandFailure {
 	readonly message: string;
 }
 
-export const classifyAuthCommandFailure = (
-	error: unknown,
-	signalExitCode?: 130 | 143,
-): AuthCommandFailure => {
+export interface ClassifyAuthCommandFailureArgs {
+	error: unknown;
+	signalExitCode?: 130 | 143;
+}
+
+export const classifyAuthCommandFailure = ({
+	error,
+	signalExitCode,
+}: ClassifyAuthCommandFailureArgs): AuthCommandFailure => {
 	if (error instanceof ShopifyE2EInfrastructureError) {
 		return { exitCode: error.exitCode, message: error.message };
 	}
@@ -73,8 +78,8 @@ export const executeAuthCommand = async ({
 }: ExecuteAuthCommandArgs): Promise<void> => {
 	const signals = createCommandSignalScope();
 	try {
-		await orchestrateAuth(
-			{
+		await orchestrateAuth({
+			options: {
 				action,
 				cwd: process.cwd(),
 				dataDir: command.config.dataDir,
@@ -87,12 +92,16 @@ export const executeAuthCommand = async ({
 				signal: signals.signal,
 				yes,
 			},
-			defaultAuthDependencies(inquirerPrompts, (message) =>
-				command.log(message),
-			),
-		);
+			dependencies: defaultAuthDependencies({
+				prompts: inquirerPrompts,
+				report: (message) => command.log(message),
+			}),
+		});
 	} catch (error) {
-		const failure = classifyAuthCommandFailure(error, signals.exitCode());
+		const failure = classifyAuthCommandFailure({
+			error,
+			signalExitCode: signals.exitCode(),
+		});
 		command.error(failure.message, { exit: failure.exitCode });
 	} finally {
 		signals.dispose();

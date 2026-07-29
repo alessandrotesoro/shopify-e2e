@@ -46,10 +46,10 @@ const response = (ok = true): Response =>
 	({ ok: vi.fn(() => ok) }) as unknown as Response;
 
 const makePage = (spec: PageSpec = {}) => {
-	let navigatedAway = false;
+	let hasNavigatedAway = false;
 	let opened = false;
-	let replaced = false;
-	let submitted = false;
+	let isReplaced = false;
+	let isSubmitted = false;
 	const initialInputs = spec.inputs ?? [];
 	const initialForms = spec.forms ?? [];
 	const afterInputs = spec.afterNavigationInputs ?? [];
@@ -58,12 +58,15 @@ const makePage = (spec: PageSpec = {}) => {
 	const formHandles = new Map<string, ElementHandle<HTMLFormElement>>();
 	const formActionOverrides = new Map<string, string>();
 
-	const generation = () =>
-		submitted ? "after" : replaced ? "replacement" : "initial";
-	const currentInputs = () => (submitted ? afterInputs : initialInputs);
-	const currentForms = () => (submitted ? afterForms : initialForms);
+	const generation = () => {
+		if (isSubmitted) return "after";
+		if (isReplaced) return "replacement";
+		return "initial";
+	};
+	const currentInputs = () => (isSubmitted ? afterInputs : initialInputs);
+	const currentForms = () => (isSubmitted ? afterForms : initialForms);
 	const isAttached = (handleGeneration: string) =>
-		handleGeneration === generation() && !navigatedAway;
+		handleGeneration === generation() && !hasNavigatedAway;
 
 	const inputHandle = (
 		index: number,
@@ -144,7 +147,7 @@ const makePage = (spec: PageSpec = {}) => {
 						) {
 							throw new Error("unsafe private form");
 						}
-						submitted = true;
+						isSubmitted = true;
 						submitSpy();
 						return true;
 					}
@@ -160,7 +163,7 @@ const makePage = (spec: PageSpec = {}) => {
 							candidateNode.nodeKey === `${handleGeneration}:${inputIndex}`,
 					);
 				}
-				if (String(callback).includes("requestSubmit")) submitted = true;
+				if (String(callback).includes("requestSubmit")) isSubmitted = true;
 				return isAttached(handleGeneration);
 			}),
 			getAttribute: vi.fn(async (name: string) => {
@@ -203,8 +206,8 @@ const makePage = (spec: PageSpec = {}) => {
 			: spec.navigationResponse;
 	});
 	const url = vi.fn(() => {
-		if (submitted) return spec.afterNavigationUrl ?? origin;
-		if (navigatedAway)
+		if (isSubmitted) return spec.afterNavigationUrl ?? origin;
+		if (hasNavigatedAway)
 			return "https://other.example/private?token=query-secret";
 		if (opened) return spec.gotoUrl ?? origin;
 		return spec.url ?? origin;
@@ -226,11 +229,11 @@ const makePage = (spec: PageSpec = {}) => {
 			formActionOverrides.set(`initial:${index}`, action);
 		},
 		navigateAway: () => {
-			navigatedAway = true;
+			hasNavigatedAway = true;
 		},
 		page,
 		replaceChallenge: () => {
-			replaced = true;
+			isReplaced = true;
 		},
 		waitForLoadState,
 		waitForNavigation,
@@ -391,7 +394,7 @@ describe.sequential("storefront unlocking", () => {
 		expect(wasSubmitted(fixture.formLocator(0))).toBe(true);
 	});
 
-	it("fails instead of retargeting when the verified input is replaced before typing", async () => {
+	it("fails instead of retargeting when the verified input is isReplaced before typing", async () => {
 		vi.stubEnv("SHOPIFY_STORE_URL", origin);
 		vi.stubEnv("SHOPIFY_STOREFRONT_PASSWORD", password);
 		const fixture = makePage(protectedPage());

@@ -48,7 +48,12 @@ const runNpm = (
 	};
 };
 
-const assertNpmSuccess = (label: string, result: CommandResult): void => {
+interface AssertNpmSuccessArgs {
+	label: string;
+	result: CommandResult;
+}
+
+const assertNpmSuccess = ({ label, result }: AssertNpmSuccessArgs): void => {
 	if (result.status !== 0) {
 		throw new Error(
 			`${label} failed (${result.status ?? "no exit"})\n${result.error?.message ?? ""}\n${result.stdout}\n${result.stderr}`,
@@ -56,15 +61,20 @@ const assertNpmSuccess = (label: string, result: CommandResult): void => {
 	}
 };
 
-export const packPackageForConsumer = async (
-	projectRoot: string,
-	packDirectory: string,
-): Promise<PackedPackage> => {
+export interface PackPackageForConsumerArgs {
+	projectRoot: string;
+	packDirectory: string;
+}
+
+export const packPackageForConsumer = async ({
+	projectRoot,
+	packDirectory,
+}: PackPackageForConsumerArgs): Promise<PackedPackage> => {
 	const result = runNpm(
 		["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory],
 		projectRoot,
 	);
-	assertNpmSuccess("npm pack", result);
+	assertNpmSuccess({ label: "npm pack", result });
 	const output = JSON.parse(result.stdout) as Array<{
 		readonly filename: string;
 		readonly files: readonly NpmPackFile[];
@@ -100,7 +110,7 @@ export const installPackedPackage = async ({
 		],
 		consumerRoot,
 	);
-	assertNpmSuccess(`install package into ${consumerRoot}`, result);
+	assertNpmSuccess({ label: `install package into ${consumerRoot}`, result });
 };
 
 export const installedCliPath = (consumerRoot: string): string =>

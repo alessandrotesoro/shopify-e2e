@@ -102,15 +102,18 @@ export const seedRoleState = async (
 	return store;
 };
 
-export const withStubbedBrowser = (
-	dependencies: ReturnType<typeof defaultAuthDependencies>,
-	captureRoleState: AuthOrchestratorDependencies["captureRoleState"] = vi.fn(
-		async () => ({
-			state: EMPTY_STORAGE_STATE,
-			status: "captured" as const,
-		}),
-	),
-) => ({
+export interface WithStubbedBrowserArgs {
+	dependencies: ReturnType<typeof defaultAuthDependencies>;
+	captureRoleState?: AuthOrchestratorDependencies["captureRoleState"];
+}
+
+export const withStubbedBrowser = ({
+	dependencies,
+	captureRoleState = vi.fn(async () => ({
+		state: EMPTY_STORAGE_STATE,
+		status: "captured" as const,
+	})),
+}: WithStubbedBrowserArgs) => ({
 	...dependencies,
 	captureRoleState,
 	loadChromium: vi.fn(async () => ({
@@ -126,10 +129,15 @@ export const withStubbedBrowser = (
 
 const packageRoot = resolve(import.meta.dirname, "../..");
 
-export const authOptions = (
-	fixture: AuthCommandFixture,
-	overrides: Partial<AuthOrchestratorOptions> = {},
-): AuthOrchestratorOptions => ({
+export interface AuthOptionsArgs {
+	fixture: AuthCommandFixture;
+	overrides?: Partial<AuthOrchestratorOptions>;
+}
+
+export const authOptions = ({
+	fixture,
+	overrides = {},
+}: AuthOptionsArgs): AuthOrchestratorOptions => ({
 	action: "menu",
 	cwd: fixture.projectRoot,
 	dataDir: fixture.dataDir,

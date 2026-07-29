@@ -64,11 +64,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 	(Object.getPrototypeOf(value) === Object.prototype ||
 		Object.getPrototypeOf(value) === null);
 
-const hasExactKeys = (
-	value: Record<string, unknown>,
-	required: readonly string[],
-	optional: readonly string[] = [],
-): boolean => {
+interface HasExactKeysArgs {
+	value: Record<string, unknown>;
+	required: readonly string[];
+	optional?: readonly string[];
+}
+
+const hasExactKeys = ({
+	value,
+	required,
+	optional = [],
+}: HasExactKeysArgs): boolean => {
 	const keys = Object.keys(value);
 	return (
 		required.every((key) => keys.includes(key)) &&
@@ -76,22 +82,34 @@ const hasExactKeys = (
 	);
 };
 
-const isJsonValue = (value: unknown, depth = 0): boolean => {
+interface IsJsonValueArgs {
+	value: unknown;
+	depth?: number;
+}
+
+const isJsonValue = ({ value, depth = 0 }: IsJsonValueArgs): boolean => {
 	if (depth > 100) return false;
 	if (value === null || typeof value === "string" || typeof value === "boolean")
 		return true;
 	if (typeof value === "number") return Number.isFinite(value);
 	if (Array.isArray(value))
-		return value.every((item) => isJsonValue(item, depth + 1));
+		return value.every((item) =>
+			isJsonValue({ value: item, depth: depth + 1 }),
+		);
 	if (!isRecord(value)) return false;
-	return Object.values(value).every((item) => isJsonValue(item, depth + 1));
+	return Object.values(value).every((item) =>
+		isJsonValue({ value: item, depth: depth + 1 }),
+	);
 };
 
-const hasAtMostOne = (
-	value: Record<string, unknown>,
-	left: string,
-	right: string,
-): boolean => !(Object.hasOwn(value, left) && Object.hasOwn(value, right));
+interface HasAtMostOneArgs {
+	value: Record<string, unknown>;
+	left: string;
+	right: string;
+}
+
+const hasAtMostOne = ({ value, left, right }: HasAtMostOneArgs): boolean =>
+	!(Object.hasOwn(value, left) && Object.hasOwn(value, right));
 
 const isStringArray = (value: unknown): value is readonly string[] =>
 	Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -99,24 +117,28 @@ const isStringArray = (value: unknown): value is readonly string[] =>
 const isIndexedDBRecord = (value: unknown): value is IndexedDBRecord => {
 	if (
 		!isRecord(value) ||
-		!hasExactKeys(value, [], ["key", "keyEncoded", "value", "valueEncoded"]) ||
-		!hasAtMostOne(value, "key", "keyEncoded") ||
-		!hasAtMostOne(value, "value", "valueEncoded") ||
+		!hasExactKeys({
+			value,
+			required: [],
+			optional: ["key", "keyEncoded", "value", "valueEncoded"],
+		}) ||
+		!hasAtMostOne({ value, left: "key", right: "keyEncoded" }) ||
+		!hasAtMostOne({ value, left: "value", right: "valueEncoded" }) ||
 		(!Object.hasOwn(value, "value") && !Object.hasOwn(value, "valueEncoded"))
 	)
 		return false;
-	return Object.values(value).every(isJsonValue);
+	return Object.values(value).every((item) => isJsonValue({ value: item }));
 };
 
 const isIndexedDBIndex = (value: unknown): value is IndexedDBIndex => {
 	if (
 		!isRecord(value) ||
-		!hasExactKeys(
+		!hasExactKeys({
 			value,
-			["name", "multiEntry", "unique"],
-			["keyPath", "keyPathArray"],
-		) ||
-		!hasAtMostOne(value, "keyPath", "keyPathArray")
+			required: ["name", "multiEntry", "unique"],
+			optional: ["keyPath", "keyPathArray"],
+		}) ||
+		!hasAtMostOne({ value, left: "keyPath", right: "keyPathArray" })
 	)
 		return false;
 	return (
@@ -131,12 +153,12 @@ const isIndexedDBIndex = (value: unknown): value is IndexedDBIndex => {
 const isIndexedDBStore = (value: unknown): value is IndexedDBStore => {
 	if (
 		!isRecord(value) ||
-		!hasExactKeys(
+		!hasExactKeys({
 			value,
-			["name", "autoIncrement", "records", "indexes"],
-			["keyPath", "keyPathArray"],
-		) ||
-		!hasAtMostOne(value, "keyPath", "keyPathArray") ||
+			required: ["name", "autoIncrement", "records", "indexes"],
+			optional: ["keyPath", "keyPathArray"],
+		}) ||
+		!hasAtMostOne({ value, left: "keyPath", right: "keyPathArray" }) ||
 		!Array.isArray(value.records) ||
 		!Array.isArray(value.indexes)
 	)
@@ -154,7 +176,7 @@ const isIndexedDBStore = (value: unknown): value is IndexedDBStore => {
 const isIndexedDBDatabase = (value: unknown): value is IndexedDBDatabase => {
 	if (
 		!isRecord(value) ||
-		!hasExactKeys(value, ["name", "version", "stores"]) ||
+		!hasExactKeys({ value, required: ["name", "version", "stores"] }) ||
 		!Array.isArray(value.stores)
 	)
 		return false;
@@ -169,9 +191,9 @@ const isIndexedDBDatabase = (value: unknown): value is IndexedDBDatabase => {
 const isStorageCookie = (value: unknown): value is StorageStateCookie => {
 	if (
 		!isRecord(value) ||
-		!hasExactKeys(
+		!hasExactKeys({
 			value,
-			[
+			required: [
 				"name",
 				"value",
 				"domain",
@@ -181,8 +203,8 @@ const isStorageCookie = (value: unknown): value is StorageStateCookie => {
 				"secure",
 				"sameSite",
 			],
-			["partitionKey", "_crHasCrossSiteAncestor"],
-		)
+			optional: ["partitionKey", "_crHasCrossSiteAncestor"],
+		})
 	)
 		return false;
 	return (
@@ -207,7 +229,11 @@ const isStorageCookie = (value: unknown): value is StorageStateCookie => {
 const isStorageOrigin = (value: unknown): value is StorageStateOrigin => {
 	if (
 		!isRecord(value) ||
-		!hasExactKeys(value, ["origin", "localStorage"], ["indexedDB"]) ||
+		!hasExactKeys({
+			value,
+			required: ["origin", "localStorage"],
+			optional: ["indexedDB"],
+		}) ||
 		typeof value.origin !== "string" ||
 		!Array.isArray(value.localStorage)
 	)
@@ -226,7 +252,7 @@ const isStorageOrigin = (value: unknown): value is StorageStateOrigin => {
 		!value.localStorage.every(
 			(item) =>
 				isRecord(item) &&
-				hasExactKeys(item, ["name", "value"]) &&
+				hasExactKeys({ value: item, required: ["name", "value"] }) &&
 				typeof item.name === "string" &&
 				typeof item.value === "string",
 		)
@@ -239,12 +265,12 @@ const isStorageOrigin = (value: unknown): value is StorageStateOrigin => {
 	);
 };
 
-function assertStorageStateShape(
+const assertStorageStateShape: (
 	value: unknown,
-): asserts value is PlaywrightStorageState {
+) => asserts value is PlaywrightStorageState = (value) => {
 	if (
 		!isRecord(value) ||
-		!hasExactKeys(value, ["cookies", "origins"]) ||
+		!hasExactKeys({ value, required: ["cookies", "origins"] }) ||
 		!Array.isArray(value.cookies) ||
 		!value.cookies.every(isStorageCookie) ||
 		!Array.isArray(value.origins) ||
@@ -252,7 +278,7 @@ function assertStorageStateShape(
 	) {
 		throw new TypeError("Playwright storage state is invalid");
 	}
-}
+};
 
 export const validateParsedStorageState = (
 	value: unknown,

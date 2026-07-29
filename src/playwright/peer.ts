@@ -16,9 +16,13 @@ export interface ResolvedPlaywrightPeer {
 	readonly modulePath: string;
 }
 
+export interface CaptureBrowserLaunchOptions {
+	readonly headless: boolean;
+}
+
 export interface ConsumerChromiumLauncher {
 	readonly executablePath?: () => string;
-	launch(options: { readonly headless: boolean }): Promise<CaptureBrowser>;
+	launch(options: CaptureBrowserLaunchOptions): Promise<CaptureBrowser>;
 	readonly launchServer: (
 		options: BrowserServerLaunchOptions,
 	) => Promise<ConsumerBrowserServer>;

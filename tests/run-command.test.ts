@@ -352,13 +352,16 @@ describe("role-only run orchestration", () => {
 				contextPath: join(tmpdir(), `shopify-e2e-${role}.json`),
 			}),
 		);
-		vi.mocked(dependencies.runChild).mockImplementation(async (invocation) => {
-			const contextPath = invocation.environment?.SHOPIFY_E2E_EXECUTION_CONTEXT;
-			events.push(
-				`child:${contextPath?.includes("admin") ? "admin" : "customer"}`,
-			);
-			return 0;
-		});
+		vi.mocked(dependencies.runChild).mockImplementation(
+			async ({ invocation }) => {
+				const contextPath =
+					invocation.environment?.SHOPIFY_E2E_EXECUTION_CONTEXT;
+				events.push(
+					`child:${contextPath?.includes("admin") ? "admin" : "customer"}`,
+				);
+				return 0;
+			},
+		);
 
 		await expect(
 			orchestrateShopifyRun({

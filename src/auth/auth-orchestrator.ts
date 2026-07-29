@@ -59,11 +59,7 @@ export interface AuthOrchestratorOptions {
 
 export interface AuthOrchestratorDependencies {
 	readonly captureRoleState: typeof captureBrowserRoleState;
-	readonly createStore: (options: {
-		readonly dataRoot: string;
-		readonly origin: string;
-		readonly roles: readonly string[];
-	}) => RoleStateStore;
+	readonly createStore: typeof createRoleStateStore;
 	readonly loadChromium: typeof loadConsumerChromium;
 	readonly loadConfig: typeof loadShopifyConfig;
 	readonly loadEnvironment: (
@@ -86,11 +82,17 @@ const createPromptContext = (options: AuthOrchestratorOptions) => ({
 	signal: options.signal,
 });
 
-const throwIfMutationCommittedDuringSignal = (
-	signal: AbortSignal,
-	role: string,
-	action: "captured" | "refreshed" | "removed",
-): void => {
+interface ThrowIfMutationCommittedDuringSignalArgs {
+	signal: AbortSignal;
+	role: string;
+	action: "captured" | "refreshed" | "removed";
+}
+
+const throwIfMutationCommittedDuringSignal = ({
+	signal,
+	role,
+	action,
+}: ThrowIfMutationCommittedDuringSignalArgs): void => {
 	if (!signal.aborted) return;
 	throw new AuthMutationCommittedSignalError(
 		commandSignalFromReason(signal.reason),
@@ -98,10 +100,15 @@ const throwIfMutationCommittedDuringSignal = (
 	);
 };
 
-const requireInteractive = (
-	options: AuthOrchestratorOptions,
+interface RequireInteractiveArgs {
+	options: AuthOrchestratorOptions;
+	message?: string;
+}
+
+const requireInteractive = ({
+	options,
 	message = "This authentication action requires an interactive terminal. Run it from a terminal with a TTY.",
-): void => {
+}: RequireInteractiveArgs): void => {
 	if (!options.interactive) throw new ShopifyE2EPreflightError(message);
 };
 
@@ -109,13 +116,14 @@ const validateTerminalMode = (options: AuthOrchestratorOptions): void => {
 	switch (options.action) {
 		case "capture":
 		case "refresh":
-			requireInteractive(options);
+			requireInteractive({ options });
 			return;
 		case "menu":
-			requireInteractive(
+			requireInteractive({
 				options,
-				"Bare `shopify-e2e auth` requires an interactive terminal. Use `auth capture`, `auth refresh`, `auth remove`, or `auth list` directly.",
-			);
+				message:
+					"Bare `shopify-e2e auth` requires an interactive terminal. Use `auth capture`, `auth refresh`, `auth remove`, or `auth list` directly.",
+			});
 			return;
 		case "remove":
 			if (
@@ -139,10 +147,15 @@ const validateTerminalMode = (options: AuthOrchestratorOptions): void => {
 	}
 };
 
-const roleSummary = (
-	summaries: readonly RoleStateSummary[],
-	role: string,
-): RoleStateSummary | undefined =>
+interface RoleSummaryArgs {
+	summaries: readonly RoleStateSummary[];
+	role: string;
+}
+
+const roleSummary = ({
+	summaries,
+	role,
+}: RoleSummaryArgs): RoleStateSummary | undefined =>
 	summaries.find((summary) => summary.role === role);
 
 const readyCapture = (role: string): ShopifyE2EPreflightError =>
@@ -150,19 +163,33 @@ const readyCapture = (role: string): ShopifyE2EPreflightError =>
 		`Role ${role} already has saved state. Run \`shopify-e2e auth refresh --role ${role}\`.`,
 	);
 
-const classifyInvalidState = async (
-	store: RoleStateStore,
-	role: string,
-): Promise<ShopifyE2EPreflightError> =>
-	invalidStateForRole(role, await store.removableRoles());
+interface ClassifyInvalidStateArgs {
+	store: RoleStateStore;
+	role: string;
+}
 
-const resolveConfiguredSummary = async (
-	config: LoadedShopifyConfig,
-	store: RoleStateStore,
-	role: string,
-): Promise<RoleStateSummary> => {
-	const selectedRole = assertConfiguredRole(config.roles, role);
-	const summary = roleSummary(await store.list(), selectedRole);
+const classifyInvalidState = async ({
+	store,
+	role,
+}: ClassifyInvalidStateArgs): Promise<ShopifyE2EPreflightError> =>
+	invalidStateForRole({ role, removableRoles: await store.removableRoles() });
+
+interface ResolveConfiguredSummaryArgs {
+	config: LoadedShopifyConfig;
+	store: RoleStateStore;
+	role: string;
+}
+
+const resolveConfiguredSummary = async ({
+	config,
+	store,
+	role,
+}: ResolveConfiguredSummaryArgs): Promise<RoleStateSummary> => {
+	const selectedRole = assertConfiguredRole({ roles: config.roles, role });
+	const summary = roleSummary({
+		summaries: await store.list(),
+		role: selectedRole,
+	});
 	if (!summary) throw unknownRole(selectedRole);
 	return summary;
 };
@@ -185,8 +212,8 @@ const selectRole = async ({
 	if (candidates.length === 0) {
 		throw new ShopifyE2EPreflightError(emptyMessage);
 	}
-	const role = await runWithCommandSignal(
-		() =>
+	const role = await runWithCommandSignal({
+		operation: () =>
 			prompts.select({
 				...createPromptContext(options),
 				choices: candidates.map((candidate) => ({
@@ -195,8 +222,8 @@ const selectRole = async ({
 				})),
 				message,
 			}),
-		options.signal,
-	);
+		signal: options.signal,
+	});
 	if (!candidates.includes(role)) {
 		throw new ShopifyE2EPreflightError("Selected role is unavailable");
 	}
@@ -222,14 +249,14 @@ const captureState = async ({
 	options,
 	origin,
 }: CaptureStateArgs): Promise<PlaywrightStorageState | undefined> => {
-	const peer = await runWithCommandSignal(
-		() => dependencies.resolvePeer(config.projectRoot),
-		options.signal,
-	);
-	const chromium = await runWithCommandSignal(
-		() => dependencies.loadChromium(peer),
-		options.signal,
-	);
+	const peer = await runWithCommandSignal({
+		operation: () => dependencies.resolvePeer(config.projectRoot),
+		signal: options.signal,
+	});
+	const chromium = await runWithCommandSignal({
+		operation: () => dependencies.loadChromium(peer),
+		signal: options.signal,
+	});
 	throwIfCommandAborted(options.signal);
 	const result = await dependencies.captureRoleState({
 		dependencies: {
@@ -255,17 +282,25 @@ const captureState = async ({
 	return result.state;
 };
 
-const runCapture = async (
-	config: LoadedShopifyConfig,
-	store: RoleStateStore,
-	origin: string,
-	options: AuthOrchestratorOptions,
-	dependencies: AuthOrchestratorDependencies,
-): Promise<void> => {
-	const summaries = await runWithCommandSignal(
-		() => store.list(),
-		options.signal,
-	);
+interface RunCaptureArgs {
+	config: LoadedShopifyConfig;
+	store: RoleStateStore;
+	origin: string;
+	options: AuthOrchestratorOptions;
+	dependencies: AuthOrchestratorDependencies;
+}
+
+const runCapture = async ({
+	config,
+	store,
+	origin,
+	options,
+	dependencies,
+}: RunCaptureArgs): Promise<void> => {
+	const summaries = await runWithCommandSignal({
+		operation: () => store.list(),
+		signal: options.signal,
+	});
 	const role =
 		options.role ??
 		(await selectRole({
@@ -278,16 +313,16 @@ const runCapture = async (
 			options,
 			prompts: dependencies.prompts,
 		}));
-	const summary = await resolveConfiguredSummary(config, store, role);
+	const summary = await resolveConfiguredSummary({ config, store, role });
 	if (summary.status === "ready") throw readyCapture(role);
 	if (summary.status === "invalid") {
-		throw await classifyInvalidState(store, role);
+		throw await classifyInvalidState({ store, role });
 	}
 	if (summary.status !== "missing") throw unknownRole(role);
-	await runWithCommandSignal(
-		() => store.assertCaptureAvailable(role),
-		options.signal,
-	);
+	await runWithCommandSignal({
+		operation: () => store.assertCaptureAvailable(role),
+		signal: options.signal,
+	});
 	const state = await captureState({
 		cancellationMessage:
 			"Authentication capture cancelled; no role state changed.",
@@ -301,23 +336,35 @@ const runCapture = async (
 	if (!state) return;
 	throwIfCommandAborted(options.signal);
 	await store.capture({ role, signal: options.signal, state });
-	throwIfMutationCommittedDuringSignal(options.signal, role, "captured");
+	throwIfMutationCommittedDuringSignal({
+		signal: options.signal,
+		role,
+		action: "captured",
+	});
 	dependencies.report(
 		`Saved role state for ${role}. Run \`shopify-e2e run --role ${role}\`.`,
 	);
 };
 
-const runRefresh = async (
-	config: LoadedShopifyConfig,
-	store: RoleStateStore,
-	origin: string,
-	options: AuthOrchestratorOptions,
-	dependencies: AuthOrchestratorDependencies,
-): Promise<void> => {
-	const summaries = await runWithCommandSignal(
-		() => store.list(),
-		options.signal,
-	);
+interface RunRefreshArgs {
+	config: LoadedShopifyConfig;
+	store: RoleStateStore;
+	origin: string;
+	options: AuthOrchestratorOptions;
+	dependencies: AuthOrchestratorDependencies;
+}
+
+const runRefresh = async ({
+	config,
+	store,
+	origin,
+	options,
+	dependencies,
+}: RunRefreshArgs): Promise<void> => {
+	const summaries = await runWithCommandSignal({
+		operation: () => store.list(),
+		signal: options.signal,
+	});
 	const role =
 		options.role ??
 		(await selectRole({
@@ -330,24 +377,24 @@ const runRefresh = async (
 			options,
 			prompts: dependencies.prompts,
 		}));
-	const summary = await resolveConfiguredSummary(config, store, role);
+	const summary = await resolveConfiguredSummary({ config, store, role });
 	if (summary.status === "missing") throw missingState(role);
 	if (summary.status === "invalid") {
-		throw await classifyInvalidState(store, role);
+		throw await classifyInvalidState({ store, role });
 	}
 	if (summary.status !== "ready") throw unknownRole(role);
 	let selected: RoleStateSelection;
 	try {
-		selected = await runWithCommandSignal(
-			() => store.resolve(role),
-			options.signal,
-		);
+		selected = await runWithCommandSignal({
+			operation: () => store.resolve(role),
+			signal: options.signal,
+		});
 	} catch (error) {
 		if (error instanceof ShopifyE2EPreflightError) {
-			const latest = await resolveConfiguredSummary(config, store, role);
+			const latest = await resolveConfiguredSummary({ config, store, role });
 			if (latest.status === "missing") throw missingState(role);
 			if (latest.status === "invalid") {
-				throw await classifyInvalidState(store, role);
+				throw await classifyInvalidState({ store, role });
 			}
 		}
 		throw error;
@@ -365,20 +412,34 @@ const runRefresh = async (
 	if (!state) return;
 	throwIfCommandAborted(options.signal);
 	await store.refresh({ role, signal: options.signal, state });
-	throwIfMutationCommittedDuringSignal(options.signal, role, "refreshed");
+	throwIfMutationCommittedDuringSignal({
+		signal: options.signal,
+		role,
+		action: "refreshed",
+	});
 	dependencies.report(`Refreshed role state for ${role}.`);
 };
 
-const runRemove = async (
-	store: RoleStateStore,
-	options: AuthOrchestratorOptions,
-	dependencies: AuthOrchestratorDependencies,
-	cachedCandidates?: readonly string[],
-): Promise<void> => {
-	const skipConfirmation = options.yes === true;
+interface RunRemoveArgs {
+	store: RoleStateStore;
+	options: AuthOrchestratorOptions;
+	dependencies: AuthOrchestratorDependencies;
+	cachedCandidates?: readonly string[];
+}
+
+const runRemove = async ({
+	store,
+	options,
+	dependencies,
+	cachedCandidates,
+}: RunRemoveArgs): Promise<void> => {
+	const shouldSkipConfirmation = options.yes === true;
 	const candidates =
 		cachedCandidates ??
-		(await runWithCommandSignal(() => store.removableRoles(), options.signal));
+		(await runWithCommandSignal({
+			operation: () => store.removableRoles(),
+			signal: options.signal,
+		}));
 	const role =
 		options.role ??
 		(await selectRole({
@@ -390,26 +451,29 @@ const runRemove = async (
 			prompts: dependencies.prompts,
 		}));
 	if (!candidates.includes(role)) {
-		const summary = roleSummary(
-			await runWithCommandSignal(() => store.list(), options.signal),
+		const summary = roleSummary({
+			summaries: await runWithCommandSignal({
+				operation: () => store.list(),
+				signal: options.signal,
+			}),
 			role,
-		);
+		});
 		if (summary?.status === "invalid") throw unsafeCollision(role);
 		throw new ShopifyE2EPreflightError(
 			"Role state is unknown or cannot be removed",
 		);
 	}
 
-	if (!skipConfirmation) {
-		const shouldRemove = await runWithCommandSignal(
-			() =>
+	if (!shouldSkipConfirmation) {
+		const shouldRemove = await runWithCommandSignal({
+			operation: () =>
 				dependencies.prompts.confirm({
 					...createPromptContext(options),
 					default: false,
 					message: `Remove role state for ${role}? Locally saved browser authentication will be removed.`,
 				}),
-			options.signal,
-		);
+			signal: options.signal,
+		});
 		if (!shouldRemove) {
 			dependencies.report(
 				"Authentication role-state removal cancelled; no role state changed.",
@@ -419,62 +483,81 @@ const runRemove = async (
 	}
 
 	await store.remove({ role, signal: options.signal });
-	throwIfMutationCommittedDuringSignal(options.signal, role, "removed");
+	throwIfMutationCommittedDuringSignal({
+		signal: options.signal,
+		role,
+		action: "removed",
+	});
 	dependencies.report(`Removed role state for ${role}.`);
 };
 
-const runList = async (
-	store: RoleStateStore,
-	options: AuthOrchestratorOptions,
-	dependencies: AuthOrchestratorDependencies,
-	summaries?: readonly RoleStateSummary[],
-): Promise<void> => {
+interface RunListArgs {
+	store: RoleStateStore;
+	options: AuthOrchestratorOptions;
+	dependencies: AuthOrchestratorDependencies;
+	summaries?: readonly RoleStateSummary[];
+}
+
+const runList = async ({
+	store,
+	options,
+	dependencies,
+	summaries,
+}: RunListArgs): Promise<void> => {
 	const entries =
 		summaries ??
-		(await runWithCommandSignal(() => store.list(), options.signal));
+		(await runWithCommandSignal({
+			operation: () => store.list(),
+			signal: options.signal,
+		}));
 	for (const entry of entries) {
 		dependencies.report(`${entry.role}\t${entry.status}`);
 	}
 };
 
-export const orchestrateAuth = async (
-	options: AuthOrchestratorOptions,
-	dependencies: AuthOrchestratorDependencies,
-): Promise<void> => {
+export interface OrchestrateAuthArgs {
+	options: AuthOrchestratorOptions;
+	dependencies: AuthOrchestratorDependencies;
+}
+
+export const orchestrateAuth = async ({
+	options,
+	dependencies,
+}: OrchestrateAuthArgs): Promise<void> => {
 	validateTerminalMode(options);
-	const projectRoot = await runWithCommandSignal(
-		() =>
+	const projectRoot = await runWithCommandSignal({
+		operation: () =>
 			dependencies.loadEnvironment({
 				cwd: options.cwd,
 				environment: options.environment,
 			}),
-		options.signal,
-	);
+		signal: options.signal,
+	});
 	throwIfCommandAborted(options.signal);
 	const origin = configuredOriginForCommand(options.environment);
-	const config = await runWithCommandSignal(
-		() =>
+	const config = await runWithCommandSignal({
+		operation: () =>
 			dependencies.loadConfig({
 				environment: options.environment,
 				projectRoot,
 			}),
-		options.signal,
-	);
+		signal: options.signal,
+	});
 	const liveOrigin = configuredOriginForCommand(options.environment);
 	if (liveOrigin !== origin) {
 		throw new ShopifyE2EPreflightError(
 			"SHOPIFY_STORE_URL must not change while loading the dedicated Shopify config. Set it in the consumer .env file or inherited environment.",
 		);
 	}
-	const dataRoot = await runWithCommandSignal(
-		() =>
+	const dataRoot = await runWithCommandSignal({
+		operation: () =>
 			dependencies.resolveDataRoot({
 				dataDir: options.dataDir,
 				packageRoot: options.packageRoot,
 				projectRoot,
 			}),
-		options.signal,
-	);
+		signal: options.signal,
+	});
 	throwIfCommandAborted(options.signal);
 	const store = dependencies.createStore({
 		dataRoot,
@@ -486,18 +569,21 @@ export const orchestrateAuth = async (
 	let summaries: readonly RoleStateSummary[] | undefined;
 	let removalCandidates: readonly string[] | undefined;
 	if (options.action === "menu") {
-		summaries = await runWithCommandSignal(() => store.list(), options.signal);
-		removalCandidates = await runWithCommandSignal(
-			() => store.removableRoles(),
-			options.signal,
-		);
+		summaries = await runWithCommandSignal({
+			operation: () => store.list(),
+			signal: options.signal,
+		});
+		removalCandidates = await runWithCommandSignal({
+			operation: () => store.removableRoles(),
+			signal: options.signal,
+		});
 		const hasCapture = summaries.some(
 			(summary) => summary.status === "missing",
 		);
 		const hasRefresh = summaries.some((summary) => summary.status === "ready");
 		const hasRemoval = removalCandidates.length > 0;
-		const selectedAction = await runWithCommandSignal(
-			() =>
+		const selectedAction = await runWithCommandSignal({
+			operation: () =>
 				dependencies.prompts.select({
 					...createPromptContext(options),
 					choices: [
@@ -521,8 +607,8 @@ export const orchestrateAuth = async (
 					],
 					message: "Authentication role states",
 				}),
-			options.signal,
-		);
+			signal: options.signal,
+		});
 		if (selectedAction === "cancel") {
 			dependencies.report(
 				"Authentication menu cancelled; no role state changed.",
@@ -536,16 +622,21 @@ export const orchestrateAuth = async (
 
 	switch (action) {
 		case "capture":
-			await runCapture(config, store, origin, options, dependencies);
+			await runCapture({ config, store, origin, options, dependencies });
 			return;
 		case "refresh":
-			await runRefresh(config, store, origin, options, dependencies);
+			await runRefresh({ config, store, origin, options, dependencies });
 			return;
 		case "remove":
-			await runRemove(store, options, dependencies, removalCandidates);
+			await runRemove({
+				store,
+				options,
+				dependencies,
+				cachedCandidates: removalCandidates,
+			});
 			return;
 		case "list":
-			await runList(store, options, dependencies, summaries);
+			await runList({ store, options, dependencies, summaries });
 			return;
 		default: {
 			const unsupportedAction: never = action;
@@ -557,10 +648,15 @@ export const orchestrateAuth = async (
 	}
 };
 
-export const defaultAuthDependencies = (
-	prompts: PromptFunctions,
-	report: (message: string) => void,
-): AuthOrchestratorDependencies => ({
+export interface DefaultAuthDependenciesArgs {
+	prompts: PromptFunctions;
+	report: (message: string) => void;
+}
+
+export const defaultAuthDependencies = ({
+	prompts,
+	report,
+}: DefaultAuthDependenciesArgs): AuthOrchestratorDependencies => ({
 	captureRoleState: captureBrowserRoleState,
 	createStore: createRoleStateStore,
 	loadChromium: loadConsumerChromium,

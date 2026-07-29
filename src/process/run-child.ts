@@ -160,7 +160,7 @@ export const runChild = async ({
 			}, terminationGraceMs);
 			killTimer.unref();
 		};
-		function onAbort(): void {
+		const onAbort = (): void => {
 			if (interruption || !signal) return;
 			interruption = errorFromAbortSignal(signal);
 			// Playwright 1.61 owns graceful runner and web-server teardown on
@@ -171,7 +171,7 @@ export const runChild = async ({
 			}
 			graceTimer = setTimeout(forceKill, terminationGraceMs);
 			graceTimer.unref();
-		}
+		};
 
 		child.once("error", (cause) => {
 			if (interruption) {

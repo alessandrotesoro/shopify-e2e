@@ -1,12 +1,20 @@
 import type { ElementHandle, Locator, Page, Response } from "@playwright/test";
 
 import { configuredOriginFromEnvironment } from "../role-states/configured-origin.js";
-import { typeLikeHuman } from "./type-like-human.js";
+import { type TypeLikeHumanOptions, typeLikeHuman } from "./type-like-human.js";
 
 const PASSWORD_INPUT_SELECTOR = 'input[type="password"]';
 const FORM_SELECTOR = "form";
 
-const hasConfiguredOrigin = (page: Page, configuredOrigin: string): boolean => {
+interface HasConfiguredOriginArgs {
+	page: Page;
+	configuredOrigin: string;
+}
+
+const hasConfiguredOrigin = ({
+	page,
+	configuredOrigin,
+}: HasConfiguredOriginArgs): boolean => {
 	try {
 		return new URL(page.url()).origin === configuredOrigin;
 	} catch {
@@ -53,7 +61,7 @@ export const openStorefront = async (page: Page): Promise<void> => {
 			"The configured Shopify storefront did not return a successful page response.",
 		);
 	}
-	if (!hasConfiguredOrigin(page, configuredOrigin)) {
+	if (!hasConfiguredOrigin({ page, configuredOrigin })) {
 		throw storefrontError(
 			"The Shopify storefront redirected outside the configured store origin.",
 		);
@@ -74,10 +82,15 @@ const disposeChallenge = async (
 	]);
 };
 
-const sameElement = async <T extends Node>(
-	left: ElementHandle<T>,
-	right: ElementHandle<T>,
-): Promise<boolean> => {
+interface SameElementArgs<T extends Node> {
+	left: ElementHandle<T>;
+	right: ElementHandle<T>;
+}
+
+const sameElement = async <T extends Node>({
+	left,
+	right,
+}: SameElementArgs<T>): Promise<boolean> => {
 	try {
 		return await left.evaluate(
 			(element, candidate) => element === candidate,
@@ -88,10 +101,15 @@ const sameElement = async <T extends Node>(
 	}
 };
 
-const inspectPasswordChallenge = async (
-	page: Page,
-	configuredOrigin: string,
-): Promise<PasswordChallenge | null> => {
+interface InspectPasswordChallengeArgs {
+	page: Page;
+	configuredOrigin: string;
+}
+
+const inspectPasswordChallenge = async ({
+	page,
+	configuredOrigin,
+}: InspectPasswordChallengeArgs): Promise<PasswordChallenge | null> => {
 	const rawPasswordInputs = await page
 		.locator(PASSWORD_INPUT_SELECTOR)
 		.elementHandles();
@@ -127,10 +145,10 @@ const inspectPasswordChallenge = async (
 			const nestedInputs = await form.$$(PASSWORD_INPUT_SELECTOR);
 			let method: string | null;
 			let action: string | null;
-			let visible: boolean;
-			let connected: boolean;
+			let isVisible: boolean;
+			let isConnected: boolean;
 			try {
-				[method, action, visible, connected] = await Promise.all([
+				[method, action, isVisible, isConnected] = await Promise.all([
 					form.getAttribute("method"),
 					form.getAttribute("action"),
 					form.isVisible(),
@@ -151,7 +169,7 @@ const inspectPasswordChallenge = async (
 				form,
 				method,
 				nestedCount,
-				visible: visible && connected,
+				visible: isVisible && isConnected,
 			});
 		}
 
@@ -213,16 +231,22 @@ const inspectPasswordChallenge = async (
 	}
 };
 
-const verifyPinnedChallenge = async (
-	page: Page,
-	configuredOrigin: string,
-	pinned: PasswordChallenge,
-): Promise<boolean> => {
-	if (!hasConfiguredOrigin(page, configuredOrigin)) return false;
+interface VerifyPinnedChallengeArgs {
+	page: Page;
+	configuredOrigin: string;
+	pinned: PasswordChallenge;
+}
+
+const verifyPinnedChallenge = async ({
+	page,
+	configuredOrigin,
+	pinned,
+}: VerifyPinnedChallengeArgs): Promise<boolean> => {
+	if (!hasConfiguredOrigin({ page, configuredOrigin })) return false;
 
 	let current: PasswordChallenge | null;
 	try {
-		current = await inspectPasswordChallenge(page, configuredOrigin);
+		current = await inspectPasswordChallenge({ page, configuredOrigin });
 	} catch {
 		return false;
 	}
@@ -230,8 +254,8 @@ const verifyPinnedChallenge = async (
 
 	try {
 		const [sameForm, sameInput] = await Promise.all([
-			sameElement(pinned.form, current.form),
-			sameElement(pinned.input, current.input),
+			sameElement({ left: pinned.form, right: current.form }),
+			sameElement({ left: pinned.input, right: current.input }),
 		]);
 		return sameForm && sameInput;
 	} finally {
@@ -249,7 +273,7 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 			"The Shopify storefront did not become ready for password inspection.",
 		);
 	}
-	if (!hasConfiguredOrigin(page, configuredOrigin)) {
+	if (!hasConfiguredOrigin({ page, configuredOrigin })) {
 		throw storefrontError(
 			"Refusing to inspect a storefront password challenge outside the configured store origin.",
 		);
@@ -257,7 +281,7 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 
 	let challenge: PasswordChallenge | null;
 	try {
-		challenge = await inspectPasswordChallenge(page, configuredOrigin);
+		challenge = await inspectPasswordChallenge({ page, configuredOrigin });
 	} catch (error) {
 		if (error instanceof UnsafePasswordChallengeError) {
 			throw error;
@@ -267,7 +291,13 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 		);
 	}
 	if (challenge === null) return;
-	if (!(await verifyPinnedChallenge(page, configuredOrigin, challenge))) {
+	if (
+		!(await verifyPinnedChallenge({
+			page,
+			configuredOrigin,
+			pinned: challenge,
+		}))
+	) {
 		await disposeChallenge(challenge);
 		throw unsafePasswordChallenge();
 	}
@@ -283,10 +313,8 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 	let response: Response | null;
 	try {
 		const pinnedInput = {
-			pressSequentially: (
-				text: string,
-				options?: { readonly delay?: number },
-			) => challenge.input.type(text, options),
+			pressSequentially: (text: string, options?: TypeLikeHumanOptions) =>
+				challenge.input.type(text, options),
 		} as Locator;
 		[, response] = await Promise.all([
 			typeLikeHuman(pinnedInput, password).then(() =>
@@ -323,7 +351,7 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 			"The storefront password submission did not return a successful page response.",
 		);
 	}
-	if (!hasConfiguredOrigin(page, configuredOrigin)) {
+	if (!hasConfiguredOrigin({ page, configuredOrigin })) {
 		throw storefrontError(
 			"The storefront password submission redirected outside the configured store origin.",
 		);
@@ -331,7 +359,10 @@ export const unlockStorefront = async (page: Page): Promise<void> => {
 
 	let remainingChallenge: PasswordChallenge | null;
 	try {
-		remainingChallenge = await inspectPasswordChallenge(page, configuredOrigin);
+		remainingChallenge = await inspectPasswordChallenge({
+			page,
+			configuredOrigin,
+		});
 	} catch {
 		throw storefrontError(
 			"The storefront unlock result could not be verified safely.",

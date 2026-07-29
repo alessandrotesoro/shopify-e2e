@@ -99,10 +99,15 @@ const cleanupTemporary = async (path: string): Promise<unknown | undefined> => {
 const isMissing = (error: unknown): boolean =>
 	(error as NodeJS.ErrnoException).code === "ENOENT";
 
-const regularDirectoryExists = async (
-	path: string,
-	label: string,
-): Promise<boolean> => {
+interface RegularDirectoryExistsArgs {
+	path: string;
+	label: string;
+}
+
+const regularDirectoryExists = async ({
+	path,
+	label,
+}: RegularDirectoryExistsArgs): Promise<boolean> => {
 	let metadata: Stats;
 	try {
 		metadata = await lstat(path);
@@ -116,19 +121,29 @@ const regularDirectoryExists = async (
 	return true;
 };
 
-const assertRegularDirectory = async (
-	path: string,
-	label: string,
-): Promise<void> => {
-	if (!(await regularDirectoryExists(path, label))) {
+interface AssertRegularDirectoryArgs {
+	path: string;
+	label: string;
+}
+
+const assertRegularDirectory = async ({
+	path,
+	label,
+}: AssertRegularDirectoryArgs): Promise<void> => {
+	if (!(await regularDirectoryExists({ path, label }))) {
 		throw new ShopifyE2EPreflightError(`${label} is invalid`);
 	}
 };
 
-const readBoundedJson = async (
-	path: string,
-	limit: number,
-): Promise<unknown> => {
+interface ReadBoundedJsonArgs {
+	path: string;
+	limit: number;
+}
+
+const readBoundedJson = async ({
+	path,
+	limit,
+}: ReadBoundedJsonArgs): Promise<unknown> => {
 	let metadata: Stats;
 	try {
 		metadata = await lstat(path);
@@ -189,11 +204,17 @@ const parseRoleStateMetadata = (value: unknown): RoleStateMetadata => {
 	};
 };
 
-const writeOwnerOnlyJson = async (
-	path: string,
-	value: unknown,
+interface WriteOwnerOnlyJsonArgs {
+	path: string;
+	value: unknown;
+	trailingNewline?: boolean;
+}
+
+const writeOwnerOnlyJson = async ({
+	path,
+	value,
 	trailingNewline = true,
-): Promise<void> => {
+}: WriteOwnerOnlyJsonArgs): Promise<void> => {
 	const serialized = JSON.stringify(value);
 	await writeFile(path, trailingNewline ? `${serialized}\n` : serialized, {
 		flag: "wx",
@@ -228,6 +249,18 @@ const validateStoredRoleState = (value: unknown): PlaywrightStorageState => {
 	}
 };
 
+interface WriteRoleDirectoryArgs {
+	directory: string;
+	role: string;
+	state: PlaywrightStorageState;
+}
+
+interface WriteRoleDirectoryContentsArgs {
+	directory: string;
+	role: string;
+	state: PlaywrightStorageState;
+}
+
 export class RoleStateStore {
 	readonly #dataRoot: string;
 	readonly #origin: string;
@@ -260,45 +293,45 @@ export class RoleStateStore {
 
 	async #partitionStatus(): Promise<PartitionStatus> {
 		if (
-			!(await regularDirectoryExists(
-				this.#dataRoot,
-				"Role state data directory",
-			))
+			!(await regularDirectoryExists({
+				path: this.#dataRoot,
+				label: "Role state data directory",
+			}))
 		) {
 			return { originExists: false, registryExists: false };
 		}
 		if (
-			!(await regularDirectoryExists(
-				this.#originsDirectory,
-				"Role state registry",
-			))
+			!(await regularDirectoryExists({
+				path: this.#originsDirectory,
+				label: "Role state registry",
+			}))
 		) {
 			return { originExists: false, registryExists: false };
 		}
 		if (
-			!(await regularDirectoryExists(
-				this.#originDirectory,
-				"Role state origin registry",
-			))
+			!(await regularDirectoryExists({
+				path: this.#originDirectory,
+				label: "Role state origin registry",
+			}))
 		) {
 			return { originExists: false, registryExists: false };
 		}
 		const originMetadata = parseOriginMetadata(
-			await readBoundedJson(
-				join(this.#originDirectory, "origin.json"),
-				MAX_METADATA_BYTES,
-			),
+			await readBoundedJson({
+				path: join(this.#originDirectory, "origin.json"),
+				limit: MAX_METADATA_BYTES,
+			}),
 		);
 		if (originMetadata.origin !== this.#origin) {
 			throw new ShopifyE2EPreflightError(
 				"Role state origin registry is invalid",
 			);
 		}
-		const registryExists = await regularDirectoryExists(
-			this.#statesDirectory,
-			"Role state registry",
-		);
-		return { originExists: true, registryExists };
+		const doesRegistryExist = await regularDirectoryExists({
+			path: this.#statesDirectory,
+			label: "Role state registry",
+		});
+		return { originExists: true, registryExists: doesRegistryExist };
 	}
 
 	async #prepareRegistryDirectories(): Promise<void> {
@@ -307,17 +340,20 @@ export class RoleStateStore {
 				mode: 0o700,
 				recursive: true,
 			});
-			await assertRegularDirectory(this.#dataRoot, "Role state data directory");
+			await assertRegularDirectory({
+				path: this.#dataRoot,
+				label: "Role state data directory",
+			});
 			if (createdDataRoot !== undefined) await chmod(this.#dataRoot, 0o700);
 			try {
 				await mkdir(this.#originsDirectory, { mode: 0o700 });
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			}
-			await assertRegularDirectory(
-				this.#originsDirectory,
-				"Role state registry",
-			);
+			await assertRegularDirectory({
+				path: this.#originsDirectory,
+				label: "Role state registry",
+			});
 			await chmod(this.#originsDirectory, 0o700);
 		} catch (error) {
 			if (error instanceof ShopifyE2EPreflightError) throw error;
@@ -335,10 +371,10 @@ export class RoleStateStore {
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			}
-			await assertRegularDirectory(
-				this.#statesDirectory,
-				"Role state registry",
-			);
+			await assertRegularDirectory({
+				path: this.#statesDirectory,
+				label: "Role state registry",
+			});
 			await chmod(this.#statesDirectory, 0o700);
 		} catch (error) {
 			if (error instanceof ShopifyE2EPreflightError) throw error;
@@ -349,52 +385,55 @@ export class RoleStateStore {
 		}
 	}
 
-	async #writeRoleDirectory(
-		directory: string,
-		role: string,
-		state: PlaywrightStorageState,
-	): Promise<void> {
+	async #writeRoleDirectory({
+		directory,
+		role,
+		state,
+	}: WriteRoleDirectoryArgs): Promise<void> {
 		await mkdir(directory, { mode: 0o700 });
-		await this.#writeRoleDirectoryContents(directory, role, state);
+		await this.#writeRoleDirectoryContents({ directory, role, state });
 	}
 
-	async #writeRoleDirectoryContents(
-		directory: string,
-		role: string,
-		state: PlaywrightStorageState,
-	): Promise<void> {
+	async #writeRoleDirectoryContents({
+		directory,
+		role,
+		state,
+	}: WriteRoleDirectoryContentsArgs): Promise<void> {
 		await chmod(directory, 0o700);
-		await writeOwnerOnlyJson(join(directory, "role-state.json"), {
-			origin: this.#origin,
-			role,
-			schemaVersion: 1,
+		await writeOwnerOnlyJson({
+			path: join(directory, "role-state.json"),
+			value: {
+				origin: this.#origin,
+				role,
+				schemaVersion: 1,
+			},
 		});
-		await writeOwnerOnlyJson(
-			join(directory, "storage-state.json"),
-			state,
-			false,
-		);
+		await writeOwnerOnlyJson({
+			path: join(directory, "storage-state.json"),
+			value: state,
+			trailingNewline: false,
+		});
 	}
 
 	async #readReadyFromExistingRegistry(
 		role: string,
 	): Promise<RoleStateSelection> {
 		const directory = join(this.#statesDirectory, role);
-		await assertRegularDirectory(directory, "Role state");
+		await assertRegularDirectory({ path: directory, label: "Role state" });
 		const metadata = parseRoleStateMetadata(
-			await readBoundedJson(
-				join(directory, "role-state.json"),
-				MAX_METADATA_BYTES,
-			),
+			await readBoundedJson({
+				path: join(directory, "role-state.json"),
+				limit: MAX_METADATA_BYTES,
+			}),
 		);
 		if (metadata.role !== role || metadata.origin !== this.#origin) {
 			throw new ShopifyE2EPreflightError("Role state is invalid");
 		}
 		const state = validateStoredRoleState(
-			await readBoundedJson(
-				join(directory, "storage-state.json"),
-				MAX_STORAGE_STATE_BYTES,
-			),
+			await readBoundedJson({
+				path: join(directory, "storage-state.json"),
+				limit: MAX_STORAGE_STATE_BYTES,
+			}),
 		);
 		return { role, state };
 	}
@@ -456,33 +495,36 @@ export class RoleStateStore {
 
 		if (!partition.originExists) {
 			let temporaryOrigin: string | undefined;
-			let committed = false;
+			let isCommitted = false;
 			try {
 				temporaryOrigin = await mkdtemp(
 					join(this.#originsDirectory, ".tmp-origin-"),
 				);
 				await chmod(temporaryOrigin, 0o700);
-				await writeOwnerOnlyJson(join(temporaryOrigin, "origin.json"), {
-					origin: this.#origin,
-					schemaVersion: 1,
+				await writeOwnerOnlyJson({
+					path: join(temporaryOrigin, "origin.json"),
+					value: {
+						origin: this.#origin,
+						schemaVersion: 1,
+					},
 				});
 				const temporaryStates = join(temporaryOrigin, "role-states");
 				await mkdir(temporaryStates, { mode: 0o700 });
-				await this.#writeRoleDirectory(
-					join(temporaryStates, role),
+				await this.#writeRoleDirectory({
+					directory: join(temporaryStates, role),
 					role,
-					validatedState,
-				);
+					state: validatedState,
+				});
 				if (signal) throwIfCommandAborted(signal);
 				await rename(temporaryOrigin, this.#originDirectory);
-				committed = true;
+				isCommitted = true;
 				if (signal) throwIfCommandAborted(signal);
 			} catch (error) {
 				const cleanupError =
 					temporaryOrigin === undefined
 						? undefined
 						: await cleanupTemporary(temporaryOrigin);
-				if (committed && error instanceof CommandSignalError) {
+				if (isCommitted && error instanceof CommandSignalError) {
 					try {
 						await rm(this.#originDirectory, {
 							force: true,
@@ -520,26 +562,26 @@ export class RoleStateStore {
 		}
 		const target = join(this.#statesDirectory, role);
 		let temporaryRole: string | undefined;
-		let committed = false;
+		let isCommitted = false;
 		try {
 			temporaryRole = await mkdtemp(
 				join(this.#statesDirectory, `.tmp-${role}-`),
 			);
-			await this.#writeRoleDirectoryContents(
-				temporaryRole,
+			await this.#writeRoleDirectoryContents({
+				directory: temporaryRole,
 				role,
-				validatedState,
-			);
+				state: validatedState,
+			});
 			if (signal) throwIfCommandAborted(signal);
 			await rename(temporaryRole, target);
-			committed = true;
+			isCommitted = true;
 			if (signal) throwIfCommandAborted(signal);
 		} catch (error) {
 			const cleanupError =
 				temporaryRole === undefined
 					? undefined
 					: await cleanupTemporary(temporaryRole);
-			if (committed && error instanceof CommandSignalError) {
+			if (isCommitted && error instanceof CommandSignalError) {
 				try {
 					await rm(target, { force: true, recursive: true });
 				} catch (rollbackError) {
@@ -584,31 +626,35 @@ export class RoleStateStore {
 			roleDirectory,
 			`storage-state.json.rollback-${randomUUID()}`,
 		);
-		let replacementCommitted = false;
-		let rollbackPrepared = false;
+		let isReplacementCommitted = false;
+		let isRollbackPrepared = false;
 		try {
 			const previousBytes = await readFile(statePath);
 			const rollbackFile = await open(rollbackState, "wx", 0o600);
-			rollbackPrepared = true;
+			isRollbackPrepared = true;
 			try {
 				await rollbackFile.writeFile(previousBytes);
 			} finally {
 				await rollbackFile.close();
 			}
 			await chmod(rollbackState, 0o600);
-			await writeOwnerOnlyJson(temporaryState, validatedState, false);
+			await writeOwnerOnlyJson({
+				path: temporaryState,
+				value: validatedState,
+				trailingNewline: false,
+			});
 			if (signal) throwIfCommandAborted(signal);
 			await rename(temporaryState, statePath);
-			replacementCommitted = true;
+			isReplacementCommitted = true;
 			if (signal) throwIfCommandAborted(signal);
 			await rm(rollbackState, { force: true });
-			rollbackPrepared = false;
+			isRollbackPrepared = false;
 		} catch (error) {
 			const cleanupError = await cleanupTemporary(temporaryState);
-			if (replacementCommitted && rollbackPrepared) {
+			if (isReplacementCommitted && isRollbackPrepared) {
 				try {
 					await rename(rollbackState, statePath);
-					rollbackPrepared = false;
+					isRollbackPrepared = false;
 				} catch (rollbackError) {
 					throw new ShopifyE2EInfrastructureError(
 						"Role state refresh rollback could not complete safely",
@@ -616,7 +662,7 @@ export class RoleStateStore {
 					);
 				}
 			}
-			if (rollbackPrepared) {
+			if (isRollbackPrepared) {
 				try {
 					await rm(rollbackState, { force: true });
 				} catch (rollbackCleanupError) {
@@ -721,9 +767,9 @@ export class RoleStateStore {
 	async #assertRemovableTarget(role: string): Promise<string> {
 		assertRoleName(role);
 		const target = join(this.#statesDirectory, role);
-		let exactNameExists: boolean;
+		let doesExactNameExist: boolean;
 		try {
-			exactNameExists = (await readdir(this.#statesDirectory)).some(
+			doesExactNameExist = (await readdir(this.#statesDirectory)).some(
 				(entry) => entry === role,
 			);
 		} catch (error) {
@@ -733,7 +779,7 @@ export class RoleStateStore {
 				{ cause: error },
 			);
 		}
-		if (!exactNameExists) throw unavailableRemovalError();
+		if (!doesExactNameExist) throw unavailableRemovalError();
 
 		let metadata: Stats;
 		try {
@@ -757,7 +803,7 @@ export class RoleStateStore {
 		if (!partition.registryExists) throw unavailableRemovalError();
 		const target = await this.#assertRemovableTarget(role);
 		let quarantine: string | undefined;
-		let committed = false;
+		let isCommitted = false;
 		try {
 			quarantine = await mkdtemp(
 				join(this.#statesDirectory, `.tmp-remove-${role}-`),
@@ -766,7 +812,7 @@ export class RoleStateStore {
 			await this.#assertRemovableTarget(role);
 			if (signal) throwIfCommandAborted(signal);
 			await rename(target, join(quarantine, "role-state"));
-			committed = true;
+			isCommitted = true;
 			await rm(quarantine, {
 				force: true,
 				maxRetries: 2,
@@ -774,7 +820,7 @@ export class RoleStateStore {
 				retryDelay: 100,
 			});
 		} catch (error) {
-			if (committed) {
+			if (isCommitted) {
 				throw new ShopifyE2EInfrastructureError(
 					"Role state is unavailable, but local secret cleanup is incomplete",
 					{ cause: error },

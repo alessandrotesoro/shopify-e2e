@@ -26,16 +26,21 @@ export interface LaunchConsumerBrowserServerArgs {
 	readonly signal: AbortSignal;
 }
 
-const settlesWithin = async (
-	operation: Promise<unknown>,
-	timeoutMs: number,
-): Promise<boolean> => {
+interface SettlesWithinArgs {
+	operation: Promise<unknown>;
+	timeoutMs: number;
+}
+
+const settlesWithin = async ({
+	operation,
+	timeoutMs,
+}: SettlesWithinArgs): Promise<boolean> => {
 	let timer: NodeJS.Timeout | undefined;
 	const timeout = new Promise<false>((resolve) => {
 		timer = setTimeout(() => resolve(false), timeoutMs);
 		timer.unref();
 	});
-	const result = await Promise.race([
+	const didSettle = await Promise.race([
 		operation.then(
 			() => true,
 			() => false,
@@ -43,13 +48,18 @@ const settlesWithin = async (
 		timeout,
 	]);
 	if (timer) clearTimeout(timer);
-	return result;
+	return didSettle;
 };
 
-const resolvesWithin = async <Value>(
-	operation: Promise<Value>,
-	timeoutMs: number,
-): Promise<Value | undefined> => {
+interface ResolvesWithinArgs<Value> {
+	operation: Promise<Value>;
+	timeoutMs: number;
+}
+
+const resolvesWithin = async <Value>({
+	operation,
+	timeoutMs,
+}: ResolvesWithinArgs<Value>): Promise<Value | undefined> => {
 	let timer: NodeJS.Timeout | undefined;
 	const timeout = new Promise<undefined>((resolve) => {
 		timer = setTimeout(() => resolve(undefined), timeoutMs);
@@ -63,12 +73,17 @@ const resolvesWithin = async <Value>(
 	return result;
 };
 
-const forceCloseServer = async (
-	server: ConsumerBrowserServer,
-	timeoutMs: number,
-): Promise<void> => {
-	if (await settlesWithin(server.close(), timeoutMs)) return;
-	if (!(await settlesWithin(server.kill(), timeoutMs))) {
+interface ForceCloseServerArgs {
+	server: ConsumerBrowserServer;
+	timeoutMs: number;
+}
+
+const forceCloseServer = async ({
+	server,
+	timeoutMs,
+}: ForceCloseServerArgs): Promise<void> => {
+	if (await settlesWithin({ operation: server.close(), timeoutMs })) return;
+	if (!(await settlesWithin({ operation: server.kill(), timeoutMs }))) {
 		throw new ShopifyE2EInfrastructureError(
 			"Consumer Chromium server cleanup could not complete",
 		);
@@ -95,12 +110,17 @@ const readEndpoint = (server: ConsumerBrowserServer): string => {
 	return endpoint;
 };
 
-const createManagedServer = (
-	server: ConsumerBrowserServer,
-	closeTimeoutMs: number,
-): ManagedBrowserServer => {
+interface CreateManagedServerArgs {
+	server: ConsumerBrowserServer;
+	closeTimeoutMs: number;
+}
+
+const createManagedServer = ({
+	server,
+	closeTimeoutMs,
+}: CreateManagedServerArgs): ManagedBrowserServer => {
 	const wsEndpoint = readEndpoint(server);
-	let serverClosed = false;
+	let isServerClosed = false;
 	let closePromise: Promise<void> | undefined;
 	let resolveUnexpectedClose:
 		| ((error: ShopifyE2EInfrastructureError) => void)
@@ -111,7 +131,7 @@ const createManagedServer = (
 		},
 	);
 	const onClose = (): void => {
-		serverClosed = true;
+		isServerClosed = true;
 		resolveUnexpectedClose?.(
 			new ShopifyE2EInfrastructureError(
 				"Consumer Chromium server closed unexpectedly",
@@ -124,9 +144,9 @@ const createManagedServer = (
 		close: () => {
 			if (closePromise) return closePromise;
 			server.off("close", onClose);
-			closePromise = serverClosed
+			closePromise = isServerClosed
 				? Promise.resolve()
-				: forceCloseServer(server, closeTimeoutMs);
+				: forceCloseServer({ server, timeoutMs: closeTimeoutMs });
 			return closePromise;
 		},
 		unexpectedClose,
@@ -169,7 +189,10 @@ export const launchConsumerBrowserServer = async ({
 	const cleanInterruptedLaunch = (
 		server: ConsumerBrowserServer,
 	): Promise<void> => {
-		interruptedLaunchCleanup ??= forceCloseServer(server, closeTimeoutMs);
+		interruptedLaunchCleanup ??= forceCloseServer({
+			server,
+			timeoutMs: closeTimeoutMs,
+		});
 		return interruptedLaunchCleanup;
 	};
 	void launchOperation
@@ -182,13 +205,16 @@ export const launchConsumerBrowserServer = async ({
 
 	let server: ConsumerBrowserServer;
 	try {
-		server = await runWithCommandSignal(() => launchOperation, signal);
+		server = await runWithCommandSignal({
+			operation: () => launchOperation,
+			signal,
+		});
 	} catch (error) {
 		if (signal.aborted) {
-			const serverToClean = await resolvesWithin(
-				launchOperation,
-				closeTimeoutMs,
-			);
+			const serverToClean = await resolvesWithin({
+				operation: launchOperation,
+				timeoutMs: closeTimeoutMs,
+			});
 			if (serverToClean) {
 				try {
 					await cleanInterruptedLaunch(serverToClean);
@@ -210,9 +236,9 @@ export const launchConsumerBrowserServer = async ({
 	}
 
 	try {
-		return createManagedServer(server, closeTimeoutMs);
+		return createManagedServer({ server, closeTimeoutMs });
 	} catch (error) {
-		await forceCloseServer(server, closeTimeoutMs);
+		await forceCloseServer({ server, timeoutMs: closeTimeoutMs });
 		throw normalizeLaunchError(error);
 	}
 };

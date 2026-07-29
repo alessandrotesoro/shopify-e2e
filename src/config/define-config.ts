@@ -88,11 +88,17 @@ const isPlainRecord = (
 	return prototype === Object.prototype || prototype === null;
 };
 
-const readDataProperty = (
-	value: Record<PropertyKey, unknown>,
-	key: PropertyKey,
-	label: string,
-): unknown => {
+interface ReadDataPropertyArgs {
+	value: Record<PropertyKey, unknown>;
+	key: PropertyKey;
+	label: string;
+}
+
+const readDataProperty = ({
+	value,
+	key,
+	label,
+}: ReadDataPropertyArgs): unknown => {
 	const descriptor = Object.getOwnPropertyDescriptor(value, key);
 	if (!descriptor || !("value" in descriptor)) {
 		throw new TypeError(`${label} must be a plain data property`);
@@ -100,25 +106,35 @@ const readDataProperty = (
 	return descriptor.value;
 };
 
-const assertNoSymbolProperties = (
-	value: Record<PropertyKey, unknown>,
-	label: string,
-): void => {
+interface AssertNoSymbolPropertiesArgs {
+	value: Record<PropertyKey, unknown>;
+	label: string;
+}
+
+const assertNoSymbolProperties = ({
+	value,
+	label,
+}: AssertNoSymbolPropertiesArgs): void => {
 	if (Object.getOwnPropertySymbols(value).length > 0) {
 		throw new TypeError(`${label} must not contain symbol properties`);
 	}
 };
 
-const assertProtectedSettingIsAbsent = (
-	config: Record<PropertyKey, unknown>,
-	setting: ProtectedRootSetting,
-): void => {
+interface AssertProtectedSettingIsAbsentArgs {
+	config: Record<PropertyKey, unknown>;
+	setting: ProtectedRootSetting;
+}
+
+const assertProtectedSettingIsAbsent = ({
+	config,
+	setting,
+}: AssertProtectedSettingIsAbsentArgs): void => {
 	if (!Object.hasOwn(config, setting)) return;
-	const selected = readDataProperty(
-		config,
-		setting,
-		`Shopify config ${setting}`,
-	);
+	const selected = readDataProperty({
+		value: config,
+		key: setting,
+		label: `Shopify config ${setting}`,
+	});
 	if (selected !== undefined) {
 		throw new TypeError(
 			`Shopify config ${setting} is controlled by @sematico/shopify-e2e and must not be set`,
@@ -126,16 +142,21 @@ const assertProtectedSettingIsAbsent = (
 	}
 };
 
-const assertProtectedUseSettingIsAbsent = (
-	use: Record<PropertyKey, unknown>,
-	setting: "connectOptions" | "storageState",
-): void => {
+interface AssertProtectedUseSettingIsAbsentArgs {
+	use: Record<PropertyKey, unknown>;
+	setting: "connectOptions" | "storageState";
+}
+
+const assertProtectedUseSettingIsAbsent = ({
+	use,
+	setting,
+}: AssertProtectedUseSettingIsAbsentArgs): void => {
 	if (!Object.hasOwn(use, setting)) return;
-	const selected = readDataProperty(
-		use,
-		setting,
-		`Shopify config use.${setting}`,
-	);
+	const selected = readDataProperty({
+		value: use,
+		key: setting,
+		label: `Shopify config use.${setting}`,
+	});
 	if (selected !== undefined) {
 		throw new TypeError(
 			`Shopify config use.${setting} is controlled by @sematico/shopify-e2e and must not be set`,
@@ -143,16 +164,21 @@ const assertProtectedUseSettingIsAbsent = (
 	}
 };
 
-const assertRoleTokenIsAbsent = (
-	config: Record<PropertyKey, unknown>,
-	setting: "name" | "tag",
-): void => {
+interface AssertRoleTokenIsAbsentArgs {
+	config: Record<PropertyKey, unknown>;
+	setting: "name" | "tag";
+}
+
+const assertRoleTokenIsAbsent = ({
+	config,
+	setting,
+}: AssertRoleTokenIsAbsentArgs): void => {
 	if (!Object.hasOwn(config, setting)) return;
-	const selected = readDataProperty(
-		config,
-		setting,
-		`Shopify config ${setting}`,
-	);
+	const selected = readDataProperty({
+		value: config,
+		key: setting,
+		label: `Shopify config ${setting}`,
+	});
 	const values = Array.isArray(selected) ? selected : [selected];
 	if (
 		values.some(
@@ -169,23 +195,27 @@ const validateUse = (
 	config: Record<PropertyKey, unknown>,
 ): Record<PropertyKey, unknown> | undefined => {
 	if (!Object.hasOwn(config, "use")) return undefined;
-	const use = readDataProperty(config, "use", "Shopify config use");
+	const use = readDataProperty({
+		value: config,
+		key: "use",
+		label: "Shopify config use",
+	});
 	if (use === undefined) return undefined;
 	if (!isPlainRecord(use)) {
 		throw new TypeError("Shopify config use must be a plain object");
 	}
-	assertNoSymbolProperties(use, "Shopify config use");
+	assertNoSymbolProperties({ value: use, label: "Shopify config use" });
 	for (const key of Object.getOwnPropertyNames(use)) {
-		readDataProperty(use, key, `Shopify config use.${key}`);
+		readDataProperty({ value: use, key, label: `Shopify config use.${key}` });
 	}
-	assertProtectedUseSettingIsAbsent(use, "storageState");
-	assertProtectedUseSettingIsAbsent(use, "connectOptions");
+	assertProtectedUseSettingIsAbsent({ use, setting: "storageState" });
+	assertProtectedUseSettingIsAbsent({ use, setting: "connectOptions" });
 	if (Object.hasOwn(use, "browserName")) {
-		const browserName = readDataProperty(
-			use,
-			"browserName",
-			"Shopify config use.browserName",
-		);
+		const browserName = readDataProperty({
+			value: use,
+			key: "browserName",
+			label: "Shopify config use.browserName",
+		});
 		if (browserName !== undefined && browserName !== "chromium") {
 			throw new TypeError(
 				"Shopify config use.browserName must be chromium when set",
@@ -205,22 +235,30 @@ const validateInput = (
 	if (!isPlainRecord(input)) {
 		throw new TypeError("Shopify config must be a plain object");
 	}
-	assertNoSymbolProperties(input, "Shopify config");
+	assertNoSymbolProperties({ value: input, label: "Shopify config" });
 	for (const key of Object.getOwnPropertyNames(input)) {
-		readDataProperty(input, key, `Shopify config ${key}`);
+		readDataProperty({ value: input, key, label: `Shopify config ${key}` });
 	}
 	for (const setting of PROTECTED_ROOT_SETTINGS) {
-		assertProtectedSettingIsAbsent(input, setting);
+		assertProtectedSettingIsAbsent({ config: input, setting });
 	}
-	assertRoleTokenIsAbsent(input, "name");
-	assertRoleTokenIsAbsent(input, "tag");
+	assertRoleTokenIsAbsent({ config: input, setting: "name" });
+	assertRoleTokenIsAbsent({ config: input, setting: "tag" });
 
-	const testDir = readDataProperty(input, "testDir", "Shopify config testDir");
+	const testDir = readDataProperty({
+		value: input,
+		key: "testDir",
+		label: "Shopify config testDir",
+	});
 	if (typeof testDir !== "string" || testDir.trim().length === 0) {
 		throw new TypeError("Shopify config testDir must be a non-empty string");
 	}
 	const roles = validateRoleList(
-		readDataProperty(input, "roles", "Shopify config roles"),
+		readDataProperty({
+			value: input,
+			key: "roles",
+			label: "Shopify config roles",
+		}),
 	);
 	return { input, roles, use: validateUse(input) };
 };

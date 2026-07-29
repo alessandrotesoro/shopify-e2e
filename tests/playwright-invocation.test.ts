@@ -85,8 +85,8 @@ const invocationFor = async (
 		role: options.role ?? "admin",
 		state: EMPTY_STATE,
 	});
-	const environment = buildPlaywrightChildEnvironment(
-		{
+	const environment = buildPlaywrightChildEnvironment({
+		parentEnvironment: {
 			...process.env,
 			NO_COLOR: "1",
 			...(options.markerDirectory === undefined
@@ -94,8 +94,8 @@ const invocationFor = async (
 				: { SHOPIFY_E2E_MARKER_DIR: options.markerDirectory }),
 			SHOPIFY_STORE_URL: "https://shop.example/path",
 		},
-		context.contextPath,
-	);
+		contextPath: context.contextPath,
+	});
 	const peer = await resolvePlaywrightPeer(process.cwd());
 	return {
 		context,
@@ -166,11 +166,11 @@ describe("owned Playwright invocation", () => {
 		const project = await makeProject();
 		const peer = await resolvePlaywrightPeer(process.cwd());
 		const endpoint = "ws://127.0.0.1:4321/invocation-secret";
-		const environment = buildPlaywrightChildEnvironment(
-			{ PATH: "/usr/bin" },
-			"/tmp/context.json",
-			endpoint,
-		);
+		const environment = buildPlaywrightChildEnvironment({
+			parentEnvironment: { PATH: "/usr/bin" },
+			contextPath: "/tmp/context.json",
+			wsEndpoint: endpoint,
+		});
 
 		const invocation = buildPlaywrightInvocation({
 			configPath: project.configPath,

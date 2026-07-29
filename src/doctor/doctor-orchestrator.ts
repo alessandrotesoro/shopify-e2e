@@ -72,26 +72,39 @@ const defaultDoctorDependencies: DoctorDependencies = {
 	resolveProjectRoot,
 };
 
-const pass = (id: DoctorCheckId, detail: string): DoctorCheckResult => ({
+interface PassArgs {
+	id: DoctorCheckId;
+	detail: string;
+}
+
+const pass = ({ id, detail }: PassArgs): DoctorCheckResult => ({
 	detail,
 	id,
 	status: "PASS",
 });
 
-const skip = (
-	id: DoctorCheckId,
-	prerequisite: DoctorCheckId,
-): DoctorCheckResult => ({
+interface SkipArgs {
+	id: DoctorCheckId;
+	prerequisite: DoctorCheckId;
+}
+
+const skip = ({ id, prerequisite }: SkipArgs): DoctorCheckResult => ({
 	detail: `Skipped because ${prerequisite} did not pass`,
 	id,
 	status: "SKIP",
 });
 
-const classifyError = (
-	id: DoctorCheckId,
-	error: unknown,
-	detail?: string,
-): DoctorCheckResult => {
+interface ClassifyErrorArgs {
+	id: DoctorCheckId;
+	error: unknown;
+	detail?: string;
+}
+
+const classifyError = ({
+	id,
+	error,
+	detail,
+}: ClassifyErrorArgs): DoctorCheckResult => {
 	if (error instanceof CommandSignalError) throw error;
 	if (error instanceof ShopifyE2EPreflightError) {
 		return { detail: detail ?? error.message, id, status: "FAIL" };
@@ -103,14 +116,19 @@ const classifyError = (
 	};
 };
 
-const classifyStoreUrlError = (
-	error: unknown,
-	detail: string,
-): DoctorCheckResult => {
+interface ClassifyStoreUrlErrorArgs {
+	error: unknown;
+	detail: string;
+}
+
+const classifyStoreUrlError = ({
+	error,
+	detail,
+}: ClassifyStoreUrlErrorArgs): DoctorCheckResult => {
 	if (error instanceof TypeError) {
 		return { detail, id: "store-url", status: "FAIL" };
 	}
-	return classifyError("store-url", error, detail);
+	return classifyError({ id: "store-url", error, detail });
 };
 
 const reportFrom = (
@@ -127,18 +145,24 @@ const reportFrom = (
 	return { checks, exitCode };
 };
 
-const runAsyncCheck = async <Value>(
-	id: DoctorCheckId,
-	operation: () => Promise<Value>,
-	signal: AbortSignal,
-): Promise<
+interface RunAsyncCheckArgs<Value> {
+	id: DoctorCheckId;
+	operation: () => Promise<Value>;
+	signal: AbortSignal;
+}
+
+const runAsyncCheck = async <Value>({
+	id,
+	operation,
+	signal,
+}: RunAsyncCheckArgs<Value>): Promise<
 	| { readonly result: DoctorCheckResult; readonly value?: never }
 	| { readonly result?: never; readonly value: Value }
 > => {
 	try {
-		return { value: await runWithCommandSignal(operation, signal) };
+		return { value: await runWithCommandSignal({ operation, signal }) };
 	} catch (error) {
-		return { result: classifyError(id, error) };
+		return { result: classifyError({ id, error }) };
 	}
 };
 
@@ -149,42 +173,48 @@ export const orchestrateDoctor = async ({
 	const results = new Map<DoctorCheckId, DoctorCheckResult>();
 	throwIfCommandAborted(options.signal);
 
-	const project = await runAsyncCheck(
-		"project",
-		() => dependencies.resolveProjectRoot(options.cwd),
-		options.signal,
-	);
+	const project = await runAsyncCheck({
+		id: "project",
+		operation: () => dependencies.resolveProjectRoot(options.cwd),
+		signal: options.signal,
+	});
 	if (project.result) {
 		results.set("project", project.result);
 		for (const id of DOCTOR_CHECK_ORDER.slice(1)) {
-			results.set(id, skip(id, "project"));
+			results.set(id, skip({ id, prerequisite: "project" }));
 		}
 		return reportFrom(results);
 	}
 	const projectRoot = project.value;
-	results.set("project", pass("project", "Physical consumer root resolved"));
+	results.set(
+		"project",
+		pass({ id: "project", detail: "Physical consumer root resolved" }),
+	);
 
-	const environment = await runAsyncCheck(
-		"environment",
-		() =>
+	const environment = await runAsyncCheck({
+		id: "environment",
+		operation: () =>
 			dependencies.loadProjectEnvironment({
 				environment: options.environment,
 				projectRoot,
 			}),
-		options.signal,
-	);
+		signal: options.signal,
+	});
 
 	let configuredOrigin: string | undefined;
 	let loadedConfig: LoadedShopifyConfig | undefined;
 	if (environment.result) {
 		results.set("environment", environment.result);
-		results.set("store-url", skip("store-url", "environment"));
-		results.set("config", skip("config", "environment"));
-		results.set("specs", skip("specs", "config"));
+		results.set(
+			"store-url",
+			skip({ id: "store-url", prerequisite: "environment" }),
+		);
+		results.set("config", skip({ id: "config", prerequisite: "environment" }));
+		results.set("specs", skip({ id: "specs", prerequisite: "config" }));
 	} else {
 		results.set(
 			"environment",
-			pass("environment", "Consumer .env loaded or absent"),
+			pass({ id: "environment", detail: "Consumer .env loaded or absent" }),
 		);
 		try {
 			throwIfCommandAborted(options.signal);
@@ -193,38 +223,42 @@ export const orchestrateDoctor = async ({
 			);
 			results.set(
 				"store-url",
-				pass("store-url", "SHOPIFY_STORE_URL is a valid HTTPS origin"),
+				pass({
+					id: "store-url",
+					detail: "SHOPIFY_STORE_URL is a valid HTTPS origin",
+				}),
 			);
 		} catch (error) {
 			results.set(
 				"store-url",
-				classifyStoreUrlError(
+				classifyStoreUrlError({
 					error,
-					"SHOPIFY_STORE_URL must be an absolute HTTPS URL without credentials",
-				),
+					detail:
+						"SHOPIFY_STORE_URL must be an absolute HTTPS URL without credentials",
+				}),
 			);
 		}
 
-		const config = await runAsyncCheck(
-			"config",
-			() =>
+		const config = await runAsyncCheck({
+			id: "config",
+			operation: () =>
 				dependencies.loadConfig({
 					environment: options.environment,
 					projectRoot,
 				}),
-			options.signal,
-		);
+			signal: options.signal,
+		});
 		if (config.result) {
 			results.set("config", config.result);
-			results.set("specs", skip("specs", "config"));
+			results.set("specs", skip({ id: "specs", prerequisite: "config" }));
 		} else {
 			loadedConfig = config.value;
 			results.set(
 				"config",
-				pass(
-					"config",
-					`Package-owned Shopify config checks passed: ${config.value.configPath}`,
-				),
+				pass({
+					id: "config",
+					detail: `Package-owned Shopify config checks passed: ${config.value.configPath}`,
+				}),
 			);
 		}
 
@@ -239,56 +273,66 @@ export const orchestrateDoctor = async ({
 			} catch (error) {
 				results.set(
 					"store-url",
-					classifyStoreUrlError(
+					classifyStoreUrlError({
 						error,
-						"Trusted config must not remove or change SHOPIFY_STORE_URL origin",
-					),
+						detail:
+							"Trusted config must not remove or change SHOPIFY_STORE_URL origin",
+					}),
 				);
 			}
 		}
 	}
 
 	if (loadedConfig) {
-		const specs = await runAsyncCheck(
-			"specs",
-			() => dependencies.discoverSpecs(loadedConfig.testDir),
-			options.signal,
-		);
+		const specs = await runAsyncCheck({
+			id: "specs",
+			operation: () => dependencies.discoverSpecs(loadedConfig.testDir),
+			signal: options.signal,
+		});
 		if (specs.result) results.set("specs", specs.result);
 		else {
 			results.set(
 				"specs",
-				pass(
-					"specs",
-					`${specs.value.length} JavaScript/TypeScript file candidate(s) found: ${loadedConfig.testDir}`,
-				),
+				pass({
+					id: "specs",
+					detail: `${specs.value.length} JavaScript/TypeScript file candidate(s) found: ${loadedConfig.testDir}`,
+				}),
 			);
 		}
 	}
 
-	const peer = await runAsyncCheck(
-		"playwright-peer",
-		() => dependencies.resolvePeer(projectRoot),
-		options.signal,
-	);
+	const peer = await runAsyncCheck({
+		id: "playwright-peer",
+		operation: () => dependencies.resolvePeer(projectRoot),
+		signal: options.signal,
+	});
 	if (peer.result) {
 		results.set("playwright-peer", peer.result);
-		results.set("chromium", skip("chromium", "playwright-peer"));
+		results.set(
+			"chromium",
+			skip({ id: "chromium", prerequisite: "playwright-peer" }),
+		);
 	} else {
 		results.set(
 			"playwright-peer",
-			pass("playwright-peer", "Compatible consumer @playwright/test resolved"),
+			pass({
+				id: "playwright-peer",
+				detail: "Compatible consumer @playwright/test resolved",
+			}),
 		);
-		const chromium = await runAsyncCheck(
-			"chromium",
-			() => dependencies.loadChromium(peer.value),
-			options.signal,
-		);
+		const chromium = await runAsyncCheck({
+			id: "chromium",
+			operation: () => dependencies.loadChromium(peer.value),
+			signal: options.signal,
+		});
 		if (chromium.result) results.set("chromium", chromium.result);
 		else {
 			results.set(
 				"chromium",
-				pass("chromium", "Expected Chromium executable file is installed"),
+				pass({
+					id: "chromium",
+					detail: "Expected Chromium executable file is installed",
+				}),
 			);
 		}
 	}

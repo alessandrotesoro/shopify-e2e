@@ -70,10 +70,13 @@ describe("role-only auth remove matrix", () => {
 		const prompts = makePrompts({ selectValues: ["admin"] });
 		const report = vi.fn();
 
-		await orchestrateAuth(
-			authOptions(fixture, { action: "remove", role, yes }),
-			defaultAuthDependencies(prompts, report),
-		);
+		await orchestrateAuth({
+			options: authOptions({
+				fixture,
+				overrides: { action: "remove", role, yes },
+			}),
+			dependencies: defaultAuthDependencies({ prompts, report }),
+		});
 
 		expect(prompts.select).toHaveBeenCalledTimes(selectCalls);
 		expect(prompts.confirm).toHaveBeenCalledTimes(confirmCalls);
@@ -103,20 +106,23 @@ describe("role-only auth remove matrix", () => {
 	}) => {
 		const fixture = await makeFixture();
 		const prompts = makePrompts();
-		const dependencies = defaultAuthDependencies(prompts, vi.fn());
+		const dependencies = defaultAuthDependencies({ prompts, report: vi.fn() });
 		const loadEnvironment = vi.fn(dependencies.loadEnvironment);
 		const createStore = vi.fn(dependencies.createStore);
 
 		await expect(
-			orchestrateAuth(
-				authOptions(fixture, {
-					action: "remove",
-					interactive: false,
-					role,
-					yes,
+			orchestrateAuth({
+				options: authOptions({
+					fixture,
+					overrides: {
+						action: "remove",
+						interactive: false,
+						role,
+						yes,
+					},
 				}),
-				{ ...dependencies, createStore, loadEnvironment },
-			),
+				dependencies: { ...dependencies, createStore, loadEnvironment },
+			}),
 		).rejects.toThrow(/--role.*--yes/i);
 		expect(loadEnvironment).not.toHaveBeenCalled();
 		expect(createStore).not.toHaveBeenCalled();
@@ -129,15 +135,18 @@ describe("role-only auth remove matrix", () => {
 		const store = await seedRoleState(fixture, "admin");
 		const prompts = makePrompts();
 
-		await orchestrateAuth(
-			authOptions(fixture, {
-				action: "remove",
-				interactive: false,
-				role: "admin",
-				yes: true,
+		await orchestrateAuth({
+			options: authOptions({
+				fixture,
+				overrides: {
+					action: "remove",
+					interactive: false,
+					role: "admin",
+					yes: true,
+				},
 			}),
-			defaultAuthDependencies(prompts, vi.fn()),
-		);
+			dependencies: defaultAuthDependencies({ prompts, report: vi.fn() }),
+		});
 
 		expect(await store.list()).toContainEqual({
 			role: "admin",
@@ -162,10 +171,20 @@ describe("role-only auth remove matrix", () => {
 			"not json",
 		);
 
-		await orchestrateAuth(
-			authOptions(fixture, { action: "remove", role: "admin", yes: true }),
-			defaultAuthDependencies(makePrompts(), vi.fn()),
-		);
+		await orchestrateAuth({
+			options: authOptions({
+				fixture,
+				overrides: {
+					action: "remove",
+					role: "admin",
+					yes: true,
+				},
+			}),
+			dependencies: defaultAuthDependencies({
+				prompts: makePrompts(),
+				report: vi.fn(),
+			}),
+		});
 
 		expect(await store.list()).toContainEqual({
 			role: "admin",
@@ -189,15 +208,21 @@ describe("role-only auth remove matrix", () => {
 			status: "orphaned",
 		});
 
-		await orchestrateAuth(
-			authOptions(fixture, {
-				action: "remove",
-				interactive: false,
-				role: "removed-role",
-				yes: true,
+		await orchestrateAuth({
+			options: authOptions({
+				fixture,
+				overrides: {
+					action: "remove",
+					interactive: false,
+					role: "removed-role",
+					yes: true,
+				},
 			}),
-			defaultAuthDependencies(makePrompts(), vi.fn()),
-		);
+			dependencies: defaultAuthDependencies({
+				prompts: makePrompts(),
+				report: vi.fn(),
+			}),
+		});
 
 		expect(await currentStore.removableRoles()).not.toContain("removed-role");
 	});
@@ -216,10 +241,20 @@ describe("role-only auth remove matrix", () => {
 		await symlink(target, join(statesDirectory, "admin"));
 
 		await expect(
-			orchestrateAuth(
-				authOptions(fixture, { action: "remove", role: "admin", yes: true }),
-				defaultAuthDependencies(makePrompts(), vi.fn()),
-			),
+			orchestrateAuth({
+				options: authOptions({
+					fixture,
+					overrides: {
+						action: "remove",
+						role: "admin",
+						yes: true,
+					},
+				}),
+				dependencies: defaultAuthDependencies({
+					prompts: makePrompts(),
+					report: vi.fn(),
+				}),
+			}),
 		).rejects.toThrow(/unsafe.*manual cleanup/i);
 	});
 
@@ -231,10 +266,10 @@ describe("role-only auth remove matrix", () => {
 		const prompts = makePrompts();
 
 		await expect(
-			orchestrateAuth(
-				authOptions(fixture, { action: "remove", yes }),
-				defaultAuthDependencies(prompts, vi.fn()),
-			),
+			orchestrateAuth({
+				options: authOptions({ fixture, overrides: { action: "remove", yes } }),
+				dependencies: defaultAuthDependencies({ prompts, report: vi.fn() }),
+			}),
 		).rejects.toThrow(/no removable role state/i);
 		expect(prompts.select).not.toHaveBeenCalled();
 		expect(prompts.confirm).not.toHaveBeenCalled();
@@ -246,10 +281,13 @@ describe("role-only auth remove matrix", () => {
 		const prompts = makePrompts({ confirmValue: false });
 		const report = vi.fn();
 
-		await orchestrateAuth(
-			authOptions(fixture, { action: "remove", role: "admin" }),
-			defaultAuthDependencies(prompts, report),
-		);
+		await orchestrateAuth({
+			options: authOptions({
+				fixture,
+				overrides: { action: "remove", role: "admin" },
+			}),
+			dependencies: defaultAuthDependencies({ prompts, report }),
+		});
 
 		expect((await store.resolve("admin")).role).toBe("admin");
 		expect(report).toHaveBeenCalledWith(
@@ -267,17 +305,23 @@ describe("role-only auth remove matrix", () => {
 			await removeRoleState(options);
 			controller.abort("SIGTERM");
 		});
-		const dependencies = defaultAuthDependencies(makePrompts(), report);
+		const dependencies = defaultAuthDependencies({
+			prompts: makePrompts(),
+			report,
+		});
 
-		const error = await orchestrateAuth(
-			authOptions(fixture, {
-				action: "remove",
-				role: "admin",
-				signal: controller.signal,
-				yes: true,
+		const error = await orchestrateAuth({
+			options: authOptions({
+				fixture,
+				overrides: {
+					action: "remove",
+					role: "admin",
+					signal: controller.signal,
+					yes: true,
+				},
 			}),
-			{ ...dependencies, createStore: () => store },
-		).catch((cause: unknown) => cause);
+			dependencies: { ...dependencies, createStore: () => store },
+		}).catch((cause: unknown) => cause);
 
 		expect(error).toBeInstanceOf(AuthMutationCommittedSignalError);
 		expect(error).toMatchObject({ exitCode: 143, signal: "SIGTERM" });
@@ -300,10 +344,13 @@ describe("role-only auth remove matrix", () => {
 		});
 
 		await expect(
-			orchestrateAuth(
-				authOptions(fixture, { action: "remove", yes: true }),
-				defaultAuthDependencies(prompts, vi.fn()),
-			),
+			orchestrateAuth({
+				options: authOptions({
+					fixture,
+					overrides: { action: "remove", yes: true },
+				}),
+				dependencies: defaultAuthDependencies({ prompts, report: vi.fn() }),
+			}),
 		).rejects.toThrow(/unknown or cannot be removed/i);
 	});
 
@@ -323,12 +370,19 @@ describe("role-only auth remove matrix", () => {
 			removableRoles: vi.fn(async () => ["admin"]),
 			remove,
 		} as unknown as RoleStateStore;
-		const dependencies = defaultAuthDependencies(prompts, report);
+		const dependencies = defaultAuthDependencies({ prompts, report });
 
-		const error = await orchestrateAuth(
-			authOptions(fixture, { action: "remove", role: "admin", yes: true }),
-			{ ...dependencies, createStore: vi.fn(() => store) },
-		).catch((cause: unknown) => cause);
+		const error = await orchestrateAuth({
+			options: authOptions({
+				fixture,
+				overrides: {
+					action: "remove",
+					role: "admin",
+					yes: true,
+				},
+			}),
+			dependencies: { ...dependencies, createStore: vi.fn(() => store) },
+		}).catch((cause: unknown) => cause);
 
 		expect(error).toBeInstanceOf(ShopifyE2EInfrastructureError);
 		expect(String(error)).toContain("local secret cleanup is incomplete");
