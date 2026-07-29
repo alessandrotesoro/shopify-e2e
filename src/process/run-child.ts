@@ -3,7 +3,7 @@ import { constants } from "node:os";
 import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
-import { PLAYWRIGHT_WS_ENDPOINT_ENV } from "../config/execution-environment.cjs";
+import { PLAYWRIGHT_WS_ENDPOINT_ENV } from "../config/execution-environment.js";
 import { ShopifyE2EInfrastructureError } from "../errors.js";
 import type { PlaywrightInvocation } from "../playwright/invocation.js";
 import { errorFromAbortSignal } from "./command-signals.js";

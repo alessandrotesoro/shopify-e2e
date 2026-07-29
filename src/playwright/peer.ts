@@ -8,7 +8,7 @@ import semver from "semver";
 import type { CaptureBrowser } from "../auth/capture-role-state.js";
 import { ShopifyE2EPreflightError } from "../errors.js";
 import { PACKAGE_ROOT } from "../package-root.js";
-import { isPathContained } from "../path-boundary.utils.cjs";
+import { isPathContained } from "../path-boundary.utils.js";
 
 const SUPPORTED_PLAYWRIGHT_RANGE = ">=1.61.1 <1.62.0";
 export interface ResolvedPlaywrightPeer {

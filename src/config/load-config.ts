@@ -6,9 +6,9 @@ import {
 	type DefinedShopifyE2EConfig,
 	isDefinedShopifyE2EConfig,
 	isShopifyE2EConfigContractError,
-} from "./define-config.cjs";
-import { assertPlaywrightExecutionEnvironmentIsSafe } from "./execution-environment.cjs";
-import { SHOPIFY_LAUNCH_OPTION_KEYS } from "./launch-options.cjs";
+} from "./define-config.js";
+import { assertPlaywrightExecutionEnvironmentIsSafe } from "./execution-environment.js";
+import { SHOPIFY_LAUNCH_OPTION_KEYS } from "./launch-options.js";
 import {
 	resolveShopifyConfigPath,
 	resolveShopifyTestDir,

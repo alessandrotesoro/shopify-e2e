@@ -23,7 +23,7 @@ import {
 } from "./support/doctor-cli-shell.js";
 
 const projectRoot = resolve(import.meta.dirname, "..");
-const configHelperPath = resolve(projectRoot, "src/config/public.cts");
+const configHelperPath = resolve(projectRoot, "src/config/public.ts");
 const binPath = resolve(projectRoot, "bin/run.js");
 const unrelatedCommandPath = resolve(projectRoot, "dist/commands/unrelated.js");
 const importSentinelPath = resolve(projectRoot, "dist/unrelated-imported");

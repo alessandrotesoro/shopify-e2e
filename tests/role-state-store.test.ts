@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { configuredOriginKey } from "../src/role-states/configured-origin.cjs";
+import { configuredOriginKey } from "../src/role-states/configured-origin.js";
 import {
 	createRoleStateStore,
 	type RoleStateStore,

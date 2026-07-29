@@ -12,13 +12,13 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "../src/config/execution-environment.cjs";
+import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "../src/config/execution-environment.js";
 import { loadShopifyConfig } from "../src/config/load-config.js";
 import { ShopifyE2EPreflightError } from "../src/errors.js";
 
 const temporaryDirectories: string[] = [];
 const helperUrl = pathToFileURL(
-	resolve(import.meta.dirname, "../dist/config/public.cjs"),
+	resolve(import.meta.dirname, "../dist/config/public.js"),
 ).href;
 
 const makeProject = async (): Promise<string> => {

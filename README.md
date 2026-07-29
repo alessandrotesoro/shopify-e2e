@@ -2,7 +2,7 @@
 
 An isolated Playwright lane for Shopify end-to-end tests.
 
-The consumer owns `@playwright/test`, Chromium, its Shopify tests, and its trusted Playwright configuration. The CLI owns role-state capture, readiness checks, the selected roles and storage states, the dedicated test root, one-worker execution, and one visible Chromium instance for the command.
+The consumer owns `@playwright/test`, Chromium, its Shopify tests, and its trusted Playwright configuration. The CLI owns role-state capture, readiness checks, the selected roles and storage states, the dedicated test root, one-worker execution, and one visible Chromium instance for the command. The package is ESM-only.
 
 ## Install
 
@@ -37,17 +37,6 @@ export default defineShopifyE2EConfig({
 });
 ```
 
-CommonJS consumers can require the same helper from their TypeScript config:
-
-```js
-const { defineShopifyE2EConfig } = require("@sematico/shopify-e2e/config");
-
-export default defineShopifyE2EConfig({
-	testDir: "tests/shopify-e2e",
-	roles: ["admin"],
-});
-```
-
 The config must directly default-export the helper result. `roles` is a non-empty list of unique ASCII lower-kebab names, each at most 64 UTF-8 bytes. There is one saved browser state per role and store origin.
 
 The CLI never discovers an ordinary `playwright.config.*`, never searches parent directories, and has no `--config` override. Both configs may coexist; only the root `shopify-e2e.config.ts` is loaded by this CLI.
@@ -79,11 +68,52 @@ Create an ignored `.env` in the consumer root:
 
 ```dotenv
 SHOPIFY_STORE_URL=https://your-store.myshopify.com/
+SHOPIFY_STOREFRONT_PASSWORD=
 ```
 
 Inherited shell values take precedence. Only the root `.env` is loaded; `.env.local` and parent files are ignored. The value must be an absolute HTTPS URL without credentials. Path, query, and fragment are discarded when the origin is normalized.
 
 Role states are partitioned by normalized origin. A custom storefront domain and a `.myshopify.com` domain are separate partitions.
+
+## Use the Playwright fixtures
+
+Fixtures are manually attached to the consumer's own Playwright `test`. The package does not replace `test`, attach fixtures automatically, or unlock a storefront automatically:
+
+```ts
+import { expect, test as base } from "@playwright/test";
+import {
+	shopifyFixtures,
+	type ShopifyFixtures,
+} from "@sematico/shopify-e2e/playwright";
+
+const test = base.extend<ShopifyFixtures>(shopifyFixtures);
+
+test("opens a password-protected storefront", async ({ page, storefront }) => {
+	await storefront.open();
+	await storefront.unlock();
+
+	await expect(page.locator("body")).toBeVisible();
+});
+```
+
+`storefront.open()` navigates to the normalized `SHOPIFY_STORE_URL`. `storefront.unlock()` is always explicit. It safely does nothing when that storefront is already unlocked, without reading `SHOPIFY_STOREFRONT_PASSWORD`.
+
+When a challenge exists, `unlock()` accepts only one visible, enabled `input[type="password"]` inside one visible `POST` form whose resolved destination is exactly the configured origin's `/password` URL. Partial, unrelated, multiple, query-bearing, or cross-origin password forms fail before the password is read or typed. The password comes from `SHOPIFY_STOREFRONT_PASSWORD`; it is never passed as a helper argument.
+
+The CLI loads the consumer root `.env` before it starts Playwright, so fixtures used through `shopify-e2e run` receive those values. The package fixture module does not load dotenv itself. When running `npx playwright test` directly, the consumer must provide the variables through its shell, Playwright config, or its own environment loader.
+
+The human-style typing primitive is also available directly:
+
+```ts
+import { typeLikeHuman } from "@sematico/shopify-e2e/playwright";
+
+await typeLikeHuman(page.getByLabel("Email"), "person@example.com");
+await typeLikeHuman(page.getByLabel("Search"), "summer products", {
+	delay: 75,
+});
+```
+
+`typeLikeHuman` emits sequential keyboard events with a deterministic delay. Do not use it for credentials while tracing is enabled: Playwright 1.61.1 traces may retain sequentially typed values. Credential-bearing traces must be treated as secrets and must never be committed or shared.
 
 ## Tag tests by role
 
@@ -188,6 +218,8 @@ Consumer config, its imports, hooks, reporters, web server, and tests are truste
 
 Saved storage state is a bearer secret. It can contain cookies, local storage, and captured IndexedDB for visited origins. Keep it outside the repository and never log or commit state, `.env`, reports, traces, screenshots, videos, or browser output.
 
+Storefront passwords typed through `typeLikeHuman` may be recorded in Playwright 1.61.1 traces. Disable tracing for live credential acceptance runs, and delete any credential-bearing trace as sensitive data.
+
 The CLI copies the selected state into an owner-only temporary execution context outside the consumer and package roots. Playwright receives the state object, never the long-lived registry path. The context remains available for Playwright-owned config evaluation and is removed after that role's direct Playwright child settles. The native browser endpoint is added only to the active child's environment and is never written into the execution context or command arguments.
 
 Concurrent state-changing commands for the same role and origin are unsupported; callers must serialize them.
@@ -201,14 +233,15 @@ Concurrent state-changing commands for the same role and origin are unsupported;
 - `143`: interrupted by `SIGTERM` after required cleanup or rollback.
 - Other numeric exits from the first failing Playwright role pass through unchanged.
 
-## Version 0.6.0
+## Version 0.7.0
 
-Version 0.6.0 adds repeatable role selection and serial execution through one CLI-owned headed Chromium instance. It intentionally provides no compatibility layer for unsupported profiles, Playwright projects, headless runs, CDP, or arbitrary Playwright argument passthrough.
+Version 0.7.0 adds the manually attached `@sematico/shopify-e2e/playwright` fixture API, explicit password-protected storefront access, and reusable human-style typing. It preserves repeatable role selection and serial execution through one CLI-owned headed Chromium instance. It intentionally provides no automatic fixture attachment or unlocking, compatibility layer for unsupported profiles, Playwright projects, headless runs, CDP, or arbitrary Playwright argument passthrough.
 
 ## Verification
 
 ```sh
 npm run verify
+npm run test:browser:fixtures
 npm run test:browser:roles
 ```
 

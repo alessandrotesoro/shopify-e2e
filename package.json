@@ -1,15 +1,17 @@
 {
 	"name": "@sematico/shopify-e2e",
-	"version": "0.6.0",
+	"version": "0.7.0",
 	"description": "CLI-first orchestration for isolated Shopify Playwright E2E tests.",
 	"license": "MIT",
 	"type": "module",
 	"exports": {
 		"./config": {
-			"types": "./dist/config/public.d.cts",
-			"import": "./dist/config/public.cjs",
-			"require": "./dist/config/public.cjs",
-			"default": "./dist/config/public.cjs"
+			"types": "./dist/config/public.d.ts",
+			"import": "./dist/config/public.js"
+		},
+		"./playwright": {
+			"types": "./dist/playwright/public.d.ts",
+			"import": "./dist/playwright/public.js"
 		}
 	},
 	"bin": {
@@ -25,10 +27,11 @@
 		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
 		"lint": "biome check bin src tests package.json tsconfig.json tsconfig.test.json vitest.config.ts biome.json",
 		"test": "npm run build && npm run test:fast",
-		"test:fast": "vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/browser-role-isolation.test.ts",
+		"test:fast": "vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/installed-playwright-fixtures.test.ts --exclude tests/browser-role-isolation.test.ts --exclude tests/browser-playwright-fixtures.test.ts",
+		"test:browser:fixtures": "npm run build && vitest run tests/browser-playwright-fixtures.test.ts",
 		"test:browser:roles": "npm run build && vitest run tests/browser-role-isolation.test.ts",
 		"test:installed": "npm run build && npm run test:installed:built",
-		"test:installed:built": "vitest run tests/installed-cli.test.ts tests/installed-doctor-cli.test.ts",
+		"test:installed:built": "vitest run tests/installed-cli.test.ts tests/installed-doctor-cli.test.ts tests/installed-playwright-fixtures.test.ts",
 		"typecheck": "tsc -p tsconfig.test.json",
 		"verify": "npm run lint && npm run typecheck && npm run build && npm run test:fast && npm run test:installed:built"
 	},

@@ -8,7 +8,7 @@ import {
 	ShopifyE2EInfrastructureError,
 	ShopifyE2EPreflightError,
 } from "../src/errors.js";
-import type { PlaywrightStorageState } from "../src/storage-state/schema.cjs";
+import type { PlaywrightStorageState } from "../src/storage-state/schema.js";
 
 const EMPTY_STORAGE_STATE: PlaywrightStorageState = {
 	cookies: [],

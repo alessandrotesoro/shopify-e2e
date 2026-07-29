@@ -1,39 +1,43 @@
-import { expect, type Page, test } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
+import {
+	type ShopifyFixtures,
+	shopifyFixtures,
+} from "@sematico/shopify-e2e/playwright";
 
-const configuredStoreOrigin = (): string => {
-	const configuredStoreUrl = process.env.SHOPIFY_STORE_URL;
-	if (!configuredStoreUrl) throw new Error("SHOPIFY_STORE_URL is required");
-	const url = new URL(configuredStoreUrl);
-	if (url.protocol !== "https:") {
-		throw new Error("SHOPIFY_STORE_URL must be an absolute HTTPS URL");
-	}
-	return url.origin;
+const test = base.extend<ShopifyFixtures>(shopifyFixtures);
+
+const storeOrigin = "https://levelogy-development.myshopify.com";
+const passwordChallenge = 'form:has(input[type="password"])';
+const storefrontMain = "main#MainContent";
+
+const expectHealthyLevelogyStorefront = async (page: Page): Promise<void> => {
+	const currentUrl = new URL(page.url());
+	expect(currentUrl.origin).toBe(storeOrigin);
+	expect(currentUrl.pathname).toBe("/");
+	await expect(page.locator(storefrontMain)).toBeVisible();
 };
 
-const passwordChallenge = (page: Page) =>
-	page.locator(
-		'form[action="/password"] input[type="password"], input#Password',
-	);
+const roles = ["guest", "storefront-access"] as const;
 
-test("saved storefront access role bypasses the storefront password challenge", {
-	tag: "@shopify-e2e-role-storefront-access",
-}, async ({ page }) => {
-	const response = await page.goto(configuredStoreOrigin(), {
-		waitUntil: "domcontentloaded",
-	});
-	expect(response).not.toBeNull();
-	expect(response?.ok()).toBe(true);
-	await expect(passwordChallenge(page)).toHaveCount(0);
-	await expect(page.locator("body")).toBeVisible();
-});
+for (const role of roles) {
+	test(`${role} explicitly unlocks the password-protected storefront`, {
+		tag: `@shopify-e2e-role-${role}`,
+	}, async ({ page, storefront }) => {
+		await page.context().clearCookies({
+			domain: /levelogy-development\.myshopify\.com$/,
+		});
+		await storefront.open();
+		await expect(page.locator(passwordChallenge)).toBeVisible();
 
-test("guest role reaches the storefront password challenge", {
-	tag: "@shopify-e2e-role-guest",
-}, async ({ page }) => {
-	const response = await page.goto(configuredStoreOrigin(), {
-		waitUntil: "domcontentloaded",
+		await storefront.unlock();
+		await expect(page.locator(passwordChallenge)).toHaveCount(0);
+		await expectHealthyLevelogyStorefront(page);
+		const unlockedUrl = page.url();
+
+		await storefront.unlock();
+
+		expect(page.url()).toBe(unlockedUrl);
+		await expect(page.locator(passwordChallenge)).toHaveCount(0);
+		await expectHealthyLevelogyStorefront(page);
 	});
-	expect(response).not.toBeNull();
-	expect(response?.ok()).toBe(true);
-	await expect(passwordChallenge(page).first()).toBeVisible();
-});
+}

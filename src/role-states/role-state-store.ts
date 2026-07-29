@@ -26,14 +26,14 @@ import {
 	assertRoleName,
 	isValidRoleName,
 	validateRoleList,
-} from "../roles/role-name.cjs";
+} from "../roles/role-name.js";
 import {
 	MAX_STORAGE_STATE_BYTES,
 	type PlaywrightStorageState,
 	validateParsedStorageState,
 	validateStorageState,
-} from "../storage-state/schema.cjs";
-import { configuredOriginKey } from "./configured-origin.cjs";
+} from "../storage-state/schema.js";
+import { configuredOriginKey } from "./configured-origin.js";
 
 const MAX_METADATA_BYTES = 16 * 1024;
 

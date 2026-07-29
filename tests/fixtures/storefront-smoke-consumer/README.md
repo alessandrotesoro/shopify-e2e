@@ -1,6 +1,6 @@
 # Levelogy password-protected acceptance consumer
 
-This private consumer manually proves the phase-two CLI against `https://levelogy-development.myshopify.com/`. It is excluded from `npm run verify`: it needs network access, consumer-owned Chromium, the storefront password, and a human storefront-unlock step.
+This private consumer proves the CLI and manually attached storefront fixture against `https://levelogy-development.myshopify.com/`. It is a local, headed acceptance check. It is excluded from `npm run verify` and must never run in CI because it needs the live store, network access, consumer-owned Chromium, saved local role states, and the storefront password.
 
 ## Prepare the CLI and consumer
 
@@ -25,47 +25,52 @@ cp .env.example .env
 
 The temporary copy keeps the consumer install and manual output outside the package repository. Keep every later command in that copied consumer directory. Rebuild the package before retesting source changes because the linked executable reads compiled files from `dist`.
 
-Keep `.env`, passwords, browser state, screenshots, traces, `test-results`, and `node_modules` uncommitted. The URL is already set in `.env.example`; the storefront password is entered only in Chromium.
+Keep `.env`, passwords, browser state, screenshots, traces, `test-results`, and `node_modules` uncommitted. The URL is already set in `.env.example`. Add the real password only to the copied consumer root `.env`:
 
-## 1. Capture the storefront access role
-
-```sh
-shopify-e2e auth capture --role storefront-access
+```dotenv
+SHOPIFY_STOREFRONT_PASSWORD=your-local-secret
 ```
 
-In the dedicated headed browser, enter the Levelogy storefront password and wait for the storefront to appear. Return to the terminal and confirm the save. The CLI does not detect completion and must never receive the password in a terminal prompt.
+The CLI loads that root `.env` and passes the environment to Playwright. The fixture reads the password only after it has verified the configured origin and the exact Shopify password form. Direct `npx playwright test` runs do not get package-owned dotenv loading; the consumer must provide its environment for those runs.
 
-## 2. Prove the saved storefront access lane
+The consumer config explicitly disables tracing. Playwright 1.61.1 traces may contain sequentially typed values, so never enable tracing for this credential acceptance or retain/share an artifact that may contain the password.
 
-```sh
-shopify-e2e run --role storefront-access
-```
-
-Expected: one storefront-access-tagged test passes, the storefront is visible, and no password challenge is present.
-
-## 3. Prove guest role isolation
+## 1. Prepare both role states
 
 ```sh
 shopify-e2e auth capture --role guest
-shopify-e2e run --role guest
+shopify-e2e auth capture --role storefront-access
 ```
 
-Expected: one guest-tagged test passes and the password challenge is visible.
+Capture and confirm both role states. Their saved storefront-access cookie does not affect this acceptance: the tracked test clears cookies only for the Levelogy `.myshopify.com` domain before each role, then requires the password challenge to appear. It never receives a password argument and never attaches or unlocks fixtures automatically.
 
-## 4. Refresh and prove the storefront access lane again
+## 2. Run both roles serially
 
 ```sh
-shopify-e2e auth refresh --role storefront-access
-shopify-e2e run --role storefront-access
+shopify-e2e run --role guest --role storefront-access
 ```
 
-Unlock the storefront in the new dedicated browser if the password challenge appears, explicitly confirm replacement, and expect the storefront-access test to bypass the challenge again. A declined or failed refresh must leave the previous saved state usable.
+The CLI runs the configured order, `guest` then `storefront-access`, with one worker and no simultaneous tests. Each tagged test manually uses the consumer-owned fixture:
+
+- `storefront.open()` opens the configured store.
+- Each role clears the Levelogy store cookies, proves the Shopify password challenge is visible, then explicitly unlocks it with the password from `.env`.
+- Each role calls `storefront.unlock()` again after access is established to prove the safe no-op path.
+- Both roles require the Levelogy home URL and its `main#MainContent` storefront marker, not merely a visible page body.
+
+## 3. Repeat the same run
+
+```sh
+shopify-e2e run --role guest --role storefront-access
+```
+
+Expected: both roles pass again, still strictly serially, with one visible Chromium window for the command. Each role starts locked, visibly enters the password, and ends on the Levelogy home page before the next role begins.
 
 ## Troubleshooting
 
 - Missing Chromium: run `npx playwright install chromium` from this consumer.
-- Expired storefront access state: run the explicit refresh command; the CLI does not auto-refresh.
+- Missing password: set `SHOPIFY_STOREFRONT_PASSWORD` only in the ignored copied consumer root `.env`.
+- Expired role state: run `shopify-e2e auth refresh --role <role>`; the CLI does not auto-refresh.
 - Wrong origin partition: confirm `.env` contains the exact Levelogy `.myshopify.com` origin used during capture.
 - Suspected state compromise: revoke the Shopify session first, then remove the relevant role state.
 
-Do not convert this checklist into CI or store credentials/role state in repository files.
+Do not convert this checklist into CI or store credentials, role state, credential-bearing traces, or other browser artifacts in repository files.
