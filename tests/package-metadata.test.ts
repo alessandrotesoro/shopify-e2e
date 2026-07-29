@@ -37,8 +37,26 @@ describe("package metadata", () => {
 		expect(packageJson.version).toBe("0.7.0");
 		expect(packageJson.engines).toEqual({ node: ">=20" });
 		expect(packageJson.type).toBe("module");
-		expect(packageJson.bin).toEqual({ "shopify-e2e": "./bin/run.js" });
+		expect(packageJson.bin).toEqual({ "shopify-e2e": "bin/run.js" });
 		expect(packageJson.files).toEqual(["bin", "dist", "LICENSE"]);
+		expect(packageJson.publishConfig).toEqual({ access: "public" });
+		expect(packageJson.homepage).toBe(
+			"https://github.com/alessandrotesoro/shopify-e2e#readme",
+		);
+		expect(packageJson.bugs).toEqual({
+			url: "https://github.com/alessandrotesoro/shopify-e2e/issues",
+		});
+		expect(packageJson.repository).toEqual({
+			type: "git",
+			url: "git+https://github.com/alessandrotesoro/shopify-e2e.git",
+		});
+		expect(packageJson.keywords).toEqual([
+			"shopify",
+			"playwright",
+			"e2e",
+			"testing",
+			"cli",
+		]);
 		expect(packageJson.exports).toEqual({
 			"./config": {
 				import: "./dist/config/public.js",
@@ -102,6 +120,8 @@ describe("package metadata", () => {
 			build: "npm run clean && tsc -p tsconfig.json",
 			clean:
 				"node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+			prepack: "npm run build",
+			prepublishOnly: "npm run verify",
 		});
 		expect(packageJson.oclif).toMatchObject({
 			bin: "shopify-e2e",
