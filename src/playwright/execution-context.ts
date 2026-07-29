@@ -18,23 +18,27 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "../config/execution-environment.cjs";
+import { fileURLToPath } from "node:url";
+import { SHOPIFY_E2E_EXECUTION_CONTEXT_ENV } from "../config/execution-environment.js";
 import {
 	isPathContained,
 	isPathStrictlyContained,
-} from "../path-boundary.utils.cjs";
-import { normalizeConfiguredOrigin } from "../role-states/configured-origin.cjs";
-import { assertRoleName } from "../roles/role-name.cjs";
+} from "../path-boundary.utils.js";
+import { normalizeConfiguredOrigin } from "../role-states/configured-origin.js";
+import { assertRoleName } from "../roles/role-name.js";
 import {
 	MAX_STORAGE_STATE_BYTES,
 	type PlaywrightStorageState,
 	serializeStorageState,
 	validateStorageState,
-} from "../storage-state/schema.cjs";
+} from "../storage-state/schema.js";
 
 const CONTEXT_DIRECTORY_PREFIX = "shopify-e2e-context-";
 const CONTEXT_FILENAME = "execution-context.json";
-const DEFAULT_PACKAGE_ROOT = resolve(__dirname, "../..");
+const DEFAULT_PACKAGE_ROOT = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"../..",
+);
 const MAX_CONTEXT_OVERHEAD_BYTES = 64 * 1024;
 export const MAX_EXECUTION_CONTEXT_BYTES =
 	MAX_STORAGE_STATE_BYTES + MAX_CONTEXT_OVERHEAD_BYTES;
@@ -453,7 +457,7 @@ const assertCanonicalConfigArgument = (
 	}
 };
 
-const deepFreeze = <Value,>(value: Value): Value => {
+const deepFreeze = <Value>(value: Value): Value => {
 	if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
 		return value;
 	}

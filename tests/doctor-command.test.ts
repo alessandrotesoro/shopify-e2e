@@ -18,10 +18,10 @@ import {
 } from "../src/doctor/doctor-orchestrator.js";
 import { ShopifyE2EPreflightError } from "../src/errors.js";
 import type { CommandSignalError } from "../src/process/command-signals.js";
-import { configuredOriginFromEnvironment } from "../src/role-states/configured-origin.cjs";
+import { configuredOriginFromEnvironment } from "../src/role-states/configured-origin.js";
 
 const projectRoot = "/physical/consumer";
-const configHelperPath = join(import.meta.dirname, "../src/config/public.cts");
+const configHelperPath = join(import.meta.dirname, "../src/config/public.ts");
 const temporaryDirectories: string[] = [];
 const loadedConfig: LoadedShopifyConfig = {
 	browserLaunchOptions: {

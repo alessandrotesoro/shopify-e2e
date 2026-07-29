@@ -14,8 +14,8 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildPlaywrightChildEnvironment } from "../src/config/execution-environment.cjs";
-import { createPlaywrightExecutionContext } from "../src/playwright/execution-context.cjs";
+import { buildPlaywrightChildEnvironment } from "../src/config/execution-environment.js";
+import { createPlaywrightExecutionContext } from "../src/playwright/execution-context.js";
 import { buildPlaywrightInvocation } from "../src/playwright/invocation.js";
 import { resolvePlaywrightPeer } from "../src/playwright/peer.js";
 

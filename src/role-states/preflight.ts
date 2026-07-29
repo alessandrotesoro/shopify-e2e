@@ -1,6 +1,6 @@
 import { ShopifyE2EPreflightError } from "../errors.js";
-import { assertRoleName } from "../roles/role-name.cjs";
-import { configuredOriginFromEnvironment } from "./configured-origin.cjs";
+import { assertRoleName } from "../roles/role-name.js";
+import { configuredOriginFromEnvironment } from "./configured-origin.js";
 
 export const configuredOriginForCommand = (
 	environment: NodeJS.ProcessEnv,

@@ -6,11 +6,11 @@ import {
 	CommandSignalError,
 	commandSignalFromReason,
 } from "../process/command-signals.js";
-import { normalizeConfiguredOrigin } from "../role-states/configured-origin.cjs";
+import { normalizeConfiguredOrigin } from "../role-states/configured-origin.js";
 import {
 	type PlaywrightStorageState,
 	validateStorageState,
-} from "../storage-state/schema.cjs";
+} from "../storage-state/schema.js";
 
 export interface CaptureEventSource {
 	off(event: string, listener: () => void): unknown;
