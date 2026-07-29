@@ -322,3 +322,7 @@ DESCRIPTION
   controls are intentionally unavailable.
 ```
 <!-- commandsstop -->
+
+# License
+
+This project is available under the [MIT License](./LICENSE).
