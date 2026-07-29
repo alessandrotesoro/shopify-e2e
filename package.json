@@ -2,6 +2,21 @@
 	"name": "@sematico/shopify-e2e",
 	"version": "0.7.0",
 	"description": "CLI-first orchestration for isolated Shopify Playwright E2E tests.",
+	"keywords": [
+		"shopify",
+		"playwright",
+		"e2e",
+		"testing",
+		"cli"
+	],
+	"homepage": "https://github.com/alessandrotesoro/shopify-e2e#readme",
+	"bugs": {
+		"url": "https://github.com/alessandrotesoro/shopify-e2e/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/alessandrotesoro/shopify-e2e.git"
+	},
 	"license": "MIT",
 	"type": "module",
 	"exports": {
@@ -15,17 +30,22 @@
 		}
 	},
 	"bin": {
-		"shopify-e2e": "./bin/run.js"
+		"shopify-e2e": "bin/run.js"
 	},
 	"files": [
 		"bin",
 		"dist",
 		"LICENSE"
 	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"build": "npm run clean && tsc -p tsconfig.json",
 		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
 		"lint": "biome check bin src tests package.json tsconfig.json tsconfig.test.json vitest.config.ts biome.json",
+		"prepack": "npm run build",
+		"prepublishOnly": "npm run verify",
 		"test": "npm run build && npm run test:fast",
 		"test:fast": "vitest run --exclude tests/installed-cli.test.ts --exclude tests/installed-doctor-cli.test.ts --exclude tests/installed-playwright-fixtures.test.ts --exclude tests/browser-role-isolation.test.ts --exclude tests/browser-playwright-fixtures.test.ts",
 		"test:browser:fixtures": "npm run build && vitest run tests/browser-playwright-fixtures.test.ts",
