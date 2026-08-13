@@ -107,7 +107,11 @@ jobs:
           npm pack --json > "$pack_json"
           tarball="$(node --input-type=module -e '
             import { readFileSync } from "node:fs";
-            const result = JSON.parse(readFileSync(process.argv[1], "utf8"));
+            const source = readFileSync(process.argv[1], "utf8");
+            const starts = [...source.matchAll(/^\[/gm)].map((match) => match.index).filter((index) => index !== undefined);
+            const start = starts.at(-1);
+            if (start === undefined) throw new Error("npm pack did not emit JSON metadata");
+            const result = JSON.parse(source.slice(start));
             process.stdout.write(result[0].filename);
           ' "$pack_json")"
           test -f "$tarball"
