@@ -184,7 +184,7 @@ $ npm install -g @sematico/shopify-e2e
 $ shopify-e2e COMMAND
 running command...
 $ shopify-e2e (--version)
-@sematico/shopify-e2e/0.7.0 darwin-arm64 node-v24.18.0
+@sematico/shopify-e2e/0.1.0 darwin-arm64 node-v24.18.0
 $ shopify-e2e --help [COMMAND]
 USAGE
   $ shopify-e2e COMMAND

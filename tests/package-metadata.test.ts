@@ -34,7 +34,7 @@ describe("package metadata", () => {
 		const packageJson = await readPackage();
 
 		expect(packageJson.name).toBe("@sematico/shopify-e2e");
-		expect(packageJson.version).toBe("0.7.0");
+		expect(packageJson.version).toBe("0.1.0");
 		expect(packageJson.engines).toEqual({ node: ">=20" });
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.bin).toEqual({ "shopify-e2e": "bin/run.js" });
@@ -82,14 +82,14 @@ describe("package metadata", () => {
 		expect(lockfile.packages["node_modules/jiti"]?.version).toBe("2.7.0");
 	});
 
-	it("coordinates the 0.7.0 release and prompt pin in the lockfile", async () => {
+	it("coordinates the 0.1.0 release and prompt pin in the lockfile", async () => {
 		const lockfile = await readPackageLock();
 
-		expect(lockfile.version).toBe("0.7.0");
+		expect(lockfile.version).toBe("0.1.0");
 		expect(lockfile.packages[""]).toMatchObject({
 			dependencies: { "@inquirer/prompts": "7.10.1" },
 			engines: { node: ">=20" },
-			version: "0.7.0",
+			version: "0.1.0",
 		});
 		expect(lockfile.packages["node_modules/@inquirer/prompts"]?.version).toBe(
 			"7.10.1",
