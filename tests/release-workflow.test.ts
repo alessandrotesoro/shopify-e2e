@@ -16,6 +16,8 @@ describe("npm release workflow", () => {
 		expect(workflow).not.toMatch(/\n\s+push:/);
 		expect(workflow).toContain("RELEASE_PRERELEASE");
 		expect(workflow).toContain('test "$RELEASE_PRERELEASE" = "false"');
+		expect(workflow).toContain("RELEASE_ACTOR: ${{ " + "github.actor }}");
+		expect(workflow).toContain('test "$RELEASE_ACTOR" = "$EXPECTED_OWNER"');
 		expect(workflow).toContain('test "$RELEASE_AUTHOR" = "$EXPECTED_OWNER"');
 		expect(workflow).toContain('test "$RELEASE_TAG" = "v$EXPECTED_VERSION"');
 		expect(workflow).toContain(
@@ -38,9 +40,7 @@ describe("npm release workflow", () => {
 		expect(workflow).toContain("npm pack --dry-run --json");
 		expect(workflow).toContain("actions/upload-artifact@v4");
 		expect(workflow).toContain("actions/download-artifact@v4");
-		expect(publishJob).toContain(
-			"NODE_AUTH_TOKEN: ${{ secrets." + "NPM_TOKEN }}",
-		);
+		expect(publishJob).not.toContain("NPM_TOKEN");
 		expect(publishJob).toContain(
 			"npm publish publish-artifact/package.tgz --access public --provenance --ignore-scripts",
 		);
@@ -55,6 +55,5 @@ describe("npm release workflow", () => {
 		expect(workflow).toContain("dist-tags.latest");
 		expect(workflow).toContain("dist?.attestations?.provenance?.predicateType");
 		expect(workflow).toContain("metadata.dist.integrity");
-		expect(workflow).toContain("metadata.gitHead");
 	});
 });

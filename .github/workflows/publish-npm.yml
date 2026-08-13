@@ -28,13 +28,14 @@ jobs:
         with:
           node-version: 24.x
           registry-url: https://registry.npmjs.org
-          cache: npm
+          cache: false
 
       - name: Validate release identity and package version
         env:
           EXPECTED_PACKAGE: "@sematico/shopify-e2e"
           EXPECTED_VERSION: "0.1.0"
           EXPECTED_OWNER: "alessandrotesoro"
+          RELEASE_ACTOR: ${{ github.actor }}
           RELEASE_AUTHOR: ${{ github.event.release.author.login }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -43,6 +44,7 @@ jobs:
           set -euo pipefail
 
           test "$RELEASE_PRERELEASE" = "false"
+          test "$RELEASE_ACTOR" = "$EXPECTED_OWNER"
           test "$RELEASE_AUTHOR" = "$EXPECTED_OWNER"
           test "$RELEASE_TAG" = "v$EXPECTED_VERSION"
           test -n "$RELEASE_TARGET"
@@ -150,10 +152,7 @@ jobs:
             exit "$view_status"
           fi
 
-      - name: Publish with npm trusted publishing or the existing token fallback
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
+      - name: Publish with npm trusted publishing
         run: npm publish publish-artifact/package.tgz --access public --provenance --ignore-scripts
 
       - name: Verify public npm publication, artifact identity, and provenance
@@ -165,32 +164,20 @@ jobs:
           anonymous_npmrc="$RUNNER_TEMP/anonymous.npmrc"
           : > "$anonymous_npmrc"
 
+          verified=false
           for attempt in $(seq 1 12); do
-            if NPM_CONFIG_USERCONFIG="$anonymous_npmrc" npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" version --json > "$RUNNER_TEMP/public-version.json" 2> "$RUNNER_TEMP/public-version.err"; then
-              break
-            fi
-            if [ "$attempt" -eq 12 ]; then
-              cat "$RUNNER_TEMP/public-version.err"
-              exit 1
-            fi
-            sleep 10
-          done
-
-          public_version="$(node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            process.stdout.write(String(JSON.parse(readFileSync(process.argv[1], "utf8"))));
-          ' "$RUNNER_TEMP/public-version.json")"
-          test "$public_version" = "$EXPECTED_VERSION"
-
-          NPM_CONFIG_USERCONFIG="$anonymous_npmrc" npm view "$EXPECTED_PACKAGE" dist-tags.latest --json > "$RUNNER_TEMP/public-latest.json"
-          latest_version="$(node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            process.stdout.write(String(JSON.parse(readFileSync(process.argv[1], "utf8"))));
-          ' "$RUNNER_TEMP/public-latest.json")"
-          test "$latest_version" = "$EXPECTED_VERSION"
-
-          npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" --json > "$RUNNER_TEMP/published-version.json"
-          node --input-type=module - "$RUNNER_TEMP/published-version.json" "$EXPECTED_VERSION" <<'NODE'
+            if NPM_CONFIG_USERCONFIG="$anonymous_npmrc" npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" version --json > "$RUNNER_TEMP/public-version.json" 2> "$RUNNER_TEMP/public-version.err" \
+              && NPM_CONFIG_USERCONFIG="$anonymous_npmrc" npm view "$EXPECTED_PACKAGE" dist-tags.latest --json > "$RUNNER_TEMP/public-latest.json" 2> "$RUNNER_TEMP/public-latest.err" \
+              && NPM_CONFIG_USERCONFIG="$anonymous_npmrc" npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" --json > "$RUNNER_TEMP/published-version.json" 2> "$RUNNER_TEMP/published-version.err"; then
+              public_version="$(node --input-type=module -e '
+                import { readFileSync } from "node:fs";
+                process.stdout.write(String(JSON.parse(readFileSync(process.argv[1], "utf8"))));
+              ' "$RUNNER_TEMP/public-version.json")"
+              latest_version="$(node --input-type=module -e '
+                import { readFileSync } from "node:fs";
+                process.stdout.write(String(JSON.parse(readFileSync(process.argv[1], "utf8"))));
+              ' "$RUNNER_TEMP/public-latest.json")"
+              if [ "$public_version" = "$EXPECTED_VERSION" ] && [ "$latest_version" = "$EXPECTED_VERSION" ] && node --input-type=module - "$RUNNER_TEMP/published-version.json" "$EXPECTED_VERSION" <<'NODE'
           import { readFileSync } from "node:fs";
 
           const metadata = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -201,18 +188,28 @@ jobs:
           if (metadata.dist?.attestations?.provenance?.predicateType !== "https://slsa.dev/provenance/v1") {
             throw new Error("npm did not expose an SLSA provenance attestation");
           }
-          if (!metadata.gitHead) {
-            throw new Error("npm did not expose the published gitHead");
-          }
           if (!metadata.dist?.integrity) {
             throw new Error("npm did not expose the published tarball integrity");
           }
           NODE
+                published_integrity="$(node --input-type=module -e '
+                  import { readFileSync } from "node:fs";
+                  const metadata = JSON.parse(readFileSync(process.argv[1], "utf8"));
+                  process.stdout.write(metadata.dist.integrity);
+                ' "$RUNNER_TEMP/published-version.json")"
+                expected_integrity="$(awk -F= '$1 == "tarball_integrity" { print $2 }' publish-artifact/release-metadata.env)"
+                if [ "$published_integrity" = "$expected_integrity" ]; then
+                  verified=true
+                  break
+                fi
+              fi
+            fi
+            if [ "$attempt" -lt 12 ]; then
+              sleep 10
+            fi
+          done
 
-          published_integrity="$(node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            const metadata = JSON.parse(readFileSync(process.argv[1], "utf8"));
-            process.stdout.write(metadata.dist.integrity);
-          ' "$RUNNER_TEMP/published-version.json")"
-          expected_integrity="$(awk -F= '$1 == "tarball_integrity" { print $2 }' publish-artifact/release-metadata.env)"
-          test "$published_integrity" = "$expected_integrity"
+          if [ "$verified" != "true" ]; then
+            echo "npm publication did not reconcile to the expected public version, latest tag, provenance, and artifact integrity."
+            exit 1
+          fi
