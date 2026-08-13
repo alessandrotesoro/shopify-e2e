@@ -83,7 +83,12 @@ jobs:
       - name: Install Chromium for repository verification
         run: npx playwright install --with-deps chromium
 
+      - name: Prepare isolated verification temporary root
+        run: mkdir -p /dev/shm/shopify-e2e
+
       - name: Run repository verification
+        env:
+          TMPDIR: /dev/shm/shopify-e2e
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npm run verify
 
       - name: Run package dry-run
