@@ -80,6 +80,9 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Install Chromium for repository verification
+        run: npx playwright install --with-deps chromium
+
       - name: Run repository verification
         run: npm run verify
 
