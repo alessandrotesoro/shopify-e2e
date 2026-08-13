@@ -3,12 +3,18 @@ name: Publish npm package
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish after a failed release-event run
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-release-${{ github.event.release.tag_name }}
+  group: npm-release-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -21,7 +27,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -36,10 +42,10 @@ jobs:
           EXPECTED_VERSION: "0.1.0"
           EXPECTED_OWNER: "alessandrotesoro"
           RELEASE_ACTOR: ${{ github.actor }}
-          RELEASE_AUTHOR: ${{ github.event.release.author.login }}
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_TARGET: ${{ github.event.release.target_commitish }}
+          RELEASE_AUTHOR: ${{ github.event.release.author.login || github.actor }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease || false }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TARGET: ${{ github.event.release.target_commitish || '' }}
         run: |
           set -euo pipefail
 
@@ -47,7 +53,9 @@ jobs:
           test "$RELEASE_ACTOR" = "$EXPECTED_OWNER"
           test "$RELEASE_AUTHOR" = "$EXPECTED_OWNER"
           test "$RELEASE_TAG" = "v$EXPECTED_VERSION"
-          test -n "$RELEASE_TARGET"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            test -n "$RELEASE_TARGET"
+          fi
 
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = "tag"
           tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{}")"

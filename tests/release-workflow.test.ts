@@ -13,6 +13,10 @@ describe("npm release workflow", () => {
 		const workflow = await readFile(workflowPath, "utf8");
 
 		expect(workflow).toMatch(/on:\s*\n\s+release:\s*\n\s+types: \[published\]/);
+		expect(workflow).toContain("workflow_dispatch:");
+		expect(workflow).toContain(
+			"description: Release tag to publish after a failed release-event run",
+		);
 		expect(workflow).not.toMatch(/\n\s+push:/);
 		expect(workflow).toContain("RELEASE_PRERELEASE");
 		expect(workflow).toContain('test "$RELEASE_PRERELEASE" = "false"');
