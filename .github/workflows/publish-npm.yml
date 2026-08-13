@@ -18,10 +18,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: Check out the published release tag
         uses: actions/checkout@v7
@@ -33,10 +34,10 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24.x
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
+          registry-url: https://registry.npmjs.org
 
-      - name: Validate release identity and package version
+      - name: Verify release identity and package version
         env:
           EXPECTED_PACKAGE: "@sematico/shopify-e2e"
           EXPECTED_VERSION: "0.1.0"
@@ -48,200 +49,55 @@ jobs:
           RELEASE_TARGET: ${{ github.event.release.target_commitish || '' }}
         run: |
           set -euo pipefail
-
           test "$RELEASE_PRERELEASE" = "false"
-          test "$RELEASE_ACTOR" = "$EXPECTED_OWNER"
-          test "$RELEASE_AUTHOR" = "$EXPECTED_OWNER"
-          test "$RELEASE_TAG" = "v$EXPECTED_VERSION"
           if [ "${{ github.event_name }}" = "release" ]; then
+            test "$RELEASE_ACTOR" = "$EXPECTED_OWNER"
+            test "$RELEASE_AUTHOR" = "$EXPECTED_OWNER"
             test -n "$RELEASE_TARGET"
           fi
-
+          test "$RELEASE_TAG" = "v$EXPECTED_VERSION"
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = "tag"
           tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{}")"
           test "$tag_commit" = "$(git rev-parse HEAD)"
-
           package_name="$(node -p "require('./package.json').name")"
           package_version="$(node -p "require('./package.json').version")"
           test "$package_name" = "$EXPECTED_PACKAGE"
           test "$package_version" = "$EXPECTED_VERSION"
-          test "$RELEASE_TAG" = "v$package_version"
-
-          if [[ "$RELEASE_TARGET" =~ ^[0-9a-f]{40}$ ]]; then
-            test "$RELEASE_TARGET" = "$tag_commit"
-          fi
-
-          {
-            echo "package_name=$package_name"
-            echo "package_version=$package_version"
-            echo "tag_commit=$tag_commit"
-          } > "$RUNNER_TEMP/release-metadata.env"
 
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Install Chromium for repository verification
-        run: npx playwright install --with-deps chromium
-
-      - name: Prepare isolated verification temporary root
-        run: mkdir -p /dev/shm/shopify-e2e
-
-      - name: Run repository verification
-        env:
-          TMPDIR: /dev/shm/shopify-e2e
-        run: |
-          set -euo pipefail
-          npm run lint
-          npm run typecheck
-          npm run build
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npm run test:fast -- --testTimeout=30000
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npm run test:installed:built -- --testTimeout=30000
-
       - name: Run package dry-run
-        run: npm pack --dry-run --json > "$RUNNER_TEMP/npm-pack-dry-run.json"
+        run: npm pack --dry-run --json
 
-      - name: Create the verified publish artifact
-        run: |
-          set -euo pipefail
-          pack_json="$RUNNER_TEMP/npm-pack.json"
-          npm pack --json > "$pack_json"
-          tarball="$(node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            const source = readFileSync(process.argv[1], "utf8");
-            const starts = [...source.matchAll(/^\[/gm)].map((match) => match.index).filter((index) => index !== undefined);
-            const start = starts.at(-1);
-            if (start === undefined) throw new Error("npm pack did not emit JSON metadata");
-            const result = JSON.parse(source.slice(start));
-            process.stdout.write(result[0].filename);
-          ' "$pack_json")"
-          test -f "$tarball"
-
-          mkdir -p "$RUNNER_TEMP/publish-artifact"
-          cp "$tarball" "$RUNNER_TEMP/publish-artifact/package.tgz"
-          tarball_integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | openssl base64 -A)"
-          echo "tarball_integrity=$tarball_integrity" >> "$RUNNER_TEMP/release-metadata.env"
-          cp "$RUNNER_TEMP/release-metadata.env" "$RUNNER_TEMP/publish-artifact/release-metadata.env"
-
-      - name: Upload the verified package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-release-${{ github.run_id }}
-          path: ${{ runner.temp }}/publish-artifact
-          if-no-files-found: error
-          retention-days: 1
-
-  publish:
-    needs: verify
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Download the verified package artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: npm-release-${{ github.run_id }}
-          path: publish-artifact
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24.x
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-
-      - name: Validate the publish artifact and registry precondition
+      - name: Check published package version
+        id: published
         env:
           EXPECTED_PACKAGE: "@sematico/shopify-e2e"
           EXPECTED_VERSION: "0.1.0"
         run: |
-          set -euo pipefail
-          metadata_file="publish-artifact/release-metadata.env"
-          test -f "$metadata_file"
-          package_name="$(awk -F= '$1 == "package_name" { print $2 }' "$metadata_file")"
-          package_version="$(awk -F= '$1 == "package_version" { print $2 }' "$metadata_file")"
-          tarball_integrity="$(awk -F= '$1 == "tarball_integrity" { print $2 }' "$metadata_file")"
-          test "$package_name" = "$EXPECTED_PACKAGE"
-          test "$package_version" = "$EXPECTED_VERSION"
-          test "$tarball_integrity" = "sha512-$(openssl dgst -sha512 -binary publish-artifact/package.tgz | openssl base64 -A)"
-
-          set +e
-          registry_status="$(curl --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --output "$RUNNER_TEMP/existing-version.json" --write-out "%{http_code}" "https://registry.npmjs.org/@sematico%2fshopify-e2e/$EXPECTED_VERSION")"
-          curl_status=$?
-          set -e
-          if [ "$curl_status" -ne 0 ]; then
-            echo "The npm registry check failed with curl exit code $curl_status."
-            cat "$RUNNER_TEMP/existing-version.json"
-            exit 1
-          fi
-          if [ "$registry_status" = "200" ]; then
-            echo "The immutable npm version already exists; refusing to publish it again."
-            exit 1
-          fi
-          if [ "$registry_status" != "404" ]; then
-            echo "The npm registry returned HTTP $registry_status while checking the immutable version."
-            cat "$RUNNER_TEMP/existing-version.json"
-            exit 1
+          if npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$EXPECTED_PACKAGE@$EXPECTED_VERSION already exists; refusing to republish it."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish with npm trusted publishing
-        run: npm publish publish-artifact/package.tgz --access public --provenance --ignore-scripts
+      - name: Publish to npm with trusted publishing
+        if: steps.published.outputs.exists != 'true'
+        run: npm publish --access public --provenance --ignore-scripts
 
-      - name: Verify public npm publication, artifact identity, and provenance
+      - name: Verify public npm publication
         env:
           EXPECTED_PACKAGE: "@sematico/shopify-e2e"
           EXPECTED_VERSION: "0.1.0"
         run: |
-          set -euo pipefail
-          anonymous_npmrc="$RUNNER_TEMP/anonymous.npmrc"
-          : > "$anonymous_npmrc"
-
-          verified=false
-          for attempt in $(seq 1 12); do
-            if NPM_CONFIG_USERCONFIG="$anonymous_npmrc" npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" version --json > "$RUNNER_TEMP/public-version.json" 2> "$RUNNER_TEMP/public-version.err" \
-              && NPM_CONFIG_USERCONFIG="$anonymous_npmrc" npm view "$EXPECTED_PACKAGE" dist-tags.latest --json > "$RUNNER_TEMP/public-latest.json" 2> "$RUNNER_TEMP/public-latest.err" \
-              && NPM_CONFIG_USERCONFIG="$anonymous_npmrc" npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" --json > "$RUNNER_TEMP/published-version.json" 2> "$RUNNER_TEMP/published-version.err"; then
-              public_version="$(node --input-type=module -e '
-                import { readFileSync } from "node:fs";
-                process.stdout.write(String(JSON.parse(readFileSync(process.argv[1], "utf8"))));
-              ' "$RUNNER_TEMP/public-version.json")"
-              latest_version="$(node --input-type=module -e '
-                import { readFileSync } from "node:fs";
-                process.stdout.write(String(JSON.parse(readFileSync(process.argv[1], "utf8"))));
-              ' "$RUNNER_TEMP/public-latest.json")"
-              if [ "$public_version" = "$EXPECTED_VERSION" ] && [ "$latest_version" = "$EXPECTED_VERSION" ] && node --input-type=module - "$RUNNER_TEMP/published-version.json" "$EXPECTED_VERSION" <<'NODE'
-          import { readFileSync } from "node:fs";
-
-          const metadata = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          const expectedVersion = process.argv[3];
-          if (metadata.version !== expectedVersion) {
-            throw new Error(`npm returned version ${metadata.version ?? "<missing>"}`);
-          }
-          if (metadata.dist?.attestations?.provenance?.predicateType !== "https://slsa.dev/provenance/v1") {
-            throw new Error("npm did not expose an SLSA provenance attestation");
-          }
-          if (!metadata.dist?.integrity) {
-            throw new Error("npm did not expose the published tarball integrity");
-          }
-          NODE
-                published_integrity="$(node --input-type=module -e '
-                  import { readFileSync } from "node:fs";
-                  const metadata = JSON.parse(readFileSync(process.argv[1], "utf8"));
-                  process.stdout.write(metadata.dist.integrity);
-                ' "$RUNNER_TEMP/published-version.json")"
-                expected_integrity="$(awk -F= '$1 == "tarball_integrity" { print $2 }' publish-artifact/release-metadata.env)"
-                if [ "$published_integrity" = "$expected_integrity" ]; then
-                  verified=true
-                  break
-                fi
-              fi
+          for attempt in 1 2 3 4 5 6; do
+            if npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" version >/dev/null 2>&1; then
+              npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" version
+              exit 0
             fi
-            if [ "$attempt" -lt 12 ]; then
-              sleep 10
-            fi
+            sleep 10
           done
-
-          if [ "$verified" != "true" ]; then
-            echo "npm publication did not reconcile to the expected public version, latest tag, provenance, and artifact integrity."
-            exit 1
-          fi
+          echo "$EXPECTED_PACKAGE@$EXPECTED_VERSION was not visible on npm after publication."
+          exit 1

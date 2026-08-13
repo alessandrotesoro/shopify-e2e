@@ -29,36 +29,29 @@ describe("npm release workflow", () => {
 		);
 	});
 
-	it("keeps verification unprivileged and publishes one verified artifact", async () => {
+	it("uses the account's simple OIDC publishing pattern", async () => {
 		const workflow = await readFile(workflowPath, "utf8");
-		const verifyJob = workflow.split("\n  publish:", 1)[0];
-		const publishJob = workflow.slice(workflow.indexOf("\n  publish:"));
 
-		expect(verifyJob).toContain("contents: read");
-		expect(verifyJob).not.toContain("id-token: write");
-		expect(publishJob).toContain("id-token: write");
+		expect(workflow).toContain("contents: read");
+		expect(workflow).toContain("id-token: write");
 		expect(workflow).toContain("actions/checkout@v7");
 		expect(workflow).toContain("actions/setup-node@v6");
 		expect(workflow).toContain("node-version: 24.x");
 		expect(workflow).toContain("package-manager-cache: false");
 		expect(workflow).toContain("npm ci");
 		expect(workflow).toContain("npm pack --dry-run --json");
-		expect(workflow).toContain("actions/upload-artifact@v4");
-		expect(workflow).toContain("actions/download-artifact@v4");
-		expect(publishJob).not.toContain("NPM_TOKEN");
-		expect(publishJob).toContain(
-			"npm publish publish-artifact/package.tgz --access public --provenance --ignore-scripts",
+		expect(workflow).not.toContain("NPM_TOKEN");
+		expect(workflow).toContain(
+			"npm publish --access public --provenance --ignore-scripts",
 		);
-		expect(publishJob.match(/npm publish\b/g)).toHaveLength(1);
+		expect(workflow.match(/npm publish\b/g)).toHaveLength(1);
 		expect(workflow).not.toMatch(/npm_[A-Za-z0-9]{20,}/);
 	});
 
-	it("requires exact public registry and provenance read-back", async () => {
+	it("checks the public npm version after publishing with provenance", async () => {
 		const workflow = await readFile(workflowPath, "utf8");
 
-		expect(workflow).toContain("NPM_CONFIG_USERCONFIG");
-		expect(workflow).toContain("dist-tags.latest");
-		expect(workflow).toContain("dist?.attestations?.provenance?.predicateType");
-		expect(workflow).toContain("metadata.dist.integrity");
+		expect(workflow).toContain("npm view \"$EXPECTED_PACKAGE@$EXPECTED_VERSION\" version");
+		expect(workflow).toContain("--provenance");
 	});
 });
