@@ -165,7 +165,15 @@ jobs:
           test "$package_version" = "$EXPECTED_VERSION"
           test "$tarball_integrity" = "sha512-$(openssl dgst -sha512 -binary publish-artifact/package.tgz | openssl base64 -A)"
 
-          registry_status="$(curl --silent --show-error --output "$RUNNER_TEMP/existing-version.json" --write-out "%{http_code}" "https://registry.npmjs.org/@sematico%2fshopify-e2e/$EXPECTED_VERSION")"
+          set +e
+          registry_status="$(curl --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --output "$RUNNER_TEMP/existing-version.json" --write-out "%{http_code}" "https://registry.npmjs.org/@sematico%2fshopify-e2e/$EXPECTED_VERSION")"
+          curl_status=$?
+          set -e
+          if [ "$curl_status" -ne 0 ]; then
+            echo "The npm registry check failed with curl exit code $curl_status."
+            cat "$RUNNER_TEMP/existing-version.json"
+            exit 1
+          fi
           if [ "$registry_status" = "200" ]; then
             echo "The immutable npm version already exists; refusing to publish it again."
             exit 1
