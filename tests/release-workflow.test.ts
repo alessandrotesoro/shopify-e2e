@@ -36,6 +36,7 @@ describe("npm release workflow", () => {
 		expect(workflow).toContain("actions/checkout@v7");
 		expect(workflow).toContain("actions/setup-node@v6");
 		expect(workflow).toContain("node-version: 24.x");
+		expect(workflow).toContain("package-manager-cache: false");
 		expect(workflow).toContain("npm ci");
 		expect(workflow).toContain("npm pack --dry-run --json");
 		expect(workflow).toContain("actions/upload-artifact@v4");
