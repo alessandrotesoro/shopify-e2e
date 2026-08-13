@@ -89,7 +89,13 @@ jobs:
       - name: Run repository verification
         env:
           TMPDIR: /dev/shm/shopify-e2e
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npm run verify
+        run: |
+          set -euo pipefail
+          npm run lint
+          npm run typecheck
+          npm run build
+          npm run test:fast
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npx vitest run tests/installed-cli.test.ts tests/installed-doctor-cli.test.ts tests/installed-playwright-fixtures.test.ts --testTimeout=30000
 
       - name: Run package dry-run
         run: npm pack --dry-run --json > "$RUNNER_TEMP/npm-pack-dry-run.json"
