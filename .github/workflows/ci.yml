@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install Chromium for offline verification
+        run: npx playwright install --with-deps chromium
+
+      - name: Prepare isolated verification temp root
+        run: mkdir -p /dev/shm/shopify-e2e
+
+      - name: Run repository verification
+        env:
+          TMPDIR: /dev/shm/shopify-e2e
+        run: |
+          set -uo pipefail
+          npm run lint
+          npm run typecheck
+          npm run build
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" bash -c 'npm run test:fast -- --testTimeout=30000 && npm run test:installed:built -- --testTimeout=30000'
